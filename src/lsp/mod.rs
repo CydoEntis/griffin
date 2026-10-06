@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use lsp_types::{
-    DiagnosticSeverity, GotoDefinitionResponse, Hover, HoverContents, MarkedString, MarkupKind,
+    CompletionItemKind, CompletionResponse, CompletionTextEdit, DiagnosticSeverity,
+    GotoDefinitionResponse, Hover, HoverContents, InsertTextFormat, MarkedString, MarkupKind,
     Position, PublishDiagnosticsParams, Uri,
 };
 use ropey::Rope;
@@ -152,6 +153,188 @@ fn hover_text(result: &Value) -> Option<String> {
     (!text.trim().is_empty()).then(|| text.to_string())
 }
 
+/// One completion a server offered, with positions already in char indices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionItem {
+    pub label: String,
+    /// A short name for what it is (`fn`, `field`), or empty when the server
+    /// didn't say.
+    pub kind: &'static str,
+    /// What typing is matched against: the server's `filterText`, else the label.
+    pub filter: String,
+    /// What accepting it inserts, snippet syntax already flattened.
+    pub text: String,
+    /// The range `text` replaces, as char indices into the text the request was
+    /// made against, when the server gave a `textEdit`. Without one, the word
+    /// before the cursor is replaced.
+    pub edit: Option<Range<usize>>,
+}
+
+/// The short name the popup shows for a completion's kind.
+fn kind_label(kind: Option<CompletionItemKind>) -> &'static str {
+    match kind {
+        Some(CompletionItemKind::TEXT) => "text",
+        Some(CompletionItemKind::METHOD) => "method",
+        Some(CompletionItemKind::FUNCTION) => "fn",
+        Some(CompletionItemKind::CONSTRUCTOR) => "ctor",
+        Some(CompletionItemKind::FIELD) => "field",
+        Some(CompletionItemKind::VARIABLE) => "var",
+        Some(CompletionItemKind::CLASS) => "class",
+        Some(CompletionItemKind::INTERFACE) => "iface",
+        Some(CompletionItemKind::MODULE) => "mod",
+        Some(CompletionItemKind::PROPERTY) => "prop",
+        Some(CompletionItemKind::UNIT) => "unit",
+        Some(CompletionItemKind::VALUE) => "value",
+        Some(CompletionItemKind::ENUM) => "enum",
+        Some(CompletionItemKind::KEYWORD) => "keyword",
+        Some(CompletionItemKind::SNIPPET) => "snippet",
+        Some(CompletionItemKind::COLOR) => "color",
+        Some(CompletionItemKind::FILE) => "file",
+        Some(CompletionItemKind::REFERENCE) => "ref",
+        Some(CompletionItemKind::FOLDER) => "folder",
+        Some(CompletionItemKind::ENUM_MEMBER) => "variant",
+        Some(CompletionItemKind::CONSTANT) => "const",
+        Some(CompletionItemKind::STRUCT) => "struct",
+        Some(CompletionItemKind::EVENT) => "event",
+        Some(CompletionItemKind::OPERATOR) => "op",
+        Some(CompletionItemKind::TYPE_PARAMETER) => "type",
+        _ => "",
+    }
+}
+
+/// `snippet` as plain text: tab stops (`$1`, `$0`) and variables (`$TM_FILENAME`)
+/// vanish, placeholders (`${1:name}`) keep their text, choices (`${1|a,b|}`) their
+/// first option, and escaped `$`, `}` and `\` lose the backslash.
+pub fn strip_snippet(snippet: &str) -> String {
+    let chars: Vec<char> = snippet.chars().collect();
+    let mut at = 0;
+    let mut out = String::new();
+    strip_into(&chars, &mut at, false, &mut out);
+    out
+}
+
+/// Flattens `chars` from `at` into `out`, stopping after the `}` that closes the
+/// placeholder when `nested`.
+fn strip_into(chars: &[char], at: &mut usize, nested: bool, out: &mut String) {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    while let Some(&c) = chars.get(*at) {
+        match c {
+            '\\' if chars.get(*at + 1).is_some_and(|n| "$}\\,|".contains(*n)) => {
+                out.push(chars[*at + 1]);
+                *at += 2;
+            }
+            '}' if nested => {
+                *at += 1;
+                return;
+            }
+            '$' if chars.get(*at + 1).is_some_and(|&n| ident(n)) => {
+                *at += 1;
+                while chars.get(*at).is_some_and(|&n| ident(n)) {
+                    *at += 1;
+                }
+            }
+            '$' if chars.get(*at + 1) == Some(&'{') => {
+                *at += 2;
+                while chars.get(*at).is_some_and(|&n| ident(n)) {
+                    *at += 1;
+                }
+                match chars.get(*at) {
+                    Some(':') => {
+                        *at += 1;
+                        strip_into(chars, at, true, out);
+                    }
+                    Some('|') => {
+                        *at += 1;
+                        strip_choice(chars, at, out);
+                    }
+                    Some('}') => *at += 1,
+                    // Not snippet syntax after all; what follows stays as text.
+                    _ => {}
+                }
+            }
+            _ => {
+                out.push(c);
+                *at += 1;
+            }
+        }
+    }
+}
+
+/// The first option of a choice (`a,b|}`, after its opening `|`) into `out`,
+/// moving `at` past the closing `|}`.
+fn strip_choice(chars: &[char], at: &mut usize, out: &mut String) {
+    let mut first = true;
+    while let Some(&c) = chars.get(*at) {
+        *at += 1;
+        match c {
+            '\\' => {
+                if let Some(&next) = chars.get(*at) {
+                    *at += 1;
+                    if first {
+                        out.push(next);
+                    }
+                }
+            }
+            ',' => first = false,
+            '|' => break,
+            _ if first => out.push(c),
+            _ => {}
+        }
+    }
+    if chars.get(*at) == Some(&'}') {
+        *at += 1;
+    }
+}
+
+/// A completion reply as items, in the server's `sortText` order (by label when
+/// it gives none), with `textEdit` ranges read against `rope`, the text the
+/// request was made against. An unreadable or empty reply gives no items.
+fn completion_items(result: &Value, rope: &Rope) -> Vec<CompletionItem> {
+    let items = match serde_json::from_value::<Option<CompletionResponse>>(result.clone()) {
+        Ok(Some(CompletionResponse::Array(items))) => items,
+        Ok(Some(CompletionResponse::List(list))) => list.items,
+        Ok(None) | Err(_) => return Vec::new(),
+    };
+    let mut items: Vec<_> = items
+        .into_iter()
+        .map(|item| {
+            let (edit, new_text) = match &item.text_edit {
+                Some(CompletionTextEdit::Edit(edit)) => (Some(edit.range), Some(&edit.new_text)),
+                Some(CompletionTextEdit::InsertAndReplace(edit)) => {
+                    (Some(edit.insert), Some(&edit.new_text))
+                }
+                None => (None, None),
+            };
+            let raw = new_text
+                .or(item.insert_text.as_ref())
+                .unwrap_or(&item.label);
+            let text = if item.insert_text_format == Some(InsertTextFormat::SNIPPET) {
+                strip_snippet(raw)
+            } else {
+                raw.clone()
+            };
+            let edit = edit.map(|range| {
+                let start = char_index(rope, range.start);
+                start..char_index(rope, range.end).max(start)
+            });
+            let sort = item.sort_text.clone().unwrap_or_else(|| item.label.clone());
+            let completion = CompletionItem {
+                filter: item
+                    .filter_text
+                    .clone()
+                    .unwrap_or_else(|| item.label.clone()),
+                kind: kind_label(item.kind),
+                label: item.label,
+                text,
+                edit,
+            };
+            (sort, completion)
+        })
+        .collect();
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    items.into_iter().map(|(_, item)| item).collect()
+}
+
 /// What a server's message means for the app.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LspNews {
@@ -169,6 +352,22 @@ pub enum LspNews {
     /// The answer to the latest hover, as plain text, or `None` when the server
     /// had nothing to say.
     Hover(Option<String>),
+    /// The answer to the latest completion request for buffer `doc`; empty when
+    /// the server offered nothing.
+    Completion {
+        doc: u64,
+        items: Vec<CompletionItem>,
+    },
+}
+
+/// A completion request awaiting its reply, with the text it was made against
+/// so the reply's ranges read right even after more typing.
+#[derive(Debug)]
+struct PendingCompletion {
+    server: u64,
+    id: i64,
+    doc: u64,
+    rope: Rope,
 }
 
 /// The `[lsp.<lang>]` key for `path`: the highlight registry's language name, except
@@ -225,6 +424,8 @@ pub struct Lsp {
     definition: Option<(u64, i64)>,
     /// The hover awaiting its reply, likewise.
     hover: Option<(u64, i64)>,
+    /// The completion awaiting its reply, likewise.
+    completion: Option<PendingCompletion>,
 }
 
 impl Lsp {
@@ -402,6 +603,41 @@ impl Lsp {
         sent.is_some()
     }
 
+    /// Asks the server following buffer `doc` for completions at char index
+    /// `cursor`; the answer comes back from `handle` as `LspNews::Completion`.
+    /// `false` when no ready server follows the buffer.
+    pub fn completion(&mut self, doc: u64, cursor: usize) -> bool {
+        let Some((server, id)) = self.request_at(doc, cursor, Client::completion) else {
+            return false;
+        };
+        let rope = self
+            .docs
+            .get(&doc)
+            .map(|d| d.rope.clone())
+            .unwrap_or_default();
+        self.completion = Some(PendingCompletion {
+            server,
+            id,
+            doc,
+            rope,
+        });
+        true
+    }
+
+    /// Whether typing `ch` in buffer `doc` should open completion: it's one of
+    /// the trigger characters of the ready server following the buffer.
+    pub fn is_trigger(&self, doc: u64, ch: char) -> bool {
+        let Some(attached) = self.docs.get(&doc).filter(|d| d.opened) else {
+            return false;
+        };
+        let mut buf = [0; 4];
+        let ch = &*ch.encode_utf8(&mut buf);
+        self.servers
+            .get(&attached.server)
+            .filter(|c| c.is_ready())
+            .is_some_and(|c| c.triggers.iter().any(|t| t == ch))
+    }
+
     /// Sends the position request `send` makes for char index `cursor` in buffer
     /// `doc`. Returns (server, request id), or `None` with no ready server.
     fn request_at(
@@ -424,13 +660,18 @@ impl Lsp {
 
     /// Hands a server's message or exit to its client, turns published
     /// diagnostics into char ranges for each buffer they name, and passes on the
-    /// answers to the latest go to definition and hover.
+    /// answers to the latest go to definition, hover and completion.
     pub fn handle(&mut self, event: LspEvent) -> Vec<LspNews> {
+        let completion = self.completion.as_ref().map(|p| (p.server, p.id));
         let reply = match &event.event {
             ServerEvent::Message(message) if message.get("method").is_none() => message["id"]
                 .as_i64()
                 .map(|id| (event.server, id))
-                .filter(|reply| self.definition == Some(*reply) || self.hover == Some(*reply)),
+                .filter(|reply| {
+                    self.definition == Some(*reply)
+                        || self.hover == Some(*reply)
+                        || completion == Some(*reply)
+                }),
             _ => None,
         };
         let Some(client) = self.servers.get_mut(&event.server) else {
@@ -442,6 +683,13 @@ impl Lsp {
             let news = if self.definition == Some(reply) {
                 self.definition = None;
                 LspNews::Definition(first_location(&message["result"]))
+            } else if completion == Some(reply)
+                && let Some(pending) = self.completion.take()
+            {
+                LspNews::Completion {
+                    doc: pending.doc,
+                    items: completion_items(&message["result"], &pending.rope),
+                }
             } else {
                 self.hover = None;
                 LspNews::Hover(hover_text(&message["result"]))
@@ -725,6 +973,51 @@ mod tests {
         assert_eq!(hover_text(&serde_json::json!({"contents": []})), None);
         let fences = serde_json::json!({"contents": {"kind": "markdown", "value": "```\n```"}});
         assert_eq!(hover_text(&fences), None);
+    }
+
+    #[test]
+    fn snippets_flatten_to_their_placeholder_text() {
+        assert_eq!(strip_snippet("push(${1:ch})$0"), "push(ch)");
+        assert_eq!(
+            strip_snippet("fn ${1:name}(${2:args}) {\n\t$0\n}"),
+            "fn name(args) {\n\t\n}"
+        );
+        assert_eq!(strip_snippet("${1:outer ${2:inner}}"), "outer inner");
+        assert_eq!(strip_snippet("${1|one,two|}"), "one");
+        assert_eq!(strip_snippet("$TM_FILENAME ${TM_SELECTED_TEXT:x}"), " x");
+        assert_eq!(strip_snippet(r"a \$1 \} \\ b"), r"a $1 } \ b");
+        assert_eq!(strip_snippet("${}"), "");
+        assert_eq!(strip_snippet("cost $ 5"), "cost $ 5");
+        assert_eq!(strip_snippet("plain"), "plain");
+    }
+
+    #[test]
+    fn completion_items_insert_text_edit_then_insert_text_then_label() {
+        let rope = Rope::from_str("fn x() {\n    s.le\n}\n");
+        let result = serde_json::json!({"isIncomplete": false, "items": [
+            {"label": "len", "kind": 2, "sortText": "b",
+             "textEdit": {"range": {"start": {"line": 1, "character": 6},
+                                    "end": {"line": 1, "character": 8}}, "newText": "len()"},
+             "insertText": "ignored"},
+            {"label": "push", "kind": 3, "sortText": "a", "insertTextFormat": 2,
+             "insertText": "push(${1:ch})$0", "filterText": "pu"},
+            {"label": "trim", "sortText": "c"}
+        ]});
+        let items = completion_items(&result, &rope);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["push", "len", "trim"]);
+        assert_eq!(items[0].text, "push(ch)");
+        assert_eq!((items[0].kind, items[0].filter.as_str()), ("fn", "pu"));
+        assert_eq!(items[0].edit, None);
+        assert_eq!(items[1].text, "len()");
+        assert_eq!(items[1].kind, "method");
+        assert_eq!(items[1].edit, Some(15..17));
+        assert_eq!((items[2].text.as_str(), items[2].kind), ("trim", ""));
+        // A bare array works too; null and junk give nothing.
+        let array = serde_json::json!([{"label": "a"}]);
+        assert_eq!(completion_items(&array, &rope).len(), 1);
+        assert!(completion_items(&Value::Null, &rope).is_empty());
+        assert!(completion_items(&serde_json::json!(7), &rope).is_empty());
     }
 
     #[test]

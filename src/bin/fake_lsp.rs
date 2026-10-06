@@ -15,6 +15,8 @@
 //!     `"$dir/<name>"` the URI of file `<name>` in the same folder, so a script
 //!     needn't know where the test put its files.
 //!   - `exit_on`: a method that makes it exit with code 3 at once, as a crash.
+//!   - `delay`: milliseconds to wait before answering each method, as a slow
+//!     server would; its `notify` messages follow the late answer.
 //!
 //! It exits cleanly on `exit` or when stdin closes.
 
@@ -51,6 +53,9 @@ fn main() -> ExitCode {
         }
         if method == "exit" {
             return ExitCode::SUCCESS;
+        }
+        if let Some(ms) = script["delay"][method].as_u64() {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
         }
         if let Some(id) = message.get("id")
             && !method.is_empty()

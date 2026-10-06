@@ -1,3 +1,4 @@
+pub mod completion;
 pub mod confirm;
 pub mod find;
 pub mod hover;

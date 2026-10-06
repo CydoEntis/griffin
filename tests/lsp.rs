@@ -769,3 +769,319 @@ fn the_hover_flips_above_and_shifts_left_at_the_screen_edges() {
     assert!(status_line(&griffin).contains("Ln 40, Col 86"));
     griffin.wait_for_cursor(cursor.0, cursor.1, WAIT);
 }
+
+/// The theme with `card` and `hov` pinned, so the popup's rows are known.
+const COMPLETION_THEME: &str = "[theme_overrides]\ncard = \"#203040\"\nhov = \"#405060\"\n";
+const HOV: vt100::Color = vt100::Color::Rgb(0x40, 0x50, 0x60);
+
+/// Whether `row` is the selected one, showing `label` on `hov`: drawn as reverse
+/// video, so `hov` is the cells' foreground (see `Theme::highlight`).
+fn on_hov(griffin: &Griffin, row: u16, label: &str) -> bool {
+    griffin.fg_at(LABEL_COL, row) == HOV && griffin.reversed_text(row).contains(label)
+}
+
+/// Initialize advertising `.` as a completion trigger, then 12 items for every
+/// `textDocument/completion`, sorted by label: `len` carries a `textEdit` from
+/// the cursor after `s.` on line 2, `push` a snippet, `push_str` plain insert
+/// text and `trim` only its label.
+fn completion_script(extra: &str) -> String {
+    let method = |label: &str| format!(r#"{{"label": "{label}", "kind": 2}}"#);
+    let mut items: Vec<String> = [
+        "capacity",
+        "chars",
+        "clear",
+        "contains",
+        "ends_with",
+        "is_empty",
+        "lines",
+    ]
+    .iter()
+    .map(|l| method(l))
+    .collect();
+    items.extend([
+        r#"{"label": "as_str", "kind": 5}"#.to_string(),
+        r#"{"label": "len", "kind": 2, "textEdit": {"range": {
+            "start": {"line": 1, "character": 6}, "end": {"line": 1, "character": 6}},
+            "newText": "len()"}}"#
+            .to_string(),
+        r#"{"label": "push", "kind": 2, "insertTextFormat": 2,
+            "insertText": "push(${1:ch})$0"}"#
+            .to_string(),
+        r#"{"label": "push_str", "kind": 2, "insertText": "push_str"}"#.to_string(),
+        r#"{"label": "trim", "kind": 3}"#.to_string(),
+    ]);
+    format!(
+        r#"{{"responses": {{
+            "initialize": {{"capabilities": {{
+                "textDocumentSync": {{"openClose": true, "change": 2, "save": {{"includeText": false}}}},
+                "completionProvider": {{"triggerCharacters": ["."]}}}}}},
+            "textDocument/completion": {{"isIncomplete": false, "items": [{}]}}
+        }}{extra}}}"#,
+        items.join(", ")
+    )
+}
+
+/// A project with `comp.rs` open on the fake server, the cursor at the end of
+/// its indented empty line 2.
+fn completion_project(script: &str) -> (Project, Griffin) {
+    let project = Project::new(Some(script));
+    fs::write(project.dir.path().join("comp.rs"), "fn main() {\n    \n}\n").expect("write comp.rs");
+    let config = format!("{}{COMPLETION_THEME}", rust_server(fake()));
+    let mut griffin = project.open(&config, "comp.rs");
+    project.wait_for(&griffin, "textDocument/didOpen", "comp.rs");
+    griffin.send_keys("down");
+    griffin.wait_for_text("Ln 2, Col 1", WAIT);
+    griffin.send_keys("end");
+    griffin.wait_for_text("Ln 2, Col 5", WAIT);
+    (project, griffin)
+}
+
+fn completion_requests(project: &Project) -> Vec<Value> {
+    project
+        .log()
+        .into_iter()
+        .map(|(_, m)| m)
+        .filter(|m| is(m, "textDocument/completion", "comp.rs"))
+        .collect()
+}
+
+/// Types `s` then `.` on the current line and waits for the popup.
+fn open_completion(project: &Project, griffin: &mut Griffin, line: u16) {
+    let asked = completion_requests(project).len();
+    griffin.type_text("s");
+    griffin.wait_for_text(&format!("Ln {line}, Col 6"), WAIT);
+    griffin.type_text(".");
+    griffin.wait_for_files("a completion request", WAIT, || {
+        completion_requests(project).len() > asked
+    });
+    griffin.wait_for_text("capacity", WAIT);
+}
+
+// The gutter " 1 │ " is 5 cells, so after `    s.` on line 2 the cursor is at
+// (11, 2). The card's border is on row 3; its rows start on row 4, the kind one
+// cell in from the border at column 13 and, after the 6-wide `method` and a
+// space, the label at column 20.
+const ITEM_ROW: u16 = 4;
+const KIND_COL: u16 = 13;
+const LABEL_COL: u16 = 20;
+
+#[test]
+fn a_trigger_character_or_alt_slash_shows_up_to_ten_items_with_kinds() {
+    let (project, mut griffin) = completion_project(&completion_script(""));
+    open_completion(&project, &mut griffin, 2);
+    let requests = completion_requests(&project);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]["params"]["position"],
+        serde_json::json!({"line": 1, "character": 6})
+    );
+    // The server heard about the `.` before being asked about the text after it.
+    let log: Vec<Value> = project.log().into_iter().map(|(_, m)| m).collect();
+    let asked = log
+        .iter()
+        .position(|m| method(m) == "textDocument/completion")
+        .expect("completion logged");
+    let last_change = log[..asked]
+        .iter()
+        .rfind(|m| method(m) == "textDocument/didChange")
+        .expect("a change before the request");
+    assert_eq!(last_change["params"]["contentChanges"][0]["text"], ".");
+
+    griffin.wait_for_cursor(11, 2, WAIT);
+    let screen = griffin.screen();
+    let expected = [
+        ("field ", "as_str"),
+        ("method", "capacity"),
+        ("method", "chars"),
+        ("method", "clear"),
+        ("method", "contains"),
+        ("method", "ends_with"),
+        ("method", "is_empty"),
+        ("method", "len"),
+        ("method", "lines"),
+        ("method", "push"),
+    ];
+    for (row, (kind, label)) in (ITEM_ROW..).zip(expected) {
+        assert_eq!(
+            griffin.text_col(row, &format!("{kind} {label}")),
+            Some(KIND_COL),
+            "{label} on row {row}: {screen:#?}"
+        );
+    }
+    // Ten at most: the last two sorted items aren't shown.
+    assert!(
+        !screen.iter().any(|r| r.contains("push_str")),
+        "{screen:#?}"
+    );
+    assert!(!screen.iter().any(|r| r.contains("trim")), "{screen:#?}");
+    // The first row is selected, on `hov`; the rest are on the card.
+    assert!(on_hov(&griffin, ITEM_ROW, "as_str"), "{screen:#?}");
+    assert_eq!(griffin.bg_at(LABEL_COL, ITEM_ROW + 1), CARD);
+    assert!(status_line(&griffin).contains("Ln 2, Col 7"));
+
+    // Esc closes it; Alt+/ asks again from the same place.
+    griffin.send_keys("esc");
+    griffin.wait_for_text_gone("capacity", WAIT);
+    griffin.send_keys("alt+/");
+    griffin.wait_for_text("capacity", WAIT);
+    let requests = completion_requests(&project);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1]["params"]["position"],
+        serde_json::json!({"line": 1, "character": 6})
+    );
+}
+
+#[test]
+fn typing_filters_and_the_arrows_move_the_selection() {
+    let (project, mut griffin) = completion_project(&completion_script(""));
+    open_completion(&project, &mut griffin, 2);
+
+    // Case doesn't matter: `P` keeps `push` and `push_str`.
+    griffin.type_text("P");
+    griffin.wait_for_text_gone("capacity", WAIT);
+    griffin.wait_for_text("s.P", WAIT);
+    // The card follows the cursor, one cell right now.
+    let screen = griffin.screen();
+    assert_eq!(
+        griffin.text_col(ITEM_ROW, "method push"),
+        Some(KIND_COL + 1),
+        "{screen:#?}"
+    );
+    assert_eq!(
+        griffin.text_col(ITEM_ROW + 1, "method push_str"),
+        Some(KIND_COL + 1)
+    );
+    assert!(on_hov(&griffin, ITEM_ROW, "push"), "{screen:#?}");
+
+    griffin.send_keys("down");
+    griffin.wait_for_fg_at(LABEL_COL + 1, ITEM_ROW + 1, HOV, WAIT);
+    assert!(on_hov(&griffin, ITEM_ROW + 1, "push_str"));
+    assert_eq!(griffin.bg_at(LABEL_COL + 1, ITEM_ROW), CARD);
+    // The selection stops at the last item, and the cursor never moves.
+    griffin.send_keys("down");
+    griffin.send_keys("up");
+    griffin.wait_for_fg_at(LABEL_COL + 1, ITEM_ROW, HOV, WAIT);
+    assert!(status_line(&griffin).contains("Ln 2, Col 8"));
+
+    // A filter matching nothing hides the popup; Backspace brings it back.
+    griffin.type_text("z");
+    griffin.wait_for_text_gone("push", WAIT);
+    griffin.send_keys("backspace");
+    griffin.wait_for_text("push_str", WAIT);
+}
+
+#[test]
+fn enter_and_tab_insert_the_item_as_one_undo_step() {
+    let (project, mut griffin) = completion_project(&completion_script(""));
+
+    // `len`'s textEdit, stretched over the `le` typed since.
+    open_completion(&project, &mut griffin, 2);
+    griffin.type_text("le");
+    griffin.wait_for_text_gone("capacity", WAIT);
+    griffin.wait_for_text("method len", WAIT);
+    griffin.send_keys("enter");
+    griffin.wait_for_text("s.len()", WAIT);
+    griffin.wait_for_text_gone("method len", WAIT);
+    assert!(status_line(&griffin).contains("Ln 2, Col 12"));
+    // One undo takes back just the insertion.
+    griffin.send_keys("ctrl+z");
+    griffin.wait_for_text_gone("s.len()", WAIT);
+    griffin.wait_for_text("Ln 2, Col 9", WAIT);
+    let screen = griffin.screen();
+    assert!(screen[2].ends_with("s.le"), "{screen:#?}");
+    griffin.send_keys("ctrl+y");
+    griffin.wait_for_text("s.len()", WAIT);
+
+    // Tab takes `push`'s snippet with its placeholder as plain text.
+    griffin.send_keys("enter");
+    griffin.wait_for_text("Ln 3, Col 5", WAIT);
+    open_completion(&project, &mut griffin, 3);
+    griffin.type_text("pu");
+    griffin.wait_for_text_gone("capacity", WAIT);
+    griffin.send_keys("tab");
+    griffin.wait_for_text("s.push(ch)", WAIT);
+
+    // `push_str`'s insert text, picked with Down. The cursor is on row 4, so the
+    // card's rows start on row 6.
+    griffin.send_keys("enter");
+    griffin.wait_for_text("Ln 4, Col 5", WAIT);
+    open_completion(&project, &mut griffin, 4);
+    griffin.type_text("p");
+    griffin.wait_for_text_gone("capacity", WAIT);
+    griffin.send_keys("down");
+    griffin.wait_for_fg_at(LABEL_COL + 1, 7, HOV, WAIT);
+    griffin.send_keys("enter");
+    griffin.wait_for_text("s.push_str", WAIT);
+
+    // `trim` has only its label.
+    griffin.send_keys("enter");
+    griffin.wait_for_text("Ln 5, Col 5", WAIT);
+    open_completion(&project, &mut griffin, 5);
+    griffin.type_text("tr");
+    griffin.wait_for_text_gone("capacity", WAIT);
+    griffin.wait_for_text("fn trim", WAIT);
+    griffin.send_keys("enter");
+    griffin.wait_for_text_gone("fn trim", WAIT);
+    griffin.wait_for_text("s.trim", WAIT);
+
+    griffin.send_keys("ctrl+s");
+    griffin.wait_for_text("saved", WAIT);
+    assert_eq!(
+        project.read("comp.rs"),
+        "fn main() {\n    s.len()\n    s.push(ch)\n    s.push_str\n    s.trim\n}\n"
+    );
+}
+
+#[test]
+fn esc_dismisses_the_popup_without_changing_the_buffer() {
+    let (project, mut griffin) = completion_project(&completion_script(""));
+    open_completion(&project, &mut griffin, 2);
+    let before = griffin.screen()[2].clone();
+    griffin.send_keys("esc");
+    griffin.wait_for_text_gone("capacity", WAIT);
+    let screen = griffin.screen();
+    assert_eq!(screen[2], before);
+    assert!(screen[2].ends_with("    s."), "{screen:#?}");
+    assert!(status_line(&griffin).contains("Ln 2, Col 7"));
+    // Enter is the editor's again.
+    griffin.send_keys("enter");
+    griffin.wait_for_text("Ln 3, Col 5", WAIT);
+    griffin.send_keys("ctrl+s");
+    griffin.wait_for_text("saved", WAIT);
+    assert_eq!(project.read("comp.rs"), "fn main() {\n    s.\n    \n}\n");
+}
+
+#[test]
+fn a_late_answer_after_the_cursor_left_the_word_is_dropped() {
+    // The answer comes 2 s late; a publish sent right after it marks when it
+    // has been handled.
+    let extra = format!(
+        r#", "delay": {{"textDocument/completion": 2000}},
+            "notify": {{"textDocument/completion": [{}]}}"#,
+        publish(&[(0, 0, 2, 2, "after the completion")])
+    );
+    let (project, mut griffin) = completion_project(&completion_script(&extra));
+    griffin.type_text("s");
+    griffin.wait_for_text("Ln 2, Col 6", WAIT);
+    griffin.type_text(".");
+    project.wait_for(&griffin, "textDocument/completion", "comp.rs");
+    griffin.send_keys("down");
+    griffin.wait_for_text("Ln 3, Col 2", WAIT);
+
+    griffin.wait_for_text("⚠ 1  ✕ 0", WAIT);
+    let screen = griffin.screen();
+    assert!(
+        !screen.iter().any(|r| r.contains("capacity")),
+        "{screen:#?}"
+    );
+    assert!(status_line(&griffin).contains("Ln 3, Col 2"));
+    // Back on the word, the dropped answer doesn't come back either.
+    griffin.send_keys("up");
+    griffin.wait_for_text("Ln 2, Col 7", WAIT);
+    let screen = griffin.screen();
+    assert!(
+        !screen.iter().any(|r| r.contains("capacity")),
+        "{screen:#?}"
+    );
+}

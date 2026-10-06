@@ -5,7 +5,8 @@
 use std::collections::HashMap;
 
 use lsp_types::{
-    ClientCapabilities, ClientInfo, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    ClientCapabilities, ClientInfo, CompletionClientCapabilities, CompletionItemCapability,
+    CompletionParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, GotoCapability, GotoDefinitionParams,
     HoverClientCapabilities, HoverParams, InitializeParams, MarkupKind, PartialResultParams,
     Position, TextDocumentClientCapabilities, TextDocumentContentChangeEvent,
@@ -45,6 +46,9 @@ pub struct Client {
     pending: HashMap<i64, String>,
     /// Griffin asked it to stop, so its exit is no news.
     shutting_down: bool,
+    /// The characters that open completion when typed, from the server's
+    /// `completionProvider`; empty until it's initialized, or when it has none.
+    pub triggers: Vec<String>,
 }
 
 /// An lsp-types value as JSON. These types serialize infallibly; `Null` stands in
@@ -77,6 +81,7 @@ impl Client {
             next_id: 1,
             pending: HashMap::new(),
             shutting_down: false,
+            triggers: Vec::new(),
         }
     }
 
@@ -105,6 +110,16 @@ impl Client {
                     hover: Some(HoverClientCapabilities {
                         dynamic_registration: None,
                         content_format: Some(vec![MarkupKind::PlainText, MarkupKind::Markdown]),
+                    }),
+                    // No snippets: tab stops aren't supported, so plain insert
+                    // text is what Griffin wants (snippets sent anyway are
+                    // flattened).
+                    completion: Some(CompletionClientCapabilities {
+                        completion_item: Some(CompletionItemCapability {
+                            snippet_support: Some(false),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
                     }),
                     ..Default::default()
                 }),
@@ -212,6 +227,17 @@ impl Client {
             }
         });
         self.state = State::Ready { sync };
+        self.triggers =
+            response["result"]["capabilities"]["completionProvider"]["triggerCharacters"]
+                .as_array()
+                .map(|list| {
+                    list.iter()
+                        .filter_map(Value::as_str)
+                        .filter(|t| !t.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
         self.notify("initialized", json!({}));
         None
     }
@@ -323,6 +349,21 @@ impl Client {
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
         self.request("textDocument/hover", to_json(params))
+    }
+
+    /// Asks for completions at `position` in `uri`. Returns the request's id,
+    /// which the reply will carry.
+    pub fn completion(&mut self, uri: &Uri, position: Position) -> i64 {
+        let params = CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position,
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        };
+        self.request("textDocument/completion", to_json(params))
     }
 
     pub fn did_close(&self, uri: &Uri) {
@@ -497,6 +538,32 @@ mod tests {
             sent[0]["params"]["position"],
             json!({"line": 1, "character": 4})
         );
+    }
+
+    #[test]
+    fn completion_sends_the_position_and_reads_the_trigger_characters() {
+        let (mut client, mut rx) = started();
+        let init = drain(&mut rx);
+        assert_eq!(
+            init[0]["params"]["capabilities"]["textDocument"]["completion"]["completionItem"]["snippetSupport"],
+            json!(false)
+        );
+        let reply = json!({"jsonrpc": "2.0", "id": init[0]["id"], "result": {"capabilities": {
+            "textDocumentSync": 2, "completionProvider": {"triggerCharacters": [".", ":", ""]}}}});
+        client.handle(reply);
+        assert_eq!(client.triggers, [".", ":"]);
+        drain(&mut rx);
+        let id = client.completion(&uri(), Position::new(2, 5));
+        let sent = drain(&mut rx);
+        assert_eq!(sent[0]["method"], "textDocument/completion");
+        assert_eq!(sent[0]["id"], id);
+        assert_eq!(
+            sent[0]["params"]["position"],
+            json!({"line": 2, "character": 5})
+        );
+        // A server without a completion provider has no triggers.
+        let (client, _) = ready(json!(2));
+        assert!(client.triggers.is_empty());
     }
 
     #[test]
