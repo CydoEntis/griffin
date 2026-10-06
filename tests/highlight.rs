@@ -23,12 +23,15 @@ const SAMPLE: &str = "tests/fixtures/highlight/sample.rs";
 const SAMPLE_TS: &str = "tests/fixtures/highlight/sample.ts";
 const SAMPLE_TSX: &str = "tests/fixtures/highlight/sample.tsx";
 const SAMPLE_JS: &str = "tests/fixtures/highlight/sample.js";
+const SAMPLE_HTML: &str = "tests/fixtures/highlight/sample.html";
+const SAMPLE_CSS: &str = "tests/fixtures/highlight/sample.css";
 
 /// hydra's syntax and text colours.
 const KEYWORD: Color = Color::Rgb(0xa5, 0x93, 0xff);
 const STRING: Color = Color::Rgb(0x7f, 0xd9, 0x62);
 const COMMENT: Color = Color::Rgb(0x71, 0x80, 0x8f);
 const TAG: Color = Color::Rgb(0xff, 0x7a, 0xb6);
+const PROPERTY: Color = Color::Rgb(0xe8, 0xc5, 0x65);
 const FG: Color = Color::Rgb(0xc9, 0xd1, 0xd9);
 
 /// The file at `path` highlighted as Griffin would: sorted byte ranges with the
@@ -163,6 +166,71 @@ fn javascript_roles() {
     assert_eq!(at(8, 19), Some(Role::Attribute));
     assert_eq!(at(8, 29), Some(Role::String));
     assert_eq!(at(9, 14), Some(Role::Number));
+}
+
+#[test]
+fn css_roles() {
+    let path = Path::new(SAMPLE_CSS);
+    let roles = highlight_roles(path);
+    let at = |line, col| role_at(path, &roles, line, col);
+    assert_eq!(at(1, 1), Some(Role::Comment));
+    // Selectors: `body` and `h1` are tags, the class in `.card` a property.
+    assert_eq!(at(2, 1), Some(Role::Tag));
+    assert_eq!(at(7, 2), Some(Role::Property));
+    assert_eq!(at(7, 9), Some(Role::Tag));
+    // `margin`, `font-family`, `padding`.
+    assert_eq!(at(3, 3), Some(Role::Property));
+    assert_eq!(at(4, 3), Some(Role::Property));
+    assert_eq!(at(4, 13), Some(Role::Property));
+    assert_eq!(at(8, 3), Some(Role::Property));
+    // `"Helvetica"`, first quote to last.
+    assert_eq!(at(4, 16), Some(Role::String));
+    assert_eq!(at(4, 26), Some(Role::String));
+    // `0`, `12` and `1.5`; `px` is a unit.
+    assert_eq!(at(3, 11), Some(Role::Number));
+    assert_eq!(at(8, 12), Some(Role::Number));
+    assert_eq!(at(8, 17), Some(Role::Number));
+    assert_eq!(at(8, 14), Some(Role::Type));
+}
+
+#[test]
+fn html_roles() {
+    let path = Path::new(SAMPLE_HTML);
+    let roles = highlight_roles(path);
+    let at = |line, col| role_at(path, &roles, line, col);
+    // `<html lang="en">`: tag, attribute, value.
+    assert_eq!(at(2, 2), Some(Role::Tag));
+    assert_eq!(at(2, 7), Some(Role::Attribute));
+    assert_eq!(at(2, 13), Some(Role::String));
+    // `<p class="note">` and its closing `</p>`.
+    assert_eq!(at(9, 4), Some(Role::Tag));
+    assert_eq!(at(9, 6), Some(Role::Attribute));
+    assert_eq!(at(9, 13), Some(Role::String));
+    assert_eq!(at(9, 26), Some(Role::Tag));
+    // The text between tags is uncoloured.
+    assert_eq!(at(9, 19), None);
+    // Inside `<style>`: `p { color: red; }` in the CSS grammar.
+    assert_eq!(at(5, 5), Some(Role::Tag));
+    assert_eq!(at(5, 9), Some(Role::Property));
+    // Inside `<script>`: `const greeting = "hi";` in the JavaScript grammar.
+    assert_eq!(at(11, 5), Some(Role::Keyword));
+    assert_eq!(at(11, 22), Some(Role::String));
+}
+
+#[test]
+fn html_injections_show_on_screen() {
+    let griffin = Griffin::spawn(&[SAMPLE_HTML]);
+    griffin.wait_for_text("const greeting", START);
+    let property = griffin.text_col(5, "color: red").expect("line 5 on row 5");
+    griffin.wait_for_fg_at(property, 5, PROPERTY, WAIT);
+    assert_eq!(griffin.fg_at(property + 4, 5), PROPERTY);
+    let keyword = griffin
+        .text_col(11, "const greeting")
+        .expect("line 11 on row 11");
+    griffin.wait_for_fg_at(keyword, 11, KEYWORD, WAIT);
+    assert_eq!(griffin.fg_at(keyword + 4, 11), KEYWORD);
+    // `greeting` is a plain name, not a keyword.
+    assert_ne!(griffin.fg_at(keyword + 6, 11), KEYWORD);
 }
 
 #[test]

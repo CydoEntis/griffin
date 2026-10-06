@@ -7,6 +7,11 @@
 //! here on the buffer's own tree: its `Highlighter` parses from scratch on every
 //! call and can't take an edited tree, which incremental reparsing needs.
 //!
+//! Embedded languages (CSS in `<style>`, JavaScript in `<script>`) are found
+//! with the host language's injections query after each parse. Each region is
+//! parsed on its own in its language's grammar, limited to the region's bytes,
+//! and its roles paint over the host's.
+//!
 //! Depends on nothing else in the crate (only `ropey` and the tree-sitter crates),
 //! so the highlight tests can compile it on its own.
 
@@ -69,7 +74,24 @@ pub struct Highlighter {
     tree: Option<Tree>,
     /// Edits have reached the tree since the last parse.
     stale: bool,
+    /// Parses embedded regions; shared by every injected language.
+    inner: Parser,
+    /// The embedded regions found by the last parse.
+    injections: Vec<Injection>,
 }
+
+/// One embedded region: its language and its own tree, whose nodes carry byte
+/// offsets into the whole buffer.
+#[derive(Clone)]
+struct Injection {
+    language: &'static Language,
+    tree: Tree,
+    injections: Vec<Injection>,
+}
+
+/// How deep embedded regions may nest. HTML's embedded languages embed nothing,
+/// so this only guards against a future registry entry that loops.
+const MAX_DEPTH: usize = 4;
 
 impl fmt::Debug for Highlighter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -87,6 +109,7 @@ impl Clone for Highlighter {
         let mut copy = Self::new(self.language);
         copy.tree = self.tree.clone();
         copy.stale = self.stale;
+        copy.injections = self.injections.clone();
         copy
     }
 }
@@ -110,6 +133,8 @@ impl Highlighter {
             parser,
             tree: None,
             stale: true,
+            inner: Parser::new(),
+            injections: Vec::new(),
         }
     }
 
@@ -127,17 +152,16 @@ impl Highlighter {
         if !self.stale {
             return;
         }
-        let mut read = |byte: usize, _: Point| -> &[u8] {
-            if byte >= rope.len_bytes() {
-                return &[];
-            }
-            let (chunk, start, _, _) = rope.chunk_at_byte(byte);
-            &chunk.as_bytes()[byte - start..]
-        };
         self.tree = self
             .parser
-            .parse_with_options(&mut read, self.tree.as_ref(), None);
+            .parse_with_options(&mut read_rope(rope), self.tree.as_ref(), None);
         self.stale = false;
+        // Embedded regions are small next to their file, so they're parsed afresh
+        // instead of being kept in step with each edit.
+        self.injections = match &self.tree {
+            Some(tree) => find_injections(&mut self.inner, self.language, tree, rope, 0),
+            None => Vec::new(),
+        };
     }
 
     /// The roles in `bytes` of `rope`, as sorted, non-overlapping byte ranges.
@@ -153,48 +177,29 @@ impl Highlighter {
             return Vec::new();
         }
 
-        let text = |node: Node| {
-            rope.get_byte_slice(node.byte_range())
-                .into_iter()
-                .flat_map(|slice| slice.chunks())
-                .map(str::as_bytes)
-        };
-        let mut cursor = QueryCursor::new();
-        cursor.set_byte_range(bytes.clone());
-        // (painted last, range, pattern, role)
-        let mut found: Vec<(bool, Range<usize>, usize, Role)> = Vec::new();
-        let mut captures = cursor.captures(compiled.query(), tree.root_node(), text);
-        while let Some((m, index)) = captures.next() {
-            if m.pattern_index < compiled.highlights_start {
-                continue;
-            }
-            let capture = m.captures()[*index];
-            let i = capture.index as usize;
-            let Some(Some(role)) = compiled.roles.get(i) else {
-                continue;
-            };
-            let mut range = capture.node.byte_range();
-            let unclosed = compiled.unclosed.get(i).copied().unwrap_or(false);
-            if unclosed {
-                range.end = line_end(rope, range.start);
-            }
-            found.push((unclosed, range, m.pattern_index, *role));
-        }
-        // Outer ranges before the ones nested in them, so inner ones paint last;
+        let mut found = Vec::new();
+        collect(compiled, tree, rope, &bytes, 0, &mut found);
+        collect_injections(&self.injections, rope, &bytes, 1, &mut found);
+        // Host roles first, then each embedded layer over them. Within a layer,
+        // outer ranges before the ones nested in them, so inner ones paint last;
         // an unclosed string paints over everything it runs into.
-        found.sort_by_key(|(unclosed, range, pattern, _)| {
+        found.sort_by_key(|p| {
             (
-                *unclosed,
-                range.start,
-                std::cmp::Reverse(range.end),
-                *pattern,
+                p.unclosed,
+                p.layer,
+                p.range.start,
+                std::cmp::Reverse(p.range.end),
+                p.pattern,
             )
         });
 
         let mut painted: Vec<Option<Role>> = vec![None; bytes.len()];
-        let mut last: Option<Range<usize>> = None;
-        for (_, range, _, role) in found {
-            if last.as_ref() == Some(&range) {
+        let mut last: Option<(usize, Range<usize>)> = None;
+        for Paint {
+            layer, range, role, ..
+        } in found
+        {
+            if last.as_ref() == Some(&(layer, range.clone())) {
                 continue;
             }
             let from = range.start.max(bytes.start) - bytes.start;
@@ -202,7 +207,7 @@ impl Highlighter {
             if from < to {
                 painted[from..to].fill(Some(role));
             }
-            last = Some(range);
+            last = Some((layer, range));
         }
 
         let mut spans: Vec<(Range<usize>, Role)> = Vec::new();
@@ -216,6 +221,208 @@ impl Highlighter {
         }
         spans
     }
+}
+
+/// A role found for a range, before overlaps are resolved.
+struct Paint {
+    unclosed: bool,
+    /// 0 for the file's own language, one more for each level of embedding.
+    layer: usize,
+    range: Range<usize>,
+    pattern: usize,
+    role: Role,
+}
+
+/// The bytes of `node` in `rope`, as the query cursor reads them.
+fn node_text<'r>(rope: &'r Rope) -> impl FnMut(Node) -> std::vec::IntoIter<&'r [u8]> + 'r {
+    move |node: Node| {
+        rope.get_byte_slice(node.byte_range())
+            .into_iter()
+            .flat_map(|slice| slice.chunks())
+            .map(str::as_bytes)
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
+/// The source the parser reads `rope` through.
+fn read_rope<'r>(rope: &'r Rope) -> impl FnMut(usize, Point) -> &'r [u8] + 'r {
+    move |byte: usize, _: Point| -> &'r [u8] {
+        if byte >= rope.len_bytes() {
+            return &[];
+        }
+        let (chunk, start, _, _) = rope.chunk_at_byte(byte);
+        &chunk.as_bytes()[byte - start..]
+    }
+}
+
+/// The roles a highlights query gives nodes of `tree` in `bytes`.
+fn collect(
+    compiled: &languages::Compiled,
+    tree: &Tree,
+    rope: &Rope,
+    bytes: &Range<usize>,
+    layer: usize,
+    found: &mut Vec<Paint>,
+) {
+    let mut cursor = QueryCursor::new();
+    cursor.set_byte_range(bytes.clone());
+    let mut captures = cursor.captures(compiled.query(), tree.root_node(), node_text(rope));
+    while let Some((m, index)) = captures.next() {
+        if m.pattern_index < compiled.highlights_start {
+            continue;
+        }
+        let capture = m.captures()[*index];
+        let i = capture.index as usize;
+        let Some(Some(role)) = compiled.roles.get(i) else {
+            continue;
+        };
+        let mut range = capture.node.byte_range();
+        let unclosed = compiled.unclosed.get(i).copied().unwrap_or(false);
+        if unclosed {
+            range.end = line_end(rope, range.start);
+        }
+        found.push(Paint {
+            unclosed,
+            layer,
+            range,
+            pattern: m.pattern_index,
+            role: *role,
+        });
+    }
+}
+
+/// The roles of every embedded region that reaches into `bytes`, and of the
+/// regions embedded in those.
+fn collect_injections(
+    injections: &[Injection],
+    rope: &Rope,
+    bytes: &Range<usize>,
+    layer: usize,
+    found: &mut Vec<Paint>,
+) {
+    for injection in injections {
+        let root = injection.tree.root_node().byte_range();
+        if root.end <= bytes.start || root.start >= bytes.end {
+            continue;
+        }
+        let Some(compiled) = injection.language.compiled() else {
+            continue;
+        };
+        collect(compiled, &injection.tree, rope, bytes, layer, found);
+        collect_injections(&injection.injections, rope, bytes, layer + 1, found);
+    }
+}
+
+/// The regions of `tree` that `language`'s injections query marks as a language
+/// `language` embeds, each parsed in that language's grammar.
+fn find_injections(
+    parser: &mut Parser,
+    language: &Language,
+    tree: &Tree,
+    rope: &Rope,
+    depth: usize,
+) -> Vec<Injection> {
+    if language.embeds.is_empty() || depth >= MAX_DEPTH {
+        return Vec::new();
+    }
+    let Some(compiled) = language.compiled() else {
+        return Vec::new();
+    };
+    let query = compiled.query();
+    let content = query.capture_index_for_name("injection.content");
+    let named = query.capture_index_for_name("injection.language");
+
+    let mut regions: Vec<(&'static Language, Vec<tree_sitter::Range>)> = Vec::new();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(query, tree.root_node(), node_text(rope));
+    while let Some(m) = matches.next() {
+        if m.pattern_index >= compiled.highlights_start {
+            continue;
+        }
+        let settings = query.property_settings(m.pattern_index);
+        let setting = |key: &str| settings.iter().find(|p| &*p.key == key);
+        // `#set! injection.language "css"`, or the text of an
+        // `@injection.language` capture.
+        let name = match setting("injection.language").and_then(|p| p.value.as_deref()) {
+            Some(name) => name.to_string(),
+            None => match m.captures().iter().find(|c| Some(c.index) == named) {
+                Some(c) => rope
+                    .get_byte_slice(c.node.byte_range())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
+                None => continue,
+            },
+        };
+        if !language
+            .embeds
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(&name))
+        {
+            continue;
+        }
+        let Some(embedded) = languages::for_name(&name) else {
+            continue;
+        };
+        let include_children = setting("injection.include-children").is_some();
+        for capture in m.captures().iter().filter(|c| Some(c.index) == content) {
+            let ranges = region_ranges(capture.node, include_children);
+            if !ranges.is_empty() {
+                regions.push((embedded, ranges));
+            }
+        }
+    }
+
+    let mut injections = Vec::new();
+    for (embedded, ranges) in regions {
+        if parser.set_language(&(embedded.grammar)()).is_err()
+            || parser.set_included_ranges(&ranges).is_err()
+        {
+            continue;
+        }
+        let Some(inner) = parser.parse_with_options(&mut read_rope(rope), None, None) else {
+            continue;
+        };
+        let nested = find_injections(parser, embedded, &inner, rope, depth + 1);
+        injections.push(Injection {
+            language: embedded,
+            tree: inner,
+            injections: nested,
+        });
+    }
+    injections
+}
+
+/// The text of an injected `node`: all of it, or, as tree-sitter's highlighter
+/// does by default, only the gaps between its children.
+fn region_ranges(node: Node, include_children: bool) -> Vec<tree_sitter::Range> {
+    let whole = node.range();
+    if include_children || node.child_count() == 0 {
+        return vec![whole];
+    }
+    let mut ranges = Vec::new();
+    let mut from = (whole.start_byte, whole.start_point);
+    let mut walk = node.walk();
+    for child in node.children(&mut walk) {
+        if child.start_byte() > from.0 {
+            ranges.push(tree_sitter::Range {
+                start_byte: from.0,
+                start_point: from.1,
+                end_byte: child.start_byte(),
+                end_point: child.start_position(),
+            });
+        }
+        from = (child.end_byte(), child.end_position());
+    }
+    if whole.end_byte > from.0 {
+        ranges.push(tree_sitter::Range {
+            start_byte: from.0,
+            start_point: from.1,
+            end_byte: whole.end_byte,
+            end_point: whole.end_point,
+        });
+    }
+    ranges
 }
 
 /// The byte where the line holding `byte` ends, before its line break.

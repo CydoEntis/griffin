@@ -47,6 +47,7 @@ pub static JAVASCRIPT: Language = Language {
         tree_sitter_javascript::HIGHLIGHT_QUERY,
     ],
     injections: tree_sitter_javascript::INJECTIONS_QUERY,
+    embeds: &[],
     roles: ROLES,
     compiled: OnceLock::new(),
 };

@@ -6,13 +6,16 @@
 //! `tree-sitter-rust = "0.24"` (0.24.2 ships grammar ABI 15, which 0.27 loads).
 //! Query iteration needs `streaming-iterator = "0.1"`. Added with TypeScript and
 //! JavaScript (#23): `tree-sitter-typescript = "0.23"` and
-//! `tree-sitter-javascript = "0.25"`. Grammars are compiled in
-//! (ADR-0001); none load at runtime.
+//! `tree-sitter-javascript = "0.25"`. Added with HTML and CSS (#24):
+//! `tree-sitter-html = "0.23"` and `tree-sitter-css = "0.25"`. Grammars are
+//! compiled in (ADR-0001); none load at runtime.
 //!
 //! Each language's queries are built into a `tree_sitter_highlight`
 //! `HighlightConfiguration`, which lays out the injections, locals and highlights
 //! queries as one query the way tree-sitter's highlighter expects.
 
+mod css;
+mod html;
 mod javascript;
 mod rust;
 mod typescript;
@@ -35,10 +38,12 @@ pub struct Language {
     /// wins, so a language puts its own patterns before the grammar's to take
     /// precedence.
     pub highlights: &'static [&'static str],
-    /// Built into the language's configuration so embedded-language support can
-    /// use it; the Rust grammar's only injections are macro bodies, which stay
-    /// uncoloured for now.
+    /// Where other languages are embedded in this one (CSS in an HTML `<style>`).
     pub injections: &'static str,
+    /// The embedded languages, by registry name, that are coloured. An injection
+    /// naming anything else stays uncoloured: Rust macro bodies and JavaScript's
+    /// tagged templates are left alone on purpose.
+    pub embeds: &'static [&'static str],
     /// Capture names this language maps to a role differently from the default
     /// (the capture's first dotted segment read as a role name).
     pub roles: &'static [(&'static str, Role)],
@@ -72,6 +77,8 @@ static LANGUAGES: &[&Language] = &[
     &typescript::TYPESCRIPT,
     &typescript::TSX,
     &javascript::JAVASCRIPT,
+    &html::HTML,
+    &css::CSS,
 ];
 
 /// The language for `path`'s extension, if Griffin highlights it.
@@ -81,6 +88,14 @@ pub fn for_path(path: &Path) -> Option<&'static Language> {
         .iter()
         .copied()
         .find(|lang| lang.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)))
+}
+
+/// The registered language called `name`, as an injections query names it.
+pub fn for_name(name: &str) -> Option<&'static Language> {
+    LANGUAGES
+        .iter()
+        .copied()
+        .find(|lang| lang.name.eq_ignore_ascii_case(name))
 }
 
 impl Language {
@@ -164,6 +179,32 @@ mod tests {
         }
         assert_eq!(name("package.json"), None);
         assert_eq!(name("App.vue"), None);
+    }
+
+    #[test]
+    fn html_css_extensions_resolve() {
+        let name = |file: &str| for_path(Path::new(file)).map(|lang| lang.name);
+        for file in ["index.html", "a.htm", "A.HTML"] {
+            assert_eq!(name(file), Some("html"), "{file}");
+        }
+        for file in ["site.css", "A.CSS"] {
+            assert_eq!(name(file), Some("css"), "{file}");
+        }
+        assert_eq!(name("a.scss"), None);
+        assert_eq!(name("a.less"), None);
+        // HTML's injections name these.
+        assert_eq!(for_name("css").map(|l| l.name), Some("css"));
+        assert_eq!(for_name("javascript").map(|l| l.name), Some("javascript"));
+        assert!(for_name("comment").is_none());
+    }
+
+    #[test]
+    fn embedded_languages_are_registered() {
+        for lang in LANGUAGES {
+            for name in lang.embeds {
+                assert!(for_name(name).is_some(), "{} embeds {name}", lang.name);
+            }
+        }
     }
 
     #[test]
