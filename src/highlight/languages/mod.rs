@@ -7,16 +7,19 @@
 //! Query iteration needs `streaming-iterator = "0.1"`. Added with TypeScript and
 //! JavaScript (#23): `tree-sitter-typescript = "0.23"` and
 //! `tree-sitter-javascript = "0.25"`. Added with HTML and CSS (#24):
-//! `tree-sitter-html = "0.23"` and `tree-sitter-css = "0.25"`. Grammars are
-//! compiled in (ADR-0001); none load at runtime.
+//! `tree-sitter-html = "0.23"` and `tree-sitter-css = "0.25"`. Added with Go and
+//! Python (#25): `tree-sitter-go = "0.25"` and `tree-sitter-python = "0.25"`.
+//! Grammars are compiled in (ADR-0001); none load at runtime.
 //!
 //! Each language's queries are built into a `tree_sitter_highlight`
 //! `HighlightConfiguration`, which lays out the injections, locals and highlights
 //! queries as one query the way tree-sitter's highlighter expects.
 
 mod css;
+mod go;
 mod html;
 mod javascript;
+mod python;
 mod rust;
 mod typescript;
 
@@ -79,6 +82,8 @@ static LANGUAGES: &[&Language] = &[
     &javascript::JAVASCRIPT,
     &html::HTML,
     &css::CSS,
+    &go::GO,
+    &python::PYTHON,
 ];
 
 /// The language for `path`'s extension, if Griffin highlights it.
@@ -196,6 +201,21 @@ mod tests {
         assert_eq!(for_name("css").map(|l| l.name), Some("css"));
         assert_eq!(for_name("javascript").map(|l| l.name), Some("javascript"));
         assert!(for_name("comment").is_none());
+    }
+
+    #[test]
+    fn go_python_extensions_resolve() {
+        let name = |file: &str| for_path(Path::new(file)).map(|lang| lang.name);
+        for file in ["main.go", "A.GO"] {
+            assert_eq!(name(file), Some("go"), "{file}");
+        }
+        for file in ["app.py", "stubs.pyi", "A.PY"] {
+            assert_eq!(name(file), Some("python"), "{file}");
+        }
+        assert_eq!(name("go.mod"), None);
+        assert_eq!(name("go.sum"), None);
+        assert_eq!(name("requirements.txt"), None);
+        assert_eq!(name("a.pyc"), None);
     }
 
     #[test]
