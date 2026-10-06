@@ -47,6 +47,8 @@ fn find(griffin: &mut Griffin, text: &str) {
     griffin.send_keys("ctrl+f");
     griffin.wait_for_text("Find:", WAIT);
     griffin.type_text(text);
+    // A prefix of the text may already show the same count, so wait for all of it.
+    griffin.wait_for_text(&format!("Find: {text}"), WAIT);
 }
 
 #[test]
