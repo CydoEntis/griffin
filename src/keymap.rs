@@ -56,6 +56,10 @@ pub enum Action {
     ToggleSplit,
     /// Moves focus to the next of tree, left split and right split.
     CycleFocus,
+    /// Opens the fuzzy picker over the project's files.
+    GoToFile,
+    /// Prompts for a line number and moves the cursor there.
+    GoToLine,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -127,6 +131,8 @@ impl Action {
         Action::SaveAs,
         Action::ToggleSplit,
         Action::CycleFocus,
+        Action::GoToFile,
+        Action::GoToLine,
     ];
 
     pub fn scope(self) -> Scope {
@@ -208,6 +214,8 @@ impl Action {
             Action::SaveAs => "save_as",
             Action::ToggleSplit => "toggle_split",
             Action::CycleFocus => "cycle_focus",
+            Action::GoToFile => "go_to_file",
+            Action::GoToLine => "go_to_line",
         }
     }
 
@@ -217,8 +225,8 @@ impl Action {
 }
 
 /// The spec's "Default keymap" table plus R4's movement, R6's editing, R10's
-/// selection, R14's tree keys, R16's tab keys and R17's split keys, one line per
-/// binding.
+/// selection, R14's tree keys, R16's tab keys, R17's split keys and R18's picker
+/// keys, one line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -279,6 +287,8 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::SaveAs, "alt+s"),
     (Action::ToggleSplit, "alt+v"),
     (Action::CycleFocus, "f6"),
+    (Action::GoToFile, "ctrl+p"),
+    (Action::GoToLine, "ctrl+g"),
 ];
 
 /// What a key event means to the editor.
@@ -1024,6 +1034,25 @@ mod tests {
             Input::Action(Action::CycleFocus)
         );
         assert_eq!(Action::from_name("toggle_split"), Some(Action::ToggleSplit));
+    }
+
+    #[test]
+    fn picker_keys_resolve_to_their_actions_by_default() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('p'), KeyModifiers::CONTROL)),
+            Input::Action(Action::GoToFile)
+        );
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Char('g'), KeyModifiers::CONTROL), Scope::Tree),
+            Input::Action(Action::GoToLine)
+        );
+        let map = Keymap::new(&keys(&[("go_to_file", one("alt+p"))])).unwrap();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('p'), KeyModifiers::ALT)),
+            Input::Action(Action::GoToFile)
+        );
+        assert_eq!(Action::from_name("go_to_line"), Some(Action::GoToLine));
     }
 
     #[test]
