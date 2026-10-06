@@ -4,14 +4,18 @@
 //! Versions known to load together (checked when Rust was added, #22):
 //! `tree-sitter = "0.27"`, `tree-sitter-highlight = "0.27"` and
 //! `tree-sitter-rust = "0.24"` (0.24.2 ships grammar ABI 15, which 0.27 loads).
-//! Query iteration needs `streaming-iterator = "0.1"`. Grammars are compiled in
+//! Query iteration needs `streaming-iterator = "0.1"`. Added with TypeScript and
+//! JavaScript (#23): `tree-sitter-typescript = "0.23"` and
+//! `tree-sitter-javascript = "0.25"`. Grammars are compiled in
 //! (ADR-0001); none load at runtime.
 //!
 //! Each language's queries are built into a `tree_sitter_highlight`
 //! `HighlightConfiguration`, which lays out the injections, locals and highlights
 //! queries as one query the way tree-sitter's highlighter expects.
 
+mod javascript;
 mod rust;
+mod typescript;
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -63,7 +67,12 @@ impl Compiled {
 }
 
 /// Every highlighted language.
-static LANGUAGES: &[&Language] = &[&rust::RUST];
+static LANGUAGES: &[&Language] = &[
+    &rust::RUST,
+    &typescript::TYPESCRIPT,
+    &typescript::TSX,
+    &javascript::JAVASCRIPT,
+];
 
 /// The language for `path`'s extension, if Griffin highlights it.
 pub fn for_path(path: &Path) -> Option<&'static Language> {
@@ -141,6 +150,20 @@ mod tests {
         assert!(for_path(Path::new("LIB.RS")).is_some());
         assert!(for_path(Path::new("notes.txt")).is_none());
         assert!(for_path(Path::new("Makefile")).is_none());
+    }
+
+    #[test]
+    fn ts_js_extensions_resolve() {
+        let name = |file: &str| for_path(Path::new(file)).map(|lang| lang.name);
+        for file in ["a.ts", "a.mts", "a.cts", "A.TS"] {
+            assert_eq!(name(file), Some("typescript"), "{file}");
+        }
+        assert_eq!(name("App.tsx"), Some("tsx"));
+        for file in ["a.js", "a.mjs", "a.cjs", "App.jsx"] {
+            assert_eq!(name(file), Some("javascript"), "{file}");
+        }
+        assert_eq!(name("package.json"), None);
+        assert_eq!(name("App.vue"), None);
     }
 
     #[test]
