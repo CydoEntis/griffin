@@ -88,7 +88,8 @@ fn status_shows_position() {
 #[test]
 fn scrolls_to_cursor() {
     let mut griffin = Griffin::spawn(&[LONG]);
-    griffin.wait_for_text("line 1", START);
+    // The first frame can arrive in pieces; wait for its last text row, not its first.
+    griffin.wait_for_text("line 29", START);
     // 200 lines: a 3-digit gutter, so text starts at column 7.
     let x = col_of(&griffin, 0, "line 1");
     assert!(screen_row(&griffin, LAST_TEXT_ROW).ends_with(" line 29"));
