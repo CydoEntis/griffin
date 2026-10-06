@@ -34,6 +34,22 @@ pub enum Action {
     ToggleTree,
     /// Moves focus between the file tree and the editor.
     FocusTree,
+    /// Tree focus only: prompts for a file name and creates it.
+    TreeNewFile,
+    /// Tree focus only: prompts for a folder name and creates it.
+    TreeNewFolder,
+    /// Tree focus only: prompts for a new name for the selected entry.
+    TreeRename,
+    /// Tree focus only: asks, then moves the selected entry to the OS trash.
+    TreeDelete,
+}
+
+/// Where a binding applies. Tree bindings are plain letters, so they only count
+/// while the tree has focus; everywhere else those letters are typed text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Global,
+    Tree,
 }
 
 impl Action {
@@ -77,7 +93,21 @@ impl Action {
         Action::Paste,
         Action::ToggleTree,
         Action::FocusTree,
+        Action::TreeNewFile,
+        Action::TreeNewFolder,
+        Action::TreeRename,
+        Action::TreeDelete,
     ];
+
+    pub fn scope(self) -> Scope {
+        match self {
+            Action::TreeNewFile
+            | Action::TreeNewFolder
+            | Action::TreeRename
+            | Action::TreeDelete => Scope::Tree,
+            _ => Scope::Global,
+        }
+    }
 
     /// The name used on the left of `[keys]`.
     pub fn name(self) -> &'static str {
@@ -125,6 +155,10 @@ impl Action {
             Action::Paste => "paste",
             Action::ToggleTree => "toggle_tree",
             Action::FocusTree => "focus_tree",
+            Action::TreeNewFile => "tree_new_file",
+            Action::TreeNewFolder => "tree_new_folder",
+            Action::TreeRename => "tree_rename",
+            Action::TreeDelete => "tree_delete",
         }
     }
 
@@ -133,8 +167,8 @@ impl Action {
     }
 }
 
-/// The spec's "Default keymap" table plus R4's movement, R6's editing and R10's
-/// selection keys, one line per binding.
+/// The spec's "Default keymap" table plus R4's movement, R6's editing, R10's
+/// selection and R14's tree keys, one line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -175,6 +209,10 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Paste, "ctrl+v"),
     (Action::ToggleTree, "ctrl+b"),
     (Action::FocusTree, "ctrl+e"),
+    (Action::TreeNewFile, "a"),
+    (Action::TreeNewFolder, "shift+a"),
+    (Action::TreeRename, "r"),
+    (Action::TreeDelete, "d"),
 ];
 
 /// What a key event means to the editor.
@@ -208,6 +246,8 @@ struct Key {
 #[derive(Debug, Clone)]
 pub struct Keymap {
     bindings: HashMap<Key, Action>,
+    /// Checked before `bindings` while the tree has focus.
+    tree: HashMap<Key, Action>,
 }
 
 impl Default for Keymap {
@@ -234,29 +274,52 @@ impl Keymap {
             overrides.insert(action, parsed);
         }
 
-        let mut bindings = HashMap::new();
+        let mut map = Keymap {
+            bindings: HashMap::new(),
+            tree: HashMap::new(),
+        };
         for &(action, notation) in DEFAULT_BINDINGS {
             if overrides.contains_key(&action) {
                 continue;
             }
             let key = parse_key(notation)
                 .map_err(|e| KeymapError(format!("default binding for {}: {e}", action.name())))?;
-            bindings.insert(key, action);
+            map.table(action.scope()).insert(key, action);
         }
         // Inserted last so a user's key wins over another action's default.
         for (action, keys) in overrides {
             for key in keys {
-                bindings.insert(key, action);
+                map.table(action.scope()).insert(key, action);
             }
         }
-        Ok(Keymap { bindings })
+        Ok(map)
     }
 
+    fn table(&mut self, scope: Scope) -> &mut HashMap<Key, Action> {
+        match scope {
+            Scope::Global => &mut self.bindings,
+            Scope::Tree => &mut self.tree,
+        }
+    }
+
+    /// What `event` means outside the tree.
+    #[cfg(test)]
     pub fn resolve(&self, event: &KeyEvent) -> Input {
+        self.resolve_in(event, Scope::Global)
+    }
+
+    /// What `event` means in `scope`: tree bindings win while the tree has focus.
+    pub fn resolve_in(&self, event: &KeyEvent, scope: Scope) -> Input {
         if event.kind == KeyEventKind::Release {
             return Input::Ignored;
         }
-        if let Some(&action) = self.bindings.get(&normalize(event.code, event.modifiers)) {
+        let key = normalize(event.code, event.modifiers);
+        if scope == Scope::Tree
+            && let Some(&action) = self.tree.get(&key)
+        {
+            return Input::Action(action);
+        }
+        if let Some(&action) = self.bindings.get(&key) {
             return Input::Action(action);
         }
         match event.code {
@@ -491,7 +554,7 @@ mod tests {
     #[test]
     fn defaults_build() {
         let map = Keymap::default();
-        assert_eq!(map.bindings.len(), DEFAULT_BINDINGS.len());
+        assert_eq!(map.bindings.len() + map.tree.len(), DEFAULT_BINDINGS.len());
     }
 
     #[test]
@@ -803,6 +866,49 @@ mod tests {
         assert_eq!(
             map.resolve(&ev(KeyCode::Char('b'), KeyModifiers::ALT)),
             Input::Action(Action::ToggleTree)
+        );
+    }
+
+    #[test]
+    fn tree_letters_are_actions_only_in_tree_scope() {
+        let map = Keymap::default();
+        let none = KeyModifiers::NONE;
+        for (event, action) in [
+            (ev(KeyCode::Char('a'), none), Action::TreeNewFile),
+            (
+                ev(KeyCode::Char('A'), KeyModifiers::SHIFT),
+                Action::TreeNewFolder,
+            ),
+            (ev(KeyCode::Char('A'), none), Action::TreeNewFolder),
+            (ev(KeyCode::Char('r'), none), Action::TreeRename),
+            (ev(KeyCode::Char('d'), none), Action::TreeDelete),
+        ] {
+            assert_eq!(map.resolve_in(&event, Scope::Tree), Input::Action(action));
+            assert!(matches!(map.resolve(&event), Input::Text(_)), "{event:?}");
+        }
+        // Global bindings still work in the tree.
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Char('q'), KeyModifiers::CONTROL), Scope::Tree),
+            Input::Action(Action::Quit)
+        );
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Char('x'), none), Scope::Tree),
+            Input::Text('x')
+        );
+
+        let map = Keymap::new(&keys(&[("tree_delete", one("delete"))])).unwrap();
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Delete, none), Scope::Tree),
+            Input::Action(Action::TreeDelete)
+        );
+        // Outside the tree Delete keeps deleting text.
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Delete, none)),
+            Input::Action(Action::Delete)
+        );
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Char('d'), none), Scope::Tree),
+            Input::Text('d')
         );
     }
 

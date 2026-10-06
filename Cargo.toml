@@ -21,6 +21,7 @@ ropey = "1"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 toml = "1"
+trash = "5"
 unicode-width = "0.2"
 
 [dev-dependencies]

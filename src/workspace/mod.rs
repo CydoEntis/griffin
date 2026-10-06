@@ -1,5 +1,6 @@
 //! The project: its root folder, walking it, and the tree model the sidebar shows.
 
+pub mod ops;
 pub mod tree;
 pub mod walk;
 
