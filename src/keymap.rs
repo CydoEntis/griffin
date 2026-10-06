@@ -82,6 +82,10 @@ pub enum Action {
     Run,
     /// Shows or hides the run panel.
     ToggleRunPanel,
+    /// Stops the running command and everything it started.
+    StopRun,
+    /// Stops the command, if it's running, and starts it again.
+    RestartRun,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -169,6 +173,8 @@ impl Action {
         Action::ProjectReplace,
         Action::Run,
         Action::ToggleRunPanel,
+        Action::StopRun,
+        Action::RestartRun,
     ];
 
     pub fn scope(self) -> Scope {
@@ -269,6 +275,8 @@ impl Action {
             Action::ProjectReplace => "project_replace",
             Action::Run => "run",
             Action::ToggleRunPanel => "toggle_run_panel",
+            Action::StopRun => "stop_run",
+            Action::RestartRun => "restart_run",
         }
     }
 
@@ -280,7 +288,7 @@ impl Action {
 /// The spec's "Default keymap" table plus R4's movement, R6's editing, R10's
 /// selection, R14's tree keys, R16's tab keys, R17's split keys, R18's picker
 /// keys, R20's find bar keys, R21's Replace All, R22's project search, R23's
-/// project replace and R26's run keys, one line per binding.
+/// project replace, R26's run keys and R27's stop and restart, one line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -354,6 +362,8 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::ProjectReplace, "alt+enter"),
     (Action::Run, "f5"),
     (Action::ToggleRunPanel, "f4"),
+    (Action::StopRun, "shift+f5"),
+    (Action::RestartRun, "ctrl+f5"),
 ];
 
 /// What a key event means to the editor.
@@ -719,6 +729,19 @@ mod tests {
     }
 
     #[test]
+    fn shift_f5_stops_and_ctrl_f5_restarts_by_default() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(5), KeyModifiers::SHIFT)),
+            Input::Action(Action::StopRun)
+        );
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(5), KeyModifiers::CONTROL)),
+            Input::Action(Action::RestartRun)
+        );
+    }
+
+    #[test]
     fn defaults_build() {
         let map = Keymap::default();
         assert_eq!(
@@ -835,11 +858,11 @@ mod tests {
 
     #[test]
     fn a_list_binds_every_key() {
-        let binding = KeyBinding::Many(vec!["alt+q".into(), "shift+f5".into()]);
+        let binding = KeyBinding::Many(vec!["alt+q".into(), "shift+f9".into()]);
         let map = Keymap::new(&keys(&[("quit", binding)])).unwrap();
         for event in [
             ev(KeyCode::Char('q'), KeyModifiers::ALT),
-            ev(KeyCode::F(5), KeyModifiers::SHIFT),
+            ev(KeyCode::F(9), KeyModifiers::SHIFT),
         ] {
             assert_eq!(map.resolve(&event), Input::Action(Action::Quit));
         }

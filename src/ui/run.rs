@@ -20,6 +20,8 @@ const TAB: &str = "    ";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatus {
     Running,
+    /// Shift+F5 killed it.
+    Stopped,
     /// `None` when the process ended without a code, e.g. killed by a signal.
     Exited(Option<i32>),
 }
@@ -44,6 +46,14 @@ impl RunView {
         }
     }
 
+    /// Starts the output with a marker saying the command was restarted.
+    pub fn mark_restarted(&mut self) {
+        self.lines.push_back(Line::from(Span::styled(
+            "── restarted ──",
+            Style::new().dim(),
+        )));
+    }
+
     /// Adds one line of output, keeping at most `MAX_LINES`.
     pub fn push(&mut self, raw: &str) {
         if self.lines.len() == MAX_LINES {
@@ -56,6 +66,7 @@ impl RunView {
     pub fn title(&self) -> String {
         match self.status {
             RunStatus::Running => format!("{} · running", self.name),
+            RunStatus::Stopped => format!("{} · stopped", self.name),
             RunStatus::Exited(Some(code)) => format!("{} · exited {code}", self.name),
             RunStatus::Exited(None) => format!("{} · exited", self.name),
         }
@@ -169,6 +180,8 @@ mod tests {
         assert_eq!(run.title(), "dev · exited 2");
         run.status = RunStatus::Exited(None);
         assert_eq!(run.title(), "dev · exited");
+        run.status = RunStatus::Stopped;
+        assert_eq!(run.title(), "dev · stopped");
     }
 
     #[test]

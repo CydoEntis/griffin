@@ -12,6 +12,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::app::AppEvent;
 use crate::config::RunEntry;
 
+mod tree;
+
+pub use tree::ProcessTree;
+
 /// Where `entry` runs: its `cwd` under the project root, or the root itself.
 pub fn resolve_cwd(root: &Path, cwd: Option<&str>) -> PathBuf {
     match cwd {
@@ -41,25 +45,22 @@ pub fn shell_command(command: &str) -> Command {
 
 /// Starts `entry` from `root` and streams its stdout and stderr, line by line, as
 /// `RunOutput { run, .. }`, then sends `RunExited { run, .. }` once both streams
-/// have closed and the process has exited.
+/// have closed and the process has exited. The returned tree stops the command
+/// and everything it started.
 pub fn spawn(
     run: u64,
     entry: &RunEntry,
     root: &Path,
     events: UnboundedSender<AppEvent>,
-) -> io::Result<()> {
+) -> io::Result<ProcessTree> {
     let mut cmd = shell_command(&entry.command);
     cmd.current_dir(resolve_cwd(root, entry.cwd.as_deref()))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        // CREATE_NO_WINDOW: a console of the child's own, hidden, so nothing it
-        // runs can write to Griffin's console behind the screen.
-        cmd.creation_flags(0x0800_0000);
-    }
+    tree::prepare(&mut cmd);
     let mut child = cmd.spawn()?;
+    let tree = ProcessTree::adopt(&mut child)?;
     let readers = [
         child
             .stdout
@@ -80,7 +81,7 @@ pub fn spawn(
         };
         let _ = events.send(AppEvent::RunExited { run, code });
     });
-    Ok(())
+    Ok(tree)
 }
 
 /// Sends each line of `stream` as it arrives. Bytes go through lossily, since a
@@ -134,7 +135,7 @@ mod tests {
             cwd: Some("sub".into()),
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
-        spawn(7, &entry, dir.path(), tx).unwrap();
+        let _tree = spawn(7, &entry, dir.path(), tx).unwrap();
         let mut lines = Vec::new();
         loop {
             match rx.recv().await.expect("the run reports its exit") {

@@ -653,6 +653,10 @@ pub struct App {
     picker_for: PickerFor,
     /// The latest run, whose output the run panel shows.
     run: Option<RunView>,
+    /// The latest run's entry, for Ctrl+F5 to start again.
+    run_entry: Option<RunEntry>,
+    /// The latest run's processes; dropping it kills them.
+    run_tree: Option<crate::run::ProcessTree>,
     /// How many runs have started, numbering them so output from an earlier one
     /// is dropped.
     runs: u64,
@@ -889,9 +893,11 @@ impl App {
                     view.push(&line);
                 }
             }
+            // A stopped run keeps saying so rather than show the kill's exit code.
             AppEvent::RunExited { run, code } => {
                 if let Some(view) = &mut self.run
                     && view.id == run
+                    && view.status == RunStatus::Running
                 {
                     view.status = RunStatus::Exited(code);
                 }
@@ -989,7 +995,9 @@ impl App {
             | Action::Replace
             | Action::ProjectSearch
             | Action::Run
-            | Action::ToggleRunPanel => {
+            | Action::ToggleRunPanel
+            | Action::StopRun
+            | Action::RestartRun => {
                 self.handle_action(action);
             }
             _ => {}
@@ -1266,6 +1274,8 @@ impl App {
             Action::ProjectSearch => self.project_search = Some(ProjectSearch::new()),
             Action::Run => self.start_run(),
             Action::ToggleRunPanel => self.toggle_run_panel(),
+            Action::StopRun => self.stop_run(),
+            Action::RestartRun => self.restart_run(),
             // Bound only in tree or find bar scope, so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
@@ -1809,19 +1819,59 @@ impl App {
     /// Starts `entry` and shows the panel for its output. Outside the event loop
     /// (unit tests) there's no channel for output to come back on, so nothing runs.
     fn run_entry(&mut self, entry: RunEntry) {
+        self.start_entry(entry, false);
+    }
+
+    /// Starts `entry` in a fresh panel, marked `restarted` when it replaces a run
+    /// of itself.
+    fn start_entry(&mut self, entry: RunEntry, restarted: bool) {
         let Some(events) = self.events.clone() else {
             return;
         };
+        // The previous run's leftovers die with its tree.
+        self.run_tree = None;
         self.runs += 1;
         match crate::run::spawn(self.runs, &entry, self.tree.root(), events) {
-            Ok(()) => {
-                self.run = Some(RunView::new(self.runs, entry.name));
+            Ok(tree) => {
+                self.run_tree = Some(tree);
+                let mut view = RunView::new(self.runs, entry.name.clone());
+                if restarted {
+                    view.mark_restarted();
+                }
+                self.run = Some(view);
+                self.run_entry = Some(entry);
                 if !self.run_panel_visible {
                     self.toggle_run_panel();
                 }
             }
             Err(err) => self.message = Some(format!("cannot run {}: {err}", entry.name)),
         }
+    }
+
+    /// Shift+F5: kills the running command and everything it started.
+    fn stop_run(&mut self) {
+        match &mut self.run {
+            Some(view) if view.status == RunStatus::Running => {
+                view.status = RunStatus::Stopped;
+                if let Some(tree) = &self.run_tree {
+                    tree.kill();
+                }
+            }
+            _ => self.message = Some("nothing is running".to_string()),
+        }
+    }
+
+    /// Ctrl+F5: stops the latest run if it's still going and starts it again;
+    /// with nothing run yet it's F5.
+    fn restart_run(&mut self) {
+        let Some(entry) = self.run_entry.clone() else {
+            self.start_run();
+            return;
+        };
+        if let Some(tree) = self.run_tree.take() {
+            tree.kill();
+        }
+        self.start_entry(entry, true);
     }
 
     /// F4: shows or hides the run panel.
@@ -2142,6 +2192,9 @@ impl App {
     fn quit(&mut self) {
         // The runtime waits for blocking threads on the way out.
         self.stop_project_search();
+        if let Some(tree) = self.run_tree.take() {
+            tree.kill();
+        }
         for doc in &self.tabs.docs {
             let _ = self.backups.delete(doc.buffer.path.as_deref(), doc.id);
         }
