@@ -29,7 +29,7 @@ use crate::config::{self, EditorConfig, RunEntry};
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
-use crate::lsp::{Lsp, LspEvent};
+use crate::lsp::{Diagnostic, Lsp, LspEvent, LspNews, Severity, diagnostic_at, diagnostic_jump};
 use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
@@ -38,10 +38,10 @@ use crate::ui::picker::{Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
 use crate::ui::run::{RunStatus, RunView, render_run_panel};
 use crate::ui::search::{ProjectSearch, Searched};
-use crate::ui::status::render_status;
+use crate::ui::status::{Status, render_status};
 use crate::ui::tabs::{TabLabel, render_tabs, tab_at};
 use crate::ui::tree::{TREE_WIDTH, render_divider, render_tree};
-use crate::view::{View, render_buffer};
+use crate::view::{Marks, View, render_buffer};
 use crate::workspace::ops::{self, Trash};
 use crate::workspace::walk::{list_files, relative_name};
 use crate::workspace::{Launch, Tree};
@@ -224,6 +224,8 @@ struct Doc {
     buffer: Buffer,
     /// Edited since its last backup was started.
     backup_due: bool,
+    /// What its language server last published for it, sorted by start.
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl Doc {
@@ -321,6 +323,7 @@ impl Tabs {
             id,
             buffer,
             backup_due: false,
+            diagnostics: Vec::new(),
         });
         self.next_id += 1;
         id
@@ -933,8 +936,16 @@ impl App {
                 }
             }
             AppEvent::Lsp(event) => {
-                if let Some(message) = self.lsp.handle(event) {
-                    self.message = Some(message);
+                for news in self.lsp.handle(event) {
+                    match news {
+                        LspNews::Message(message) => self.message = Some(message),
+                        // A publish is the whole set for the file, so it replaces.
+                        LspNews::Diagnostics { doc, diagnostics } => {
+                            if let Some(open) = self.tabs.docs.iter_mut().find(|d| d.id == doc) {
+                                open.diagnostics = diagnostics;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1311,6 +1322,8 @@ impl App {
             Action::ToggleRunPanel => self.toggle_run_panel(),
             Action::StopRun => self.stop_run(),
             Action::RestartRun => self.restart_run(),
+            Action::NextDiagnostic => self.jump_to_diagnostic(true),
+            Action::PrevDiagnostic => self.jump_to_diagnostic(false),
             // Bound only in tree or find bar scope, so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
@@ -2331,6 +2344,21 @@ impl App {
         }
     }
 
+    /// Moves the cursor to the start of the next (or previous) diagnostic in the
+    /// active buffer, wrapping around; with none, it stays put.
+    fn jump_to_diagnostic(&mut self, forward: bool) {
+        let cursor = self.buffer().cursor;
+        let Some(target) = diagnostic_jump(&self.tabs.active().diagnostics, cursor, forward) else {
+            return;
+        };
+        self.buffer_mut().set_caret(Caret {
+            cursor: target,
+            goal_col: None,
+            anchor: None,
+        });
+        self.follow_cursor();
+    }
+
     /// Keeps every split's cursor in view; the other split may show the buffer
     /// that just changed.
     fn follow_cursor(&mut self) {
@@ -2394,7 +2422,10 @@ impl App {
                 self.tabs.shown(split).buffer(),
                 &tabs.active().view,
                 self.editor.tab_width,
-                highlights,
+                Marks {
+                    highlights,
+                    diagnostics: &self.tabs.doc(tabs.active().doc).diagnostics,
+                },
                 area.editor,
                 frame,
             );
@@ -2415,14 +2446,29 @@ impl App {
             render_run_panel(theme, self.run.as_ref(), area, frame);
         }
         let buffer = self.buffer();
+        let diagnostics = &self.tabs.active().diagnostics;
+        let count = |severity| {
+            diagnostics
+                .iter()
+                .filter(|d| d.severity == severity)
+                .count()
+        };
+        // The diagnostic under the cursor says what's wrong in the message area.
+        let message = diagnostic_at(diagnostics, buffer.cursor)
+            .map(|d| d.message.as_str())
+            .or(self.message.as_deref());
         render_status(
             frame,
             theme,
             panes.status,
-            &buffer.name(),
-            buffer.dirty,
-            self.message.as_deref(),
-            buffer.cursor_line_col(),
+            &Status {
+                name: &buffer.name(),
+                dirty: buffer.dirty,
+                message,
+                position: buffer.cursor_line_col(),
+                warnings: count(Severity::Warning),
+                errors: count(Severity::Error),
+            },
         );
         if let (Some(name_prompt), Some(area)) = (&self.name_prompt, panes.bar) {
             let at = name_prompt.bar.render(theme, frame, area);

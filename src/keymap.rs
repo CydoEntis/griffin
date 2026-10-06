@@ -86,6 +86,10 @@ pub enum Action {
     StopRun,
     /// Stops the command, if it's running, and starts it again.
     RestartRun,
+    /// Moves the cursor to the next diagnostic in the buffer, wrapping around.
+    NextDiagnostic,
+    /// Moves the cursor to the previous diagnostic in the buffer, wrapping around.
+    PrevDiagnostic,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -175,6 +179,8 @@ impl Action {
         Action::ToggleRunPanel,
         Action::StopRun,
         Action::RestartRun,
+        Action::NextDiagnostic,
+        Action::PrevDiagnostic,
     ];
 
     pub fn scope(self) -> Scope {
@@ -277,6 +283,8 @@ impl Action {
             Action::ToggleRunPanel => "toggle_run_panel",
             Action::StopRun => "stop_run",
             Action::RestartRun => "restart_run",
+            Action::NextDiagnostic => "next_diagnostic",
+            Action::PrevDiagnostic => "prev_diagnostic",
         }
     }
 
@@ -288,7 +296,8 @@ impl Action {
 /// The spec's "Default keymap" table plus R4's movement, R6's editing, R10's
 /// selection, R14's tree keys, R16's tab keys, R17's split keys, R18's picker
 /// keys, R20's find bar keys, R21's Replace All, R22's project search, R23's
-/// project replace, R26's run keys and R27's stop and restart, one line per binding.
+/// project replace, R26's run keys, R27's stop and restart and R30's diagnostic
+/// jumps, one line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -364,6 +373,8 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::ToggleRunPanel, "f4"),
     (Action::StopRun, "shift+f5"),
     (Action::RestartRun, "ctrl+f5"),
+    (Action::NextDiagnostic, "f8"),
+    (Action::PrevDiagnostic, "shift+f8"),
 ];
 
 /// What a key event means to the editor.
@@ -738,6 +749,19 @@ mod tests {
         assert_eq!(
             map.resolve(&ev(KeyCode::F(5), KeyModifiers::CONTROL)),
             Input::Action(Action::RestartRun)
+        );
+    }
+
+    #[test]
+    fn f8_and_shift_f8_jump_between_diagnostics_by_default() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(8), KeyModifiers::NONE)),
+            Input::Action(Action::NextDiagnostic)
+        );
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(8), KeyModifiers::SHIFT)),
+            Input::Action(Action::PrevDiagnostic)
         );
     }
 

@@ -20,6 +20,35 @@ pub fn lsp_position(rope: &Rope, char_idx: usize) -> Position {
     }
 }
 
+/// The char index of LSP position `position` in `rope`: the inverse of
+/// `lsp_position`. A line past the end clamps to the end of the text, a column
+/// past the line's end to that end (before its line break), and a column inside
+/// a surrogate pair to the character it belongs to.
+pub fn char_index(rope: &Rope, position: Position) -> usize {
+    let line = usize::try_from(position.line).unwrap_or(usize::MAX);
+    if line >= rope.len_lines() {
+        return rope.len_chars();
+    }
+    let slice = rope.line(line);
+    let mut content = slice.len_chars();
+    // The line break isn't a column a position can name.
+    while content > 0 && matches!(slice.char(content - 1), '\n' | '\r') {
+        content -= 1;
+    }
+    let wanted = usize::try_from(position.character).unwrap_or(usize::MAX);
+    let mut units = 0;
+    let mut col = 0;
+    for ch in slice.chars().take(content) {
+        let width = ch.len_utf16();
+        if units + width > wanted {
+            break;
+        }
+        units += width;
+        col += 1;
+    }
+    rope.line_to_char(line) + col
+}
+
 /// Protocol positions are `u32`; a document that long can't be described anyway.
 fn to_u32(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
@@ -103,6 +132,25 @@ mod tests {
         assert_eq!(lsp_position(&rope, 3), pos(0, 4));
         assert_eq!(lsp_position(&rope, 4), pos(1, 0));
         assert_eq!(lsp_position(&rope, 5), pos(1, 2));
+    }
+
+    #[test]
+    fn char_index_inverts_lsp_position_and_clamps() {
+        let rope = Rope::from_str("é🦀x\r\nab\n");
+        for i in 0..rope.len_chars() {
+            let ch = rope.char(i);
+            if ch == '\r' || ch == '\n' {
+                continue;
+            }
+            assert_eq!(char_index(&rope, lsp_position(&rope, i)), i, "char {i}");
+        }
+        // Inside the crab's surrogate pair: the crab.
+        assert_eq!(char_index(&rope, pos(0, 2)), 1);
+        // Past the line's end: before its line break.
+        assert_eq!(char_index(&rope, pos(0, 99)), 3);
+        assert_eq!(char_index(&rope, pos(1, 99)), 7);
+        // Past the last line: the end.
+        assert_eq!(char_index(&rope, pos(9, 0)), rope.len_chars());
     }
 
     #[test]

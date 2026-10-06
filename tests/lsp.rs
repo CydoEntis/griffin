@@ -270,3 +270,169 @@ fn quitting_shuts_the_server_down() {
         methods.ends_with(&["shutdown".to_string(), "exit".to_string()])
     });
 }
+
+/// A Rust file with something to complain about on lines 2 and 3.
+const DIAG_FILE: &str = "fn main() {\n    let x = 1;\n    let y = 2;\n}\n";
+
+/// The theme with `err` and `working` pinned, so the colours are known.
+fn diag_config() -> String {
+    format!(
+        "{}[theme_overrides]\nerr = \"#ff0000\"\nworking = \"#ffaa00\"\n",
+        rust_server(fake())
+    )
+}
+
+const ERR: vt100::Color = vt100::Color::Rgb(0xff, 0x00, 0x00);
+const WORKING: vt100::Color = vt100::Color::Rgb(0xff, 0xaa, 0x00);
+
+/// A `publishDiagnostics` for the file just received, one entry per
+/// `(line, start, end, severity, message)`.
+fn publish(diagnostics: &[(u32, u32, u32, u8, &str)]) -> String {
+    let list: Vec<String> = diagnostics
+        .iter()
+        .map(|(line, start, end, severity, message)| {
+            format!(
+                r#"{{"range": {{"start": {{"line": {line}, "character": {start}}},
+                   "end": {{"line": {line}, "character": {end}}}}},
+                   "severity": {severity}, "message": "{message}"}}"#
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"method": "textDocument/publishDiagnostics",
+            "params": {{"uri": "$uri", "diagnostics": [{}]}}}}"#,
+        list.join(", ")
+    )
+}
+
+/// A warning on `x` (line 2) and an error on `y` (line 3).
+fn both() -> String {
+    publish(&[
+        (1, 8, 9, 2, "unused variable: x"),
+        (2, 8, 9, 1, "mismatched types"),
+    ])
+}
+
+fn diag_project(script: &str) -> (Project, Griffin) {
+    let project = Project::new(Some(script));
+    fs::write(project.dir.path().join("c.rs"), DIAG_FILE).expect("write c.rs");
+    let griffin = project.open(&diag_config(), "c.rs");
+    (project, griffin)
+}
+
+// Screen rows: the tab bar is row 0, so buffer line n is row n. The gutter
+// " 1 │ " is 5 cells, so char column c is screen column 5 + c.
+const X_ROW: u16 = 2;
+const Y_ROW: u16 = 3;
+const VAR_COL: u16 = 13;
+
+#[test]
+fn diagnostics_are_underlined_marked_and_counted() {
+    let script = format!(r#"{{"notify": {{"textDocument/didOpen": [{}]}}}}"#, both());
+    let (_project, griffin) = diag_project(&script);
+    griffin.wait_for_text("⚠ 1  ✕ 1", WAIT);
+
+    griffin.wait_for_underlined(Y_ROW, "y", WAIT);
+    assert_eq!(griffin.fg_at(VAR_COL, Y_ROW), ERR);
+    griffin.wait_for_underlined(X_ROW, "x", WAIT);
+    assert_eq!(griffin.fg_at(VAR_COL, X_ROW), WORKING);
+    // Nothing else is underlined.
+    assert_eq!(griffin.underlined_text(1), "");
+    assert_eq!(griffin.underlined_text(4), "");
+
+    // The gutter marks both lines in their colour, and only them.
+    let screen = griffin.screen();
+    assert!(
+        screen[usize::from(X_ROW)].starts_with("●2 │ "),
+        "{screen:#?}"
+    );
+    assert!(
+        screen[usize::from(Y_ROW)].starts_with("●3 │ "),
+        "{screen:#?}"
+    );
+    assert!(screen[1].starts_with(" 1 │ "), "{screen:#?}");
+    assert_eq!(griffin.fg_at(0, X_ROW), WORKING);
+    assert_eq!(griffin.fg_at(0, Y_ROW), ERR);
+
+    // The counts on the status line are in the same colours.
+    let status = status_line(&griffin);
+    assert!(status.contains("⚠ 1  ✕ 1"), "{status:?}");
+    let status_row = ROWS - 1;
+    let warn = griffin.text_col(status_row, "⚠ 1").expect("warning count");
+    let err = griffin.text_col(status_row, "✕ 1").expect("error count");
+    assert_eq!(griffin.fg_at(warn, status_row), WORKING);
+    assert_eq!(griffin.fg_at(err, status_row), ERR);
+}
+
+#[test]
+fn f8_and_shift_f8_cycle_through_diagnostics() {
+    let script = format!(r#"{{"notify": {{"textDocument/didOpen": [{}]}}}}"#, both());
+    let (_project, mut griffin) = diag_project(&script);
+    griffin.wait_for_text("⚠ 1  ✕ 1", WAIT);
+
+    griffin.send_keys("f8");
+    griffin.wait_for_cursor(VAR_COL, X_ROW, WAIT);
+    griffin.wait_for_text("Ln 2, Col 9", WAIT);
+    griffin.send_keys("f8");
+    griffin.wait_for_cursor(VAR_COL, Y_ROW, WAIT);
+    // Past the last one, back to the first.
+    griffin.send_keys("f8");
+    griffin.wait_for_cursor(VAR_COL, X_ROW, WAIT);
+    // Before the first one, round to the last.
+    griffin.send_keys("shift+f8");
+    griffin.wait_for_cursor(VAR_COL, Y_ROW, WAIT);
+    griffin.send_keys("shift+f8");
+    griffin.wait_for_cursor(VAR_COL, X_ROW, WAIT);
+}
+
+#[test]
+fn the_diagnostic_under_the_cursor_shows_its_message() {
+    let script = format!(r#"{{"notify": {{"textDocument/didOpen": [{}]}}}}"#, both());
+    let (_project, mut griffin) = diag_project(&script);
+    griffin.wait_for_text("⚠ 1  ✕ 1", WAIT);
+    assert!(!status_line(&griffin).contains("unused variable"));
+
+    griffin.send_keys("f8");
+    griffin.wait_for_text("griffin  unused variable: x  c.rs", WAIT);
+    griffin.send_keys("f8");
+    griffin.wait_for_text("griffin  mismatched types  c.rs", WAIT);
+    griffin.wait_for_text_gone("unused variable", WAIT);
+
+    // Off the diagnostic, the message goes.
+    griffin.send_keys("right");
+    griffin.wait_for_text("Ln 3, Col 10", WAIT);
+    griffin.wait_for_text_gone("mismatched types", WAIT);
+}
+
+#[test]
+fn a_new_publish_replaces_the_set_and_an_empty_one_clears_it() {
+    let only_error = publish(&[(2, 8, 9, 1, "mismatched types")]);
+    let script = format!(
+        r#"{{"notify": {{
+            "textDocument/didOpen": [{}],
+            "textDocument/didChange": [{only_error}],
+            "textDocument/didSave": [{}]
+        }}}}"#,
+        both(),
+        publish(&[])
+    );
+    let (project, mut griffin) = diag_project(&script);
+    griffin.wait_for_text("⚠ 1  ✕ 1", WAIT);
+    griffin.wait_for_underlined(X_ROW, "x", WAIT);
+
+    // Typing on line 1 sends a change; the server's new set has only the error.
+    griffin.type_text("z");
+    project.wait_for(&griffin, "textDocument/didChange", "c.rs");
+    griffin.wait_for_text("⚠ 0  ✕ 1", WAIT);
+    griffin.wait_for_underlined(X_ROW, "", WAIT);
+    griffin.wait_for_underlined(Y_ROW, "y", WAIT);
+    assert!(griffin.screen()[usize::from(X_ROW)].starts_with(" 2 │ "));
+
+    // Saving gets an empty publish: everything goes.
+    griffin.send_keys("ctrl+s");
+    griffin.wait_for_text("saved c.rs", WAIT);
+    griffin.wait_for_text_gone("✕", WAIT);
+    griffin.wait_for_underlined(Y_ROW, "", WAIT);
+    assert!(griffin.screen()[usize::from(Y_ROW)].starts_with(" 3 │ "));
+    assert!(!status_line(&griffin).contains("⚠"));
+}

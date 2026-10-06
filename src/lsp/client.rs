@@ -165,7 +165,8 @@ impl Client {
                 }
                 None
             }
-            // Notifications (logs, progress, diagnostics) mean nothing here yet.
+            // Notifications (logs, progress) mean nothing here; diagnostics never
+            // reach a client, `Lsp` maps them onto buffers.
             (None, _) => None,
         }
     }

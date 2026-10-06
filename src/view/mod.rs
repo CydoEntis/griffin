@@ -2,14 +2,38 @@ use std::ops::Range;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ropey::RopeSlice;
 use unicode_width::UnicodeWidthChar;
 
 use crate::buffer::Buffer;
 use crate::buffer::movement::{char_col_at, char_width, display_col};
 use crate::highlight::Role;
+use crate::lsp::{Diagnostic, Severity};
 use crate::theme::Theme;
+
+/// Ranges drawn over a buffer's text, by char index.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Marks<'a> {
+    /// Find matches, sorted by start; drawn in the selection colours.
+    pub highlights: &'a [Range<usize>],
+    /// The language server's diagnostics, sorted by start; underlined in their
+    /// severity's colour, with a mark in the gutter.
+    pub diagnostics: &'a [Diagnostic],
+}
+
+/// The colour a diagnostic of `severity` is drawn in: errors in `err`, warnings
+/// in Hydra's `working`, the milder kinds muted.
+fn severity_color(theme: &Theme, severity: Severity) -> Color {
+    match severity {
+        Severity::Error => theme.err,
+        Severity::Warning => theme.warning,
+        Severity::Information | Severity::Hint => theme.muted,
+    }
+}
+
+/// In the gutter's first cell, on a line with a diagnostic.
+const GUTTER_MARK: &str = "●";
 
 /// Which part of a buffer the editor pane shows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -91,18 +115,22 @@ fn text_width(buf: &Buffer, area: Rect) -> usize {
 
 /// Draws `buf` into `area`: a right-aligned line-number gutter, then each line cut
 /// at the right edge (Griffin never wraps), and puts the terminal cursor on the
-/// buffer cursor when it's in view. The selection and every range in `highlights`
-/// (find matches, sorted by start) get the selection colours. Pure: reads its
-/// inputs only.
+/// buffer cursor when it's in view. Diagnostics are underlined in their colour and
+/// mark the gutter with the most severe one on the line; the selection and every
+/// highlight get the selection colours on top. Pure: reads its inputs only.
 pub fn render_buffer(
     theme: &Theme,
     buf: &Buffer,
     view: &View,
     tab_width: usize,
-    highlights: &[Range<usize>],
+    marks: Marks,
     area: Rect,
     frame: &mut Frame,
 ) {
+    let Marks {
+        highlights,
+        diagnostics,
+    } = marks;
     let digits = buf.rope.len_lines().to_string().len();
     let gutter_width = gutter_width(buf);
     let text_width = text_width(buf, area);
@@ -144,6 +172,43 @@ pub fn render_buffer(
         }
         let line_start = buf.rope.line_to_char(line_idx);
         let line_end = line_start + buf.rope.line(line_idx).len_chars();
+        let mut worst: Option<Severity> = None;
+        for diagnostic in diagnostics.iter().take_while(|d| d.range.start < line_end) {
+            let range = &diagnostic.range;
+            // An empty range (a missing `;`, say) still gets one cell to show it.
+            let range = if range.is_empty() {
+                range.start..range.start + 1
+            } else {
+                range.clone()
+            };
+            if range.end <= line_start {
+                continue;
+            }
+            let severity = diagnostic.severity;
+            worst = Some(worst.map_or(severity, |w| w.min(severity)));
+            let style = Style::new()
+                .fg(severity_color(theme, diagnostic.severity))
+                .add_modifier(Modifier::UNDERLINED);
+            let cells = selected_cells(buf, line_idx, &range, tab_width);
+            let from = cells.start.max(view.scroll_col);
+            let to = cells.end.min(view.scroll_col + text_width);
+            for col in from..to {
+                // Below `text_width`, which fits in the area's u16 width.
+                let cell_x = x + (col - view.scroll_col) as u16;
+                if let Some(cell) = out.cell_mut((cell_x, y)) {
+                    cell.set_style(style);
+                }
+            }
+        }
+        if let Some(severity) = worst {
+            out.set_stringn(
+                area.x,
+                y,
+                GUTTER_MARK,
+                usize::from(area.width),
+                Style::new().fg(severity_color(theme, severity)),
+            );
+        }
         // Only the highlights that touch this line, found by bisecting the sorted list.
         let first = highlights.partition_point(|h| h.end <= line_start);
         let on_line = highlights[first..]
@@ -408,7 +473,7 @@ mod tests {
                 &buf,
                 &View::default(),
                 4,
-                &[],
+                Marks::default(),
                 frame.area(),
                 frame,
             )
@@ -453,7 +518,7 @@ mod tests {
                 &buf,
                 &View::default(),
                 4,
-                &[],
+                Marks::default(),
                 frame.area(),
                 frame,
             )
@@ -549,7 +614,10 @@ ab foo foo",
                 &buf,
                 &View::default(),
                 4,
-                &[0..3, 9..12, 13..16],
+                Marks {
+                    highlights: &[0..3, 9..12, 13..16],
+                    ..Marks::default()
+                },
                 frame.area(),
                 frame,
             )
@@ -584,7 +652,15 @@ ab foo foo",
         let theme = Theme::default();
         let mut terminal = Terminal::new(TestBackend::new(20, 2))?;
         terminal.draw(|frame| {
-            render_buffer(&theme, &buf, &View::default(), 4, &[], frame.area(), frame)
+            render_buffer(
+                &theme,
+                &buf,
+                &View::default(),
+                4,
+                Marks::default(),
+                frame.area(),
+                frame,
+            )
         })?;
         let screen = terminal.backend().buffer();
         let fg = |x: u16, y: u16| screen[(x, y)].fg;
@@ -612,7 +688,7 @@ ab foo foo",
                 &buf,
                 &View::default(),
                 4,
-                &[],
+                Marks::default(),
                 frame.area(),
                 frame,
             )
