@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+#[cfg(windows)]
+use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyEvent};
@@ -6,10 +8,15 @@ use futures_util::StreamExt;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use tokio::sync::mpsc;
+#[cfg(windows)]
+use tokio::time::timeout;
 
 use crate::Tui;
 use crate::buffer::Buffer;
+use crate::clipboard::Clipboard;
 use crate::config::EditorConfig;
+#[cfg(windows)]
+use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap};
 use crate::ui::confirm::{Answer, Choice, Confirm};
 use crate::ui::status::render_status;
@@ -70,6 +77,7 @@ pub struct App {
     message: Option<String>,
     /// While set, every key goes to the prompt instead of the editor.
     prompt: Option<Prompt>,
+    clipboard: Box<dyn Clipboard>,
     should_quit: bool,
 }
 
@@ -99,6 +107,7 @@ impl App {
             screen: Rect::default(),
             message,
             prompt: None,
+            clipboard: Box::default(),
             should_quit: false,
         }
     }
@@ -136,6 +145,11 @@ impl App {
     fn handle_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Input(Event::Key(key)) => self.handle_key(key),
+            // Bracketed paste bypasses the keymap: it is text, not a key. Windows
+            // Terminal's own Ctrl+V paste arrives this way too.
+            AppEvent::Input(Event::Paste(text)) if self.prompt.is_none() => {
+                self.edit(|buffer| buffer.paste(&text));
+            }
             // A smaller pane can leave the cursor outside it.
             AppEvent::Input(Event::Resize(..)) => self.follow_cursor(),
             AppEvent::Input(_) => {}
@@ -191,6 +205,44 @@ impl App {
             Action::Redo => self.edit(|buffer| {
                 buffer.redo();
             }),
+            Action::Select(motion) => {
+                let page = usize::from(editor_area(self.screen).height);
+                self.buffer.select(motion, page, self.editor.tab_width);
+                self.follow_cursor();
+            }
+            Action::SelectAll => {
+                self.buffer.select_all();
+                self.follow_cursor();
+            }
+            Action::Copy => {
+                self.copy();
+            }
+            Action::Cut => {
+                if self.copy() {
+                    self.edit(|buffer| {
+                        buffer.delete_selection();
+                    });
+                }
+            }
+            Action::Paste => match self.clipboard.get() {
+                Ok(text) => self.edit(|buffer| buffer.paste(&text)),
+                Err(err) => self.message = Some(format!("cannot paste: {err}")),
+            },
+        }
+    }
+
+    /// Puts the selection on the clipboard. Returns whether something was copied,
+    /// so cut never deletes text the clipboard didn't take.
+    fn copy(&mut self) -> bool {
+        let Some(text) = self.buffer.selected_text() else {
+            return false;
+        };
+        match self.clipboard.set(&text) {
+            Ok(()) => true,
+            Err(err) => {
+                self.message = Some(format!("cannot copy: {err}"));
+                false
+            }
         }
     }
 
@@ -274,11 +326,36 @@ fn editor_area(screen: Rect) -> Rect {
 
 async fn read_input(tx: mpsc::UnboundedSender<AppEvent>) {
     let mut events = EventStream::new();
-    while let Some(Ok(event)) = events.next().await {
-        if tx.send(AppEvent::Input(event)).is_err() {
-            break;
+    while let Some(Ok(first)) = events.next().await {
+        for event in with_burst(&mut events, first).await {
+            if tx.send(AppEvent::Input(event)).is_err() {
+                return;
+            }
         }
     }
+}
+
+/// `first` plus every event already waiting behind it, which arrived together. On
+/// Windows crossterm never reports bracketed paste, so a paste shows up as such a
+/// burst of keys and is turned back into one `Event::Paste` (see `burst_as_paste`).
+#[cfg(windows)]
+async fn with_burst(events: &mut EventStream, first: Event) -> Vec<Event> {
+    let mut burst = vec![first];
+    // A zero timeout polls once with this task's waker; `now_or_never` would poll
+    // with a dummy one that crossterm keeps, and input would stall.
+    while let Ok(Some(Ok(event))) = timeout(Duration::ZERO, events.next()).await {
+        burst.push(event);
+    }
+    match burst_as_paste(&burst) {
+        Some(text) => vec![Event::Paste(text)],
+        None => burst,
+    }
+}
+
+/// Elsewhere terminals deliver pastes as `Event::Paste` already.
+#[cfg(not(windows))]
+async fn with_burst(_events: &mut EventStream, first: Event) -> Vec<Event> {
+    vec![first]
 }
 
 #[cfg(test)]
@@ -287,6 +364,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    use crate::clipboard::FakeClipboard;
     use crate::config::{KeyBinding, KeysConfig};
     use crate::keymap::key_event;
     use crossterm::event::KeyEventKind;
@@ -448,6 +526,116 @@ mod tests {
         app.handle_event(key("ctrl+y"));
         assert_eq!(app.buffer.rope.to_string(), "ab");
         assert_eq!(app.buffer.cursor, 2);
+    }
+
+    fn app_with(text: &str, clipboard: &FakeClipboard) -> App {
+        App {
+            buffer: Buffer {
+                rope: ropey::Rope::from_str(text),
+                ..Buffer::empty()
+            },
+            screen: Rect::new(0, 0, 100, 30),
+            clipboard: Box::new(clipboard.clone()),
+            ..App::default()
+        }
+    }
+
+    fn press(app: &mut App, keys: &[&str]) {
+        for k in keys {
+            app.handle_event(key(k));
+        }
+    }
+
+    #[test]
+    fn shift_right_then_typing_replaces_the_selection() {
+        let mut app = app_with("hello world", &FakeClipboard::default());
+        press(&mut app, &["shift+right"; 5]);
+        assert_eq!(app.buffer.selected_text().as_deref(), Some("hello"));
+        press(&mut app, &["b", "y", "e"]);
+        assert_eq!(app.buffer.rope.to_string(), "bye world");
+        press(&mut app, &["ctrl+z"]);
+        assert_eq!(app.buffer.rope.to_string(), "hello world");
+    }
+
+    #[test]
+    fn a_plain_movement_clears_the_selection() {
+        let mut app = app_with("hello", &FakeClipboard::default());
+        press(&mut app, &["ctrl+shift+right", "left"]);
+        assert_eq!(app.buffer.selection(), None);
+        assert_eq!(app.buffer.cursor, 4);
+    }
+
+    #[test]
+    fn ctrl_c_copies_the_selection_and_nothing_without_one() {
+        let clipboard = FakeClipboard::default();
+        *clipboard.text.borrow_mut() = "old".into();
+        let mut app = app_with("hello world", &clipboard);
+        press(&mut app, &["ctrl+c"]);
+        assert_eq!(*clipboard.text.borrow(), "old");
+        press(&mut app, &["ctrl+shift+right", "ctrl+c"]);
+        assert_eq!(*clipboard.text.borrow(), "hello");
+        assert_eq!(app.buffer.rope.to_string(), "hello world");
+        assert!(!app.buffer.dirty);
+    }
+
+    #[test]
+    fn ctrl_x_copies_and_deletes_as_one_step() {
+        let clipboard = FakeClipboard::default();
+        let mut app = app_with("one\ntwo", &clipboard);
+        press(&mut app, &["ctrl+a", "ctrl+x"]);
+        assert_eq!(*clipboard.text.borrow(), "one\ntwo");
+        assert_eq!(app.buffer.rope.to_string(), "");
+        press(&mut app, &["ctrl+z"]);
+        assert_eq!(app.buffer.rope.to_string(), "one\ntwo");
+        // Nothing selected: cut leaves the clipboard and the text alone.
+        press(&mut app, &["ctrl+x"]);
+        assert_eq!(app.buffer.rope.to_string(), "one\ntwo");
+    }
+
+    #[test]
+    fn ctrl_v_pastes_normalised_text_as_one_step() {
+        let clipboard = FakeClipboard::default();
+        *clipboard.text.borrow_mut() = "a\r\nb\r\n".into();
+        let mut app = app_with("xy", &clipboard);
+        press(&mut app, &["right", "ctrl+v"]);
+        assert_eq!(app.buffer.rope.to_string(), "xa\nb\ny");
+        press(&mut app, &["ctrl+z"]);
+        assert_eq!(app.buffer.rope.to_string(), "xy");
+        // Pasting over a selection replaces it, still one step.
+        press(&mut app, &["ctrl+a", "ctrl+v"]);
+        assert_eq!(app.buffer.rope.to_string(), "a\nb\n");
+        press(&mut app, &["ctrl+z"]);
+        assert_eq!(app.buffer.rope.to_string(), "xy");
+    }
+
+    #[test]
+    fn copy_then_paste_round_trips_through_the_clipboard() {
+        let clipboard = FakeClipboard::default();
+        let mut app = app_with("ab", &clipboard);
+        press(
+            &mut app,
+            &["shift+right", "ctrl+c", "end", "ctrl+v", "ctrl+v"],
+        );
+        assert_eq!(app.buffer.rope.to_string(), "abaa");
+    }
+
+    #[test]
+    fn bracketed_paste_is_one_step_replacing_the_selection() {
+        let mut app = app_with("hello world", &FakeClipboard::default());
+        press(&mut app, &["shift+end"]);
+        app.handle_event(AppEvent::Input(Event::Paste("bye\r\nnow".into())));
+        assert_eq!(app.buffer.rope.to_string(), "bye\nnow");
+        press(&mut app, &["ctrl+z"]);
+        assert_eq!(app.buffer.rope.to_string(), "hello world");
+    }
+
+    #[test]
+    fn bracketed_paste_is_ignored_while_a_prompt_is_open() {
+        let mut app = app_with("", &FakeClipboard::default());
+        press(&mut app, &["x", "ctrl+q"]);
+        app.handle_event(AppEvent::Input(Event::Paste("d".into())));
+        assert_eq!(app.buffer.rope.to_string(), "x");
+        assert!(!app.should_quit);
     }
 
     #[test]

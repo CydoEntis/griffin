@@ -97,6 +97,12 @@ impl History {
         self.typing_open = false;
     }
 
+    /// Lets the next typed char join the last group as if it were a run of typing;
+    /// typing over a selection keeps going in the group that replaced it.
+    pub fn continue_typing(&mut self) {
+        self.typing_open = !self.undo.is_empty();
+    }
+
     #[cfg(test)]
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
@@ -140,10 +146,6 @@ impl Buffer {
 
     /// Every change from here to the matching `end_group` undoes as one step (paste,
     /// replace selection). Calls nest; only the outermost pair makes the group.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "paste and replace selection (#9) will call it")
-    )]
     pub fn begin_group(&mut self) {
         if self.history.explicit_depth == 0 {
             self.history.seal();
@@ -152,10 +154,6 @@ impl Buffer {
         self.history.explicit_depth += 1;
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "paste and replace selection (#9) will call it")
-    )]
     pub fn end_group(&mut self) {
         self.history.explicit_depth = self.history.explicit_depth.saturating_sub(1);
         if self.history.explicit_depth == 0 {

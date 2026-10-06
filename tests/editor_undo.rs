@@ -37,8 +37,12 @@ fn undo_redo_typing() {
     let mut griffin = Griffin::spawn_with_config("", &[]);
     griffin.wait_for_text("Ln 1, Col 1", START);
 
+    // Each step waits for the screen: on Windows, keys that arrive in one burst with
+    // a line break are taken for a paste, which undoes as a single step.
     griffin.type_text("abc");
+    wait_for_position(&griffin, 1, 4);
     griffin.send_keys("enter");
+    wait_for_position(&griffin, 2, 1);
     griffin.type_text("def");
     wait_for_lines(&griffin, &["abc", "def"]);
     wait_for_position(&griffin, 2, 4);

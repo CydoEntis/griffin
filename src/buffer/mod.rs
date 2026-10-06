@@ -1,6 +1,7 @@
 pub mod edit;
 pub mod history;
 pub mod movement;
+pub mod selection;
 
 use std::fs;
 use std::io::ErrorKind;
@@ -44,6 +45,9 @@ pub struct Buffer {
     /// Display column Up/Down aim for, so crossing a shorter line doesn't lose it.
     /// Cleared by any other motion.
     pub goal_col: Option<usize>,
+    /// Where a selection started; the selection runs from here to the cursor. Set
+    /// by Shift+movement and select all, cleared by plain movement and any edit.
+    pub anchor: Option<usize>,
     pub history: History,
 }
 
@@ -85,6 +89,7 @@ impl Buffer {
             dirty: false,
             cursor: 0,
             goal_col: None,
+            anchor: None,
             history: History::default(),
         }
     }

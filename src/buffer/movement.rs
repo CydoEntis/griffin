@@ -119,6 +119,8 @@ impl Buffer {
     pub fn move_cursor(&mut self, motion: Motion, page_height: usize, tab_width: usize) {
         // Typing after a move is a new undo step even if it lands back where it was.
         self.history.seal();
+        // `select` puts the anchor back; a plain move drops the selection.
+        self.anchor = None;
         let len = self.rope.len_chars();
         let cursor = self.cursor.min(len);
         let page = isize::try_from(page_height.max(1)).unwrap_or(isize::MAX);

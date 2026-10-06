@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -5,7 +7,7 @@ use ropey::RopeSlice;
 use unicode_width::UnicodeWidthChar;
 
 use crate::buffer::Buffer;
-use crate::buffer::movement::display_col;
+use crate::buffer::movement::{char_width, display_col};
 
 /// Which part of a buffer the editor pane shows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +62,7 @@ pub fn render_buffer(buf: &Buffer, view: &View, tab_width: usize, area: Rect, fr
     let gutter_width = gutter_width(buf);
     let text_width = text_width(buf, area);
     let gutter_style = Style::new().dim();
+    let selection = buf.selection();
 
     let out = frame.buffer_mut();
     for (screen_row, line_idx) in (view.scroll_row..buf.rope.len_lines())
@@ -82,11 +85,50 @@ pub fn render_buffer(buf: &Buffer, view: &View, tab_width: usize, area: Rect, fr
         // `gutter_width` is at most `area.width` here, so it fits in a u16.
         let x = area.x + gutter_width as u16;
         out.set_stringn(x, y, &text, text_width, Style::new());
+        if let Some(selection) = &selection {
+            let cells = selected_cells(buf, line_idx, selection, tab_width);
+            let from = cells.start.max(view.scroll_col);
+            let to = cells.end.min(view.scroll_col + text_width);
+            for col in from..to {
+                // Below `text_width`, which fits in the area's u16 width.
+                let cell_x = x + (col - view.scroll_col) as u16;
+                if let Some(cell) = out.cell_mut((cell_x, y)) {
+                    cell.set_style(Style::new().reversed());
+                }
+            }
+        }
     }
 
     if let Some((x, y)) = cursor_cell(buf, view, tab_width, area) {
         frame.set_cursor_position((x, y));
     }
+}
+
+/// Display columns of line `line_idx` covered by `selection`. A selected line break
+/// counts as one cell past the line's end, so a selection spanning lines shows
+/// where each line is included.
+fn selected_cells(
+    buf: &Buffer,
+    line_idx: usize,
+    selection: &Range<usize>,
+    tab_width: usize,
+) -> Range<usize> {
+    let start = buf.rope.line_to_char(line_idx);
+    let (mut first, mut last) = (None, 0);
+    let mut col = 0;
+    for (i, ch) in buf.rope.line(line_idx).chars().enumerate() {
+        let w = if ch == '\n' {
+            1
+        } else {
+            char_width(ch, col, tab_width)
+        };
+        if selection.contains(&(start + i)) {
+            first.get_or_insert(col);
+            last = col + w;
+        }
+        col += w;
+    }
+    first.map_or(0..0, |first| first..last)
 }
 
 /// The screen cell of `buf`'s cursor, or `None` when it's scrolled out of `area`.
@@ -272,6 +314,37 @@ mod tests {
             None,
             "line 2 is below a one-row area"
         );
+    }
+
+    #[test]
+    fn selection_is_drawn_in_reverse_video() -> Result<()> {
+        // `ello` on line 1 plus its line break, then `w` on line 2.
+        let buf = Buffer {
+            rope: Rope::from_str("hello\nworld"),
+            anchor: Some(1),
+            cursor: 7,
+            ..Buffer::empty()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(20, 3))?;
+        terminal.draw(|frame| render_buffer(&buf, &View::default(), 4, frame.area(), frame))?;
+        let screen = terminal.backend().buffer();
+        let reversed = |y: u16| -> String {
+            (5..20)
+                .map(|x| {
+                    let cell = &screen[(x, y)];
+                    if cell.modifier.contains(ratatui::style::Modifier::REVERSED) {
+                        '#'
+                    } else {
+                        '.'
+                    }
+                })
+                .collect()
+        };
+        // Gutter is 5 cells.
+        assert_eq!(reversed(0), ".#####.........");
+        assert_eq!(reversed(1), "#..............");
+        assert_eq!(reversed(2), "...............");
+        Ok(())
     }
 
     #[test]
