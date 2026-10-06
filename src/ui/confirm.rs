@@ -1,6 +1,8 @@
 //! A small centred card asking a question with one-letter answers, e.g.
 //! `Unsaved changes: [S]ave [D]iscard [C]ancel` or
-//! `Recover unsaved changes? Recover / Discard`. Later dialogs (tree delete) reuse it.
+//! `Recover unsaved changes? Recover / Discard` or `Move notes.txt to trash? y / n`.
+
+use std::borrow::Cow;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -34,11 +36,14 @@ pub enum Labels {
     Bracketed,
     /// `Recover / Discard`: whole words, each picked by its first letter.
     Words,
+    /// `y / n`: just the keys.
+    Keys,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Confirm {
-    pub question: &'static str,
+    /// Fixed for most cards; built at runtime when it names a file.
+    pub question: Cow<'static, str>,
     pub choices: &'static [Choice],
     pub labels: Labels,
 }
@@ -71,12 +76,13 @@ impl Confirm {
                 match self.labels {
                     Labels::Bracketed => format!("[{first}]{}", chars.as_str()),
                     Labels::Words => format!("{first}{}", chars.as_str()),
+                    Labels::Keys => choice.key.to_string(),
                 }
             })
             .collect();
         let gap = match self.labels {
             Labels::Bracketed => " ",
-            Labels::Words => " / ",
+            Labels::Words | Labels::Keys => " / ",
         };
         // A question that brings its own punctuation doesn't get a colon too.
         let separator = if self.question.ends_with(['?', ':', '.']) {
@@ -114,7 +120,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     const CARD: Confirm = Confirm {
-        question: "Unsaved changes",
+        question: Cow::Borrowed("Unsaved changes"),
         choices: &[
             Choice {
                 key: 's',
@@ -140,7 +146,7 @@ mod tests {
     #[test]
     fn words_are_slash_separated_after_a_question_mark() {
         let card = Confirm {
-            question: "Recover unsaved changes?",
+            question: Cow::Borrowed("Recover unsaved changes?"),
             choices: &[
                 Choice {
                     key: 'r',
@@ -155,6 +161,25 @@ mod tests {
         };
         assert_eq!(card.text(), "Recover unsaved changes? Recover / Discard");
         assert_eq!(card.answer(Input::Text('R')), Some(Answer::Picked('r')));
+    }
+
+    #[test]
+    fn keys_labels_show_just_the_letters() {
+        let card = Confirm {
+            question: Cow::Owned(format!("Move {} to trash?", "notes.txt")),
+            choices: &[
+                Choice {
+                    key: 'y',
+                    label: "yes",
+                },
+                Choice {
+                    key: 'n',
+                    label: "no",
+                },
+            ],
+            labels: Labels::Keys,
+        };
+        assert_eq!(card.text(), "Move notes.txt to trash? y / n");
     }
 
     #[test]

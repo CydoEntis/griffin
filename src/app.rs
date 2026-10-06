@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -21,11 +22,13 @@ use crate::clipboard::Clipboard;
 use crate::config::EditorConfig;
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
-use crate::keymap::{Action, Input, Keymap};
+use crate::keymap::{Action, Input, Keymap, Scope};
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
+use crate::ui::prompt::{Outcome, PromptBar};
 use crate::ui::status::render_status;
 use crate::ui::tree::{TREE_WIDTH, render_divider, render_tree};
 use crate::view::{View, render_buffer};
+use crate::workspace::ops::{self, Trash};
 use crate::workspace::{Launch, Tree};
 
 /// Everything the event loop reacts to. Background work (LSP, run output, timers)
@@ -48,6 +51,26 @@ enum Prompt {
     Recover,
     /// Opening another file from the tree with unsaved changes.
     UnsavedOpen,
+    /// Moving the tree's selected entry to the trash.
+    Trash,
+}
+
+/// What the prompt bar's answer will be used for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TreeOp {
+    /// A new file in this folder.
+    NewFile(PathBuf),
+    /// A new folder in this folder.
+    NewFolder(PathBuf),
+    /// A new name for this file or folder.
+    Rename(PathBuf),
+}
+
+/// The prompt bar while it asks for a name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NamePrompt {
+    op: TreeOp,
+    bar: PromptBar,
 }
 
 /// Which pane keys go to.
@@ -59,7 +82,7 @@ enum Focus {
 }
 
 const UNSAVED_QUIT: Confirm = Confirm {
-    question: "Unsaved changes",
+    question: Cow::Borrowed("Unsaved changes"),
     choices: &[
         Choice {
             key: 's',
@@ -78,7 +101,7 @@ const UNSAVED_QUIT: Confirm = Confirm {
 };
 
 const RECOVER: Confirm = Confirm {
-    question: "Recover unsaved changes?",
+    question: Cow::Borrowed("Recover unsaved changes?"),
     choices: &[
         Choice {
             key: 'r',
@@ -92,6 +115,17 @@ const RECOVER: Confirm = Confirm {
     labels: Labels::Words,
 };
 
+const TRASH_CHOICES: &[Choice] = &[
+    Choice {
+        key: 'y',
+        label: "yes",
+    },
+    Choice {
+        key: 'n',
+        label: "no",
+    },
+];
+
 /// A second left click on the same cell within this long selects a word.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
@@ -104,15 +138,6 @@ struct Click {
     at: Instant,
     col: u16,
     row: u16,
-}
-
-impl Prompt {
-    fn confirm(self) -> Confirm {
-        match self {
-            Prompt::UnsavedQuit | Prompt::UnsavedOpen => UNSAVED_QUIT,
-            Prompt::Recover => RECOVER,
-        }
-    }
 }
 
 /// All editor state, owned by the main task.
@@ -136,6 +161,11 @@ pub struct App {
     focus: Focus,
     /// The file the unsaved-changes prompt will open once answered.
     pending_open: Option<PathBuf>,
+    /// The prompt bar, while it's asking for a name; it takes every key.
+    name_prompt: Option<NamePrompt>,
+    /// The entry the trash prompt will move once answered.
+    pending_trash: Option<PathBuf>,
+    trash: Box<dyn Trash>,
     clipboard: Box<dyn Clipboard>,
     /// The previous left press, until a double-click uses it up.
     last_click: Option<Click>,
@@ -194,6 +224,9 @@ impl App {
                 Focus::Editor
             },
             pending_open: None,
+            name_prompt: None,
+            pending_trash: None,
+            trash: Box::default(),
             clipboard: Box::default(),
             last_click: None,
             drag_from: None,
@@ -254,13 +287,21 @@ impl App {
     fn handle_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Input(Event::Key(key)) => self.handle_key(key),
-            // Bracketed paste bypasses the keymap: it is text, not a key. Windows
-            // Terminal's own Ctrl+V paste arrives this way too.
             AppEvent::Input(Event::Paste(text)) if self.prompt.is_none() => {
+                if let Some(name_prompt) = &mut self.name_prompt {
+                    if let Some(outcome) = name_prompt.bar.paste(&text) {
+                        self.finish_name_prompt(outcome);
+                    }
+                    return;
+                }
+                // Bracketed paste bypasses the keymap: it is text, not a key.
+                // Windows Terminal's own Ctrl+V paste arrives this way too.
                 self.edit(|buffer| buffer.paste(&text));
             }
             // The mouse bypasses the keymap too: only keys are remappable.
-            AppEvent::Input(Event::Mouse(mouse)) if self.prompt.is_none() => {
+            AppEvent::Input(Event::Mouse(mouse))
+                if self.prompt.is_none() && self.name_prompt.is_none() =>
+            {
                 self.handle_mouse(mouse, Instant::now());
             }
             // A smaller pane can leave the cursor outside it.
@@ -272,10 +313,23 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        let input = self.keymap.resolve(&key);
+        // Tree letters are only actions when nothing else is reading keys as text.
+        let scope =
+            if self.focus == Focus::Tree && self.prompt.is_none() && self.name_prompt.is_none() {
+                Scope::Tree
+            } else {
+                Scope::Global
+            };
+        let input = self.keymap.resolve_in(&key, scope);
         if let Some(prompt) = self.prompt {
-            if let Some(answer) = prompt.confirm().answer(input) {
+            if let Some(answer) = self.confirm(prompt).answer(input) {
                 self.answer_prompt(prompt, answer);
+            }
+            return;
+        }
+        if let Some(name_prompt) = &mut self.name_prompt {
+            if let Some(outcome) = name_prompt.bar.handle(input) {
+                self.finish_name_prompt(outcome);
             }
             return;
         }
@@ -303,6 +357,10 @@ impl App {
             Action::Move(Motion::Left) => self.tree.collapse(),
             Action::Newline => self.activate_tree_row(),
             Action::Cancel => self.focus = Focus::Editor,
+            Action::TreeNewFile => self.start_create(false),
+            Action::TreeNewFolder => self.start_create(true),
+            Action::TreeRename => self.start_rename(),
+            Action::TreeDelete => self.start_trash(),
             Action::Quit | Action::Save | Action::ToggleTree | Action::FocusTree => {
                 self.handle_action(action);
             }
@@ -443,7 +501,156 @@ impl App {
             },
             Action::ToggleTree => self.toggle_tree(),
             Action::FocusTree => self.switch_focus(),
+            // Bound only in tree scope, so they never reach the editor.
+            Action::TreeNewFile
+            | Action::TreeNewFolder
+            | Action::TreeRename
+            | Action::TreeDelete => {}
         }
+    }
+
+    /// The card a confirm prompt shows.
+    fn confirm(&self, prompt: Prompt) -> Confirm {
+        match prompt {
+            Prompt::UnsavedQuit | Prompt::UnsavedOpen => UNSAVED_QUIT,
+            Prompt::Recover => RECOVER,
+            Prompt::Trash => Confirm {
+                question: Cow::Owned(format!(
+                    "Move {} to trash?",
+                    self.pending_trash
+                        .as_deref()
+                        .map(file_name)
+                        .unwrap_or_default()
+                )),
+                choices: TRASH_CHOICES,
+                labels: Labels::Keys,
+            },
+        }
+    }
+
+    /// The folder a new entry goes in: the selected folder, or the selected file's
+    /// folder, or the root when the tree is empty.
+    fn target_folder(&self) -> PathBuf {
+        match self.tree.selected_row() {
+            Some(row) if row.entry.is_dir => row.entry.path.clone(),
+            Some(row) => row
+                .entry
+                .path
+                .parent()
+                .map_or_else(|| self.tree.root().to_path_buf(), Path::to_path_buf),
+            None => self.tree.root().to_path_buf(),
+        }
+    }
+
+    fn start_create(&mut self, folder: bool) {
+        let dir = self.target_folder();
+        let (op, label) = if folder {
+            (TreeOp::NewFolder(dir), "New folder")
+        } else {
+            (TreeOp::NewFile(dir), "New file")
+        };
+        self.open_name_prompt(op, PromptBar::new(label, ""));
+    }
+
+    fn start_rename(&mut self) {
+        let Some(row) = self.tree.selected_row() else {
+            return;
+        };
+        let bar = PromptBar::new("Rename", &row.entry.name);
+        self.open_name_prompt(TreeOp::Rename(row.entry.path.clone()), bar);
+    }
+
+    fn open_name_prompt(&mut self, op: TreeOp, bar: PromptBar) {
+        self.name_prompt = Some(NamePrompt { op, bar });
+        // The bar takes a row from the panes above it.
+        self.follow_cursor();
+        self.follow_tree();
+    }
+
+    fn start_trash(&mut self) {
+        if let Some(row) = self.tree.selected_row() {
+            self.pending_trash = Some(row.entry.path.clone());
+            self.prompt = Some(Prompt::Trash);
+        }
+    }
+
+    /// Closes the prompt bar and, on Enter, does what it asked for. A failure says
+    /// why in the status line; the operations check before they act, so it has
+    /// changed nothing.
+    fn finish_name_prompt(&mut self, outcome: Outcome) {
+        let Some(NamePrompt { op, bar }) = self.name_prompt.take() else {
+            return;
+        };
+        self.follow_cursor();
+        self.follow_tree();
+        if outcome == Outcome::Cancel {
+            return;
+        }
+        let name = bar.text();
+        let result = match &op {
+            TreeOp::NewFile(dir) => ops::create_file(dir, name),
+            TreeOp::NewFolder(dir) => ops::create_folder(dir, name),
+            TreeOp::Rename(path) => ops::rename(path, name),
+        };
+        let path = match result {
+            Ok(path) => path,
+            Err(err) => {
+                self.message = Some(err.to_string());
+                return;
+            }
+        };
+        self.tree.reload(Some(&path));
+        self.follow_tree();
+        match op {
+            TreeOp::NewFile(_) => {
+                self.message = Some(format!("created {name}"));
+                self.request_open(path);
+            }
+            TreeOp::NewFolder(_) => self.message = Some(format!("created {name}")),
+            TreeOp::Rename(old) => {
+                self.message = Some(format!("renamed to {name}"));
+                self.follow_rename(&old, &path);
+            }
+        }
+    }
+
+    /// Points the open buffer at its new path when it, or a folder holding it, was
+    /// renamed, moving its crash backup along with it.
+    fn follow_rename(&mut self, old: &Path, new: &Path) {
+        let Some(moved) = self
+            .buffer
+            .path
+            .as_deref()
+            .and_then(|path| ops::rebase(path, old, new))
+        else {
+            return;
+        };
+        // Backups are keyed by path, so the old one would never be found again.
+        self.delete_backup();
+        self.buffer.path = Some(moved);
+        self.back_up();
+    }
+
+    /// The trash prompt's yes: moves the entry to the OS trash and closes the open
+    /// buffer if it was that file or inside that folder.
+    fn trash_pending(&mut self) {
+        let Some(path) = self.pending_trash.take() else {
+            return;
+        };
+        let name = file_name(&path);
+        if let Err(err) = self.trash.delete(&path) {
+            self.message = Some(format!("cannot move {name} to trash: {err}"));
+            return;
+        }
+        let open = self.buffer.path.as_deref();
+        if open.is_some_and(|open| open.starts_with(&path)) {
+            self.delete_backup();
+            self.buffer = Buffer::empty();
+            self.view = View::default();
+        }
+        self.message = Some(format!("moved {name} to trash"));
+        self.tree.reload(None);
+        self.follow_tree();
     }
 
     /// Click, drag, double-click and wheel in the editor pane. `now` is when the
@@ -575,6 +782,8 @@ impl App {
                 }
             }
             (Prompt::UnsavedOpen, _) => self.pending_open = None,
+            (Prompt::Trash, Answer::Picked('y')) => self.trash_pending(),
+            (Prompt::Trash, _) => self.pending_trash = None,
             (Prompt::Recover, Answer::Picked('r')) => {
                 if let Some(text) = self.recovery.take() {
                     self.buffer.recover(&text);
@@ -674,12 +883,12 @@ impl App {
     }
 
     fn panes(&self) -> Panes {
-        Panes::new(self.screen, self.tree_visible)
+        Panes::new(self.screen, self.tree_visible, self.name_prompt.is_some())
     }
 
     /// Draws the whole screen. Pure: reads `self`, never changes it.
     pub fn render(&self, frame: &mut Frame) {
-        let panes = Panes::new(frame.area(), self.tree_visible);
+        let panes = Panes::new(frame.area(), self.tree_visible, self.name_prompt.is_some());
         render_buffer(
             &self.buffer,
             &self.view,
@@ -704,31 +913,51 @@ impl App {
             self.message.as_deref(),
             self.buffer.cursor_line_col(),
         );
+        if let (Some(name_prompt), Some(area)) = (&self.name_prompt, panes.bar) {
+            let at = name_prompt.bar.render(frame, area);
+            frame.set_cursor_position(at);
+        }
         if let Some(prompt) = self.prompt {
-            prompt.confirm().render(frame, frame.area());
+            self.confirm(prompt).render(frame, frame.area());
         }
     }
 }
 
+/// The last part of `path`, for messages.
+fn file_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
 /// Where each part of the screen goes: the tree (when shown), a `│` divider and
-/// the editor side by side, above a one-row status line.
+/// the editor side by side, above the prompt bar (while open) and a one-row status
+/// line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Panes {
     tree: Option<Rect>,
     divider: Option<Rect>,
     editor: Rect,
+    bar: Option<Rect>,
     status: Rect,
 }
 
 impl Panes {
-    fn new(screen: Rect, tree_visible: bool) -> Self {
-        let [main, status] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(screen);
+    fn new(screen: Rect, tree_visible: bool, bar_open: bool) -> Self {
+        let [main, bar, status] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(u16::from(bar_open)),
+            Constraint::Length(1),
+        ])
+        .areas(screen);
+        let bar = bar_open.then_some(bar);
         if !tree_visible {
             return Panes {
                 tree: None,
                 divider: None,
                 editor: main,
+                bar,
                 status,
             };
         }
@@ -742,6 +971,7 @@ impl Panes {
             tree: Some(tree),
             divider: Some(divider),
             editor,
+            bar,
             status,
         }
     }
@@ -1374,6 +1604,116 @@ world",
         assert_eq!(app.prompt, None);
         assert_eq!(std::fs::read_to_string(dir.path().join("a.txt"))?, "xa");
         assert_eq!(app.buffer.rope.to_string(), "b");
+        Ok(())
+    }
+
+    fn type_keys(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.handle_event(key(&c.to_string()));
+        }
+    }
+
+    fn selected_name(app: &App) -> Option<&str> {
+        app.tree.selected_row().map(|row| row.entry.name.as_str())
+    }
+
+    #[test]
+    fn d_asks_then_trashes_and_closes_the_open_buffer() -> Result<()> {
+        let (dir, mut app) = project()?;
+        let trash = ops::FakeTrash::default();
+        app.trash = Box::new(trash.clone());
+        let a = dir.path().join("a.txt");
+        press(&mut app, &["enter", "ctrl+e"]);
+        assert_eq!(app.buffer.path.as_deref(), Some(a.as_path()));
+
+        press(&mut app, &["d"]);
+        assert_eq!(app.prompt, Some(Prompt::Trash));
+        assert_eq!(
+            app.confirm(Prompt::Trash).text(),
+            "Move a.txt to trash? y / n"
+        );
+        // `n` and Esc both leave everything alone.
+        press(&mut app, &["n"]);
+        assert_eq!(app.prompt, None);
+        press(&mut app, &["d", "esc"]);
+        assert_eq!(app.prompt, None);
+        assert!(trash.trashed.borrow().is_empty());
+        assert!(a.exists());
+        assert_eq!(app.buffer.path.as_deref(), Some(a.as_path()));
+
+        press(&mut app, &["d", "y"]);
+        assert_eq!(trash.trashed.borrow().as_slice(), std::slice::from_ref(&a));
+        assert!(!a.exists());
+        assert_eq!(app.buffer.path, None);
+        assert_eq!(app.message.as_deref(), Some("moved a.txt to trash"));
+        // The tree read the disk again and kept a selection.
+        assert_eq!(app.tree.rows().len(), 1);
+        assert_eq!(selected_name(&app), Some("b.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_trash_says_why_and_keeps_the_buffer() -> Result<()> {
+        let (dir, mut app) = project()?;
+        app.trash = Box::new(ops::FakeTrash {
+            fail: true,
+            ..ops::FakeTrash::default()
+        });
+        press(&mut app, &["enter", "ctrl+e", "d", "y"]);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("cannot move a.txt to trash: trash unavailable")
+        );
+        assert!(dir.path().join("a.txt").exists());
+        assert_eq!(app.buffer.rope.to_string(), "a");
+        assert_eq!(app.tree.rows().len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn tree_letters_type_into_the_editor_and_the_bar() -> Result<()> {
+        let (dir, mut app) = project()?;
+        // In the tree `a` opens the bar; inside the bar `a`, `r`, `d` are text.
+        press(&mut app, &["a"]);
+        assert!(app.name_prompt.is_some());
+        assert_eq!(app.panes().editor.height, 28);
+        type_keys(&mut app, "dra.txt");
+        press(&mut app, &["enter"]);
+        assert_eq!(app.name_prompt, None);
+        assert!(dir.path().join("dra.txt").is_file());
+        // The new file is open with focus in the editor, where letters are text.
+        assert_eq!(app.focus, Focus::Editor);
+        type_keys(&mut app, "ard");
+        assert_eq!(app.buffer.rope.to_string(), "ard");
+        assert_eq!(selected_name(&app), Some("dra.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn rename_moves_the_open_buffer_to_the_new_path() -> Result<()> {
+        let (dir, mut app) = project()?;
+        press(&mut app, &["enter", "x", "ctrl+e", "r"]);
+        let bar = app.name_prompt.as_ref().map(|p| p.bar.text().to_string());
+        assert_eq!(bar.as_deref(), Some("a.txt"));
+        press(&mut app, &["backspace"; 3]);
+        type_keys(&mut app, "md");
+        press(&mut app, &["enter"]);
+        let renamed = dir.path().join("a.md");
+        assert!(renamed.exists() && !dir.path().join("a.txt").exists());
+        assert_eq!(app.buffer.path.as_deref(), Some(renamed.as_path()));
+        assert_eq!(selected_name(&app), Some("a.md"));
+        // Unsaved edits survive and save to the new name.
+        press(&mut app, &["ctrl+e", "ctrl+s"]);
+        assert_eq!(std::fs::read_to_string(&renamed)?, "xa");
+
+        // A clash changes nothing and says why.
+        press(&mut app, &["ctrl+e", "r"]);
+        press(&mut app, &["backspace"; 4]);
+        type_keys(&mut app, "b.txt");
+        press(&mut app, &["enter"]);
+        assert_eq!(app.message.as_deref(), Some("b.txt already exists"));
+        assert_eq!(std::fs::read_to_string(dir.path().join("b.txt"))?, "b");
+        assert!(renamed.exists());
         Ok(())
     }
 

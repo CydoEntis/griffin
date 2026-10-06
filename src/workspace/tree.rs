@@ -1,7 +1,8 @@
 //! The file tree as a flat list of visible rows: expanding a folder reads it from
 //! disk and inserts its entries below it, collapsing removes them again.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use super::walk::{Entry, list_dir};
 
@@ -17,6 +18,7 @@ pub struct Row {
 
 #[derive(Debug, Default, Clone)]
 pub struct Tree {
+    root: PathBuf,
     rows: Vec<Row>,
     selected: usize,
     /// First row shown.
@@ -35,10 +37,45 @@ impl Tree {
             })
             .collect();
         Tree {
+            root: root.to_path_buf(),
             rows,
             selected: 0,
             scroll: 0,
         }
+    }
+
+    /// The folder the tree lists.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Reads the disk again after a file operation, keeping expanded folders
+    /// expanded. When `show` is given, the folders holding it are expanded too and
+    /// it becomes the selection; otherwise the selection stays on the same row
+    /// number, or the last row if the list got shorter.
+    pub fn reload(&mut self, show: Option<&Path>) {
+        let mut expanded: HashSet<PathBuf> = self
+            .rows
+            .iter()
+            .filter(|row| row.expanded)
+            .map(|row| row.entry.path.clone())
+            .collect();
+        if let Some(path) = show {
+            let mut parent = path.parent();
+            while let Some(dir) = parent {
+                if dir == self.root || !dir.starts_with(&self.root) {
+                    break;
+                }
+                expanded.insert(dir.to_path_buf());
+                parent = dir.parent();
+            }
+        }
+        let mut rows = Vec::new();
+        push_rows(&self.root, 0, &expanded, &mut rows);
+        self.rows = rows;
+        let found = show.and_then(|path| self.rows.iter().position(|r| r.entry.path == path));
+        self.selected = found.unwrap_or(self.selected);
+        self.move_by(0);
     }
 
     pub fn rows(&self) -> &[Row] {
@@ -140,6 +177,23 @@ impl Tree {
     }
 }
 
+/// Appends `dir`'s entries at `depth`, and recursively those of each folder in
+/// `expanded`.
+fn push_rows(dir: &Path, depth: usize, expanded: &HashSet<PathBuf>, rows: &mut Vec<Row>) {
+    for entry in list_dir(dir) {
+        let open = entry.is_dir && expanded.contains(&entry.path);
+        let path = entry.path.clone();
+        rows.push(Row {
+            entry,
+            depth,
+            expanded: open,
+        });
+        if open {
+            push_rows(&path, depth + 1, expanded, rows);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,6 +288,40 @@ mod tests {
         assert_eq!(tree.scroll, 0);
         tree.scroll_by(10, 2);
         assert_eq!(tree.scroll, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn reload_keeps_folders_open_and_reveals_the_new_entry() -> anyhow::Result<()> {
+        let dir = project()?;
+        let mut tree = Tree::new(dir.path());
+        tree.select(1);
+        tree.expand();
+        assert_eq!(lines(&tree), ["a", "b", "z.txt"]);
+
+        // A new file deep inside a collapsed folder: its folders open to show it.
+        fs::write(dir.path().join("a").join("inner").join("new.txt"), "")?;
+        tree.reload(Some(&dir.path().join("a").join("inner").join("new.txt")));
+        assert_eq!(
+            lines(&tree),
+            [
+                "a",
+                "  inner",
+                "    deep.txt",
+                "    new.txt",
+                "  x.txt",
+                "b",
+                "z.txt"
+            ]
+        );
+        assert_eq!(tree.selected(), 3);
+
+        // A deleted last row: the selection falls back to the new last row.
+        tree.select(6);
+        fs::remove_file(dir.path().join("z.txt"))?;
+        tree.reload(None);
+        assert_eq!(tree.rows().len(), 6);
+        assert_eq!(tree.selected(), 5);
         Ok(())
     }
 }
