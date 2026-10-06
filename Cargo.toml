@@ -15,3 +15,8 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 futures-util = "0.3"
 ratatui = "0.30"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[dev-dependencies]
+portable-pty = "0.9"
+tempfile = "3"
+vt100 = "0.16"
