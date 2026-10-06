@@ -1,3 +1,4 @@
+pub mod edit;
 pub mod movement;
 
 use std::fs;
@@ -34,7 +35,7 @@ pub struct Buffer {
     // Read back when saving (#7).
     #[allow(dead_code)]
     pub line_ending: LineEnding,
-    // Set by editing (#6).
+    /// Set by every edit; shown on screen by #7.
     #[allow(dead_code)]
     pub dirty: bool,
     /// Char index into `rope`; at most `rope.len_chars()`.

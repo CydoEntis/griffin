@@ -15,6 +15,10 @@ use crate::config::KeysConfig;
 pub enum Action {
     Quit,
     Move(Motion),
+    Newline,
+    Backspace,
+    Delete,
+    Tab,
 }
 
 impl Action {
@@ -32,6 +36,10 @@ impl Action {
         Action::Move(Motion::WordRight),
         Action::Move(Motion::DocStart),
         Action::Move(Motion::DocEnd),
+        Action::Newline,
+        Action::Backspace,
+        Action::Delete,
+        Action::Tab,
     ];
 
     /// The name used on the left of `[keys]`.
@@ -52,6 +60,10 @@ impl Action {
                 Motion::DocStart => "doc_start",
                 Motion::DocEnd => "doc_end",
             },
+            Action::Newline => "newline",
+            Action::Backspace => "backspace",
+            Action::Delete => "delete",
+            Action::Tab => "tab",
         }
     }
 
@@ -60,7 +72,8 @@ impl Action {
     }
 }
 
-/// The spec's "Default keymap" table and R4's movement keys, one line per binding.
+/// The spec's "Default keymap" table plus R4's movement and R6's editing keys, one
+/// line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Move(Motion::Left), "left"),
@@ -75,6 +88,10 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Move(Motion::WordRight), "ctrl+right"),
     (Action::Move(Motion::DocStart), "ctrl+home"),
     (Action::Move(Motion::DocEnd), "ctrl+end"),
+    (Action::Newline, "enter"),
+    (Action::Backspace, "backspace"),
+    (Action::Delete, "delete"),
+    (Action::Tab, "tab"),
 ];
 
 /// What a key event means to the editor.
@@ -520,9 +537,27 @@ mod tests {
             Input::Ignored
         );
         assert_eq!(
-            map.resolve(&ev(KeyCode::Enter, KeyModifiers::NONE)),
+            map.resolve(&ev(KeyCode::F(9), KeyModifiers::NONE)),
             Input::Ignored
         );
+    }
+
+    #[test]
+    fn editing_keys_resolve_to_their_actions() {
+        let map = Keymap::default();
+        let none = KeyModifiers::NONE;
+        for (code, action) in [
+            (KeyCode::Enter, Action::Newline),
+            (KeyCode::Backspace, Action::Backspace),
+            (KeyCode::Delete, Action::Delete),
+            (KeyCode::Tab, Action::Tab),
+        ] {
+            assert_eq!(
+                map.resolve(&ev(code, none)),
+                Input::Action(action),
+                "{code:?}"
+            );
+        }
     }
 
     #[test]
