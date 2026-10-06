@@ -224,6 +224,30 @@ impl Griffin {
         }
     }
 
+    /// Waits until `text` is nowhere on screen. Panics with the screen on timeout.
+    pub fn wait_for_text_gone(&self, text: &str, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut parser = self.parser();
+        loop {
+            if !parser.screen().contents().contains(text) {
+                return;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                panic!(
+                    "timed out after {timeout:?} waiting for {text:?} to go away\n{}",
+                    dump(&screen_lines(&parser))
+                );
+            }
+            parser = self
+                .shared
+                .changed
+                .wait_timeout(parser, deadline - now)
+                .expect("screen lock poisoned")
+                .0;
+        }
+    }
+
     /// Waits until the cursor is at (col, row), 0-based. The cursor moves after the
     /// frame's text is written, so seeing new text doesn't mean the cursor is there
     /// yet. Panics with the screen and the cursor on timeout.

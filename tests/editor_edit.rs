@@ -47,8 +47,11 @@ fn assert_one_line(griffin: &Griffin) {
     assert!(!second, "lines should have joined: {screen:#?}");
 }
 
+/// Every test here edits an untitled buffer, so Ctrl+Q asks first; discard.
 fn quit(griffin: &mut Griffin) {
     griffin.send_keys("ctrl+q");
+    griffin.wait_for_text("Unsaved changes", WAIT);
+    griffin.type_text("d");
     let status = griffin.wait_exit(WAIT);
     assert!(status.success(), "griffin exited with {status:?}");
 }

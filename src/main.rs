@@ -2,6 +2,7 @@ mod app;
 mod buffer;
 mod config;
 mod keymap;
+mod save;
 mod ui;
 mod view;
 

@@ -5,11 +5,13 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use ropey::Rope;
 
-/// The line ending a file used on disk. The rope always holds LF; saving (#7)
-/// writes this one back.
+use crate::save::save_atomic;
+
+/// The line ending a file used on disk. The rope always holds LF; saving writes
+/// this one back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineEnding {
     #[default]
@@ -32,11 +34,8 @@ impl LineEnding {
 pub struct Buffer {
     pub rope: Rope,
     pub path: Option<PathBuf>,
-    // Read back when saving (#7).
-    #[allow(dead_code)]
     pub line_ending: LineEnding,
-    /// Set by every edit; shown on screen by #7.
-    #[allow(dead_code)]
+    /// Set by every edit, cleared by saving; the status line marks it with `●`.
     pub dirty: bool,
     /// Char index into `rope`; at most `rope.len_chars()`.
     pub cursor: usize,
@@ -84,6 +83,22 @@ impl Buffer {
             cursor: 0,
             goal_col: None,
         }
+    }
+
+    /// Writes the buffer to its path atomically, with the line ending the file had
+    /// on disk, and clears `dirty`. An untitled buffer can't be saved yet.
+    pub fn save(&mut self) -> Result<()> {
+        let Some(path) = &self.path else {
+            bail!("no file name");
+        };
+        let text = self.rope.to_string();
+        let text = match self.line_ending {
+            LineEnding::Lf => text,
+            LineEnding::Crlf => text.replace('\n', "\r\n"),
+        };
+        save_atomic(path, &text)?;
+        self.dirty = false;
+        Ok(())
     }
 
     /// What the status line calls this buffer.
@@ -152,6 +167,62 @@ mod tests {
     fn non_utf8_file_is_refused() {
         let err = open_bytes(b"ok \xff\xfe bad").expect_err("invalid UTF-8 must not open");
         assert_eq!(err.to_string(), "not UTF-8");
+    }
+
+    /// Opens `bytes` from a file, types `typed` at the start, saves, and returns
+    /// what landed on disk.
+    fn round_trip(bytes: &[u8], typed: &str) -> Result<Vec<u8>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("file.txt");
+        fs::write(&path, bytes)?;
+        let mut buf = Buffer::open(&path)?;
+        buf.insert(typed);
+        assert_eq!(buf.dirty, !typed.is_empty());
+        buf.save()?;
+        assert!(!buf.dirty);
+        Ok(fs::read(&path)?)
+    }
+
+    #[test]
+    fn saving_a_crlf_file_writes_crlf() -> Result<()> {
+        assert_eq!(round_trip(b"one\r\ntwo\r\n", "")?, b"one\r\ntwo\r\n");
+        // Line breaks typed into a CRLF file are written as CRLF too.
+        assert_eq!(round_trip(b"a\r\nb\r\n", "x\n")?, b"x\r\na\r\nb\r\n");
+        Ok(())
+    }
+
+    #[test]
+    fn saving_an_lf_file_writes_lf() -> Result<()> {
+        assert_eq!(round_trip(b"one\ntwo\n", "x\n")?, b"x\none\ntwo\n");
+        Ok(())
+    }
+
+    #[test]
+    fn a_missing_final_newline_stays_missing() -> Result<()> {
+        assert_eq!(round_trip(b"one\ntwo", "")?, b"one\ntwo");
+        assert_eq!(round_trip(b"one\r\ntwo", "")?, b"one\r\ntwo");
+        assert_eq!(round_trip(b"single", "x")?, b"xsingle");
+        Ok(())
+    }
+
+    #[test]
+    fn saving_a_missing_file_creates_it() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("new.txt");
+        let mut buf = Buffer::open(&path)?;
+        buf.insert("hi\n");
+        buf.save()?;
+        assert_eq!(fs::read(&path)?, b"hi\n");
+        Ok(())
+    }
+
+    #[test]
+    fn untitled_buffer_cannot_be_saved() {
+        let mut buf = Buffer::empty();
+        buf.insert("x");
+        let err = buf.save().expect_err("no path to save to");
+        assert_eq!(err.to_string(), "no file name");
+        assert!(buf.dirty);
     }
 
     #[test]
