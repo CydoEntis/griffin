@@ -86,7 +86,8 @@ pub struct Backups {
     /// `<data dir>/backups`; `None` when the OS has no data dir, which turns
     /// backups off.
     dir: Option<PathBuf>,
-    /// Names this run's untitled buffer, which has no path to hash.
+    /// Names this run's untitled buffers, which have no path to hash; each one adds
+    /// its tab's number.
     session: String,
     /// Serialises writes against deletes, so a write already in flight can't
     /// bring a backup back after saving or closing removed it. The number is bumped
@@ -114,8 +115,10 @@ impl Backups {
         }
     }
 
-    /// The backup file for a buffer with `path` (`None`: untitled).
-    pub fn path_for(&self, path: Option<&Path>) -> Option<PathBuf> {
+    /// The backup file for a buffer with `path`, or for the untitled buffer in tab
+    /// `untitled` when `path` is `None`. Several untitled tabs can be open at once,
+    /// so the session alone can't tell their backups apart.
+    pub fn path_for(&self, path: Option<&Path>, untitled: u64) -> Option<PathBuf> {
         let dir = self.dir.as_ref()?;
         let name = match path {
             Some(path) => {
@@ -125,16 +128,16 @@ impl Backups {
                     fnv1a(absolute.as_os_str().as_encoded_bytes())
                 )
             }
-            None => format!("{}.bak", self.session),
+            None => format!("{}-{untitled}.bak", self.session),
         };
         Some(dir.join(name))
     }
 
     /// A write of `text` for the buffer at `path`, to run off the main task.
     /// `None` when backups are off.
-    pub fn job(&self, path: Option<&Path>, text: String) -> Option<Job> {
+    pub fn job(&self, path: Option<&Path>, untitled: u64, text: String) -> Option<Job> {
         Some(Job {
-            target: self.path_for(path)?,
+            target: self.path_for(path, untitled)?,
             text,
             epoch: Arc::clone(&self.epoch),
             started: *self.lock(),
@@ -145,7 +148,7 @@ impl Backups {
     /// than the file (or the file is gone) and says something different. A backup
     /// identical to the file is useless and is removed.
     pub fn recoverable(&self, path: &Path) -> Option<String> {
-        let backup = self.path_for(Some(path))?;
+        let backup = self.path_for(Some(path), 0)?;
         let backup_time = fs::metadata(&backup).and_then(|m| m.modified()).ok()?;
         let file = fs::read(path).ok();
         let file_time = fs::metadata(path).and_then(|m| m.modified()).ok();
@@ -154,7 +157,7 @@ impl Backups {
         }
         let text = fs::read_to_string(&backup).ok()?;
         if file.as_deref() == Some(text.as_bytes()) {
-            let _ = self.delete(Some(path));
+            let _ = self.delete(Some(path), 0);
             return None;
         }
         Some(text)
@@ -162,8 +165,8 @@ impl Backups {
 
     /// Removes the buffer's backup, if it has one. Waits for a write in flight to
     /// finish first, and stops any that hasn't started from landing afterwards.
-    pub fn delete(&self, path: Option<&Path>) -> io::Result<()> {
-        let Some(backup) = self.path_for(path) else {
+    pub fn delete(&self, path: Option<&Path>, untitled: u64) -> io::Result<()> {
+        let Some(backup) = self.path_for(path, untitled) else {
             return Ok(());
         };
         let mut epoch = self.lock();
@@ -266,7 +269,7 @@ mod tests {
         );
 
         backups
-            .job(Some(&file), "edited\n".into())
+            .job(Some(&file), 0, "edited\n".into())
             .expect("backups are on")
             .run()?;
         let absolute = std::path::absolute(&file)?;
@@ -285,12 +288,12 @@ mod tests {
     #[test]
     fn names_hash_the_absolute_path_and_untitled_uses_the_session() {
         let backups = Backups::new(Some(PathBuf::from("data")));
-        let relative = backups.path_for(Some(Path::new("a.txt")));
+        let relative = backups.path_for(Some(Path::new("a.txt")), 0);
         let absolute = std::path::absolute("a.txt").unwrap();
-        assert_eq!(relative, backups.path_for(Some(&absolute)));
-        assert_ne!(relative, backups.path_for(Some(Path::new("b.txt"))));
+        assert_eq!(relative, backups.path_for(Some(&absolute), 0));
+        assert_ne!(relative, backups.path_for(Some(Path::new("b.txt")), 0));
 
-        let untitled = backups.path_for(None).unwrap();
+        let untitled = backups.path_for(None, 1).unwrap();
         let name = untitled.file_name().unwrap().to_string_lossy().into_owned();
         assert!(name.starts_with("untitled-"), "{name}");
         assert_eq!(
@@ -302,7 +305,9 @@ mod tests {
             session: "untitled-other".into(),
             ..backups.clone()
         };
-        assert_ne!(other.path_for(None), Some(untitled));
+        assert_ne!(other.path_for(None, 1), Some(untitled.clone()));
+        // So does another untitled tab of this session.
+        assert_ne!(backups.path_for(None, 2), Some(untitled));
     }
 
     #[test]
@@ -322,10 +327,10 @@ mod tests {
 
         fs::write(&file, "on disk\n")?;
         backups
-            .job(Some(&file), "backed up\n".into())
+            .job(Some(&file), 0, "backed up\n".into())
             .unwrap()
             .run()?;
-        let backup = backups.path_for(Some(&file)).unwrap();
+        let backup = backups.path_for(Some(&file), 0).unwrap();
         let file_time = fs::metadata(&file)?.modified()?;
         let set_backup_time = |time: SystemTime| {
             fs::File::options()
@@ -357,11 +362,11 @@ mod tests {
     fn delete_removes_the_backup_and_cancels_a_pending_write() -> io::Result<()> {
         let data = tempfile::tempdir()?;
         let backups = Backups::new(Some(data.path().to_path_buf()));
-        backups.job(None, "one".into()).unwrap().run()?;
+        backups.job(None, 0, "one".into()).unwrap().run()?;
         assert_eq!(backups_in(data.path()).len(), 1);
 
-        let pending = backups.job(None, "two".into()).unwrap();
-        backups.delete(None)?;
+        let pending = backups.job(None, 0, "two".into()).unwrap();
+        backups.delete(None, 0)?;
         assert!(backups_in(data.path()).is_empty());
         pending.run()?;
         assert!(
@@ -370,8 +375,8 @@ mod tests {
         );
 
         // Deleting what isn't there is fine; a fresh job writes again.
-        backups.delete(None)?;
-        backups.job(None, "three".into()).unwrap().run()?;
+        backups.delete(None, 0)?;
+        backups.job(None, 0, "three".into()).unwrap().run()?;
         assert_eq!(backups_in(data.path()).len(), 1);
         Ok(())
     }
@@ -383,7 +388,7 @@ mod tests {
         let data = parent.path().join("data");
         fs::write(&data, "not a folder")?;
         let backups = Backups::new(Some(data));
-        assert!(backups.job(None, "x".into()).unwrap().run().is_err());
+        assert!(backups.job(None, 0, "x".into()).unwrap().run().is_err());
         Ok(())
     }
 
@@ -399,8 +404,8 @@ mod tests {
     #[test]
     fn no_data_dir_turns_backups_off() {
         let backups = Backups::default();
-        assert_eq!(backups.path_for(None), None);
-        assert!(backups.job(None, "x".into()).is_none());
-        assert!(backups.delete(None).is_ok());
+        assert_eq!(backups.path_for(None, 0), None);
+        assert!(backups.job(None, 0, "x".into()).is_none());
+        assert!(backups.delete(None, 0).is_ok());
     }
 }

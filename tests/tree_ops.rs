@@ -49,9 +49,12 @@ fn open_copy() -> (tempfile::TempDir, Griffin) {
     (dir, griffin)
 }
 
+/// The tree pane's rows from row 1 (row 0 belongs to the tab bar) down to the first
+/// empty one.
 fn tree_rows(screen: &[String]) -> Vec<String> {
     screen
         .iter()
+        .skip(1)
         .map(|line| {
             line.chars()
                 .take(TREE)
@@ -91,7 +94,7 @@ fn a_creates_a_file_beside_the_selected_file_and_opens_it() {
     for _ in 0..4 {
         griffin.send_keys("down");
     }
-    wait_for_selected(&griffin, 4, "  README.md");
+    wait_for_selected(&griffin, 5, "  README.md");
 
     griffin.send_keys("a");
     wait_for_bar(&griffin, "New file:");
@@ -111,14 +114,14 @@ fn a_creates_a_file_beside_the_selected_file_and_opens_it() {
             "  README.md",
         ],
     );
-    wait_for_selected(&griffin, 3, "  notes.md");
+    wait_for_selected(&griffin, 4, "  notes.md");
     // The bar is gone and the editor shows the new, empty file.
     griffin.wait_for_screen("the bar closed", WAIT, |screen| {
         !screen[BAR].contains("New file")
     });
     wait_for_status(&griffin, "notes.md  Ln 1, Col 1");
     let screen = griffin.screen();
-    let editor: String = screen[0].chars().skip(TREE + 1).collect();
+    let editor: String = screen[1].chars().skip(TREE + 1).collect();
     assert_eq!(editor.trim_end(), " 1 │", "{screen:#?}");
     assert_eq!(
         fs::read(dir.path().join("notes.md")).expect("read new file"),
@@ -136,7 +139,7 @@ fn a_creates_a_file_beside_the_selected_file_and_opens_it() {
 #[test]
 fn a_and_shift_a_create_inside_the_selected_folder() {
     let (dir, mut griffin) = open_copy();
-    wait_for_selected(&griffin, 0, "▸ docs");
+    wait_for_selected(&griffin, 1, "▸ docs");
 
     griffin.send_keys("a");
     wait_for_bar(&griffin, "New file:");
@@ -155,7 +158,7 @@ fn a_and_shift_a_create_inside_the_selected_folder() {
             "  README.md",
         ],
     );
-    wait_for_selected(&griffin, 2, "    new.md");
+    wait_for_selected(&griffin, 3, "    new.md");
     assert!(dir.path().join("docs").join("new.md").is_file());
 
     // Back in the tree, Shift+A makes a folder next to the selected file.
@@ -177,7 +180,7 @@ fn a_and_shift_a_create_inside_the_selected_folder() {
             "  README.md",
         ],
     );
-    wait_for_selected(&griffin, 1, "  ▸ drafts");
+    wait_for_selected(&griffin, 2, "  ▸ drafts");
     assert!(dir.path().join("docs").join("drafts").is_dir());
 }
 
@@ -210,7 +213,7 @@ fn r_renames_and_the_open_buffer_follows() {
             "  README.md",
         ],
     );
-    wait_for_selected(&griffin, 3, "  notes.md");
+    wait_for_selected(&griffin, 4, "  notes.md");
     wait_for_status(&griffin, "renamed to notes.md");
     assert!(!dir.path().join("notes.txt").exists());
 
@@ -232,7 +235,7 @@ fn an_existing_or_invalid_name_changes_nothing() {
     for _ in 0..4 {
         griffin.send_keys("down");
     }
-    wait_for_selected(&griffin, 4, "  README.md");
+    wait_for_selected(&griffin, 5, "  README.md");
 
     griffin.send_keys("a");
     wait_for_bar(&griffin, "New file:");
@@ -240,7 +243,7 @@ fn an_existing_or_invalid_name_changes_nothing() {
     griffin.send_keys("enter");
     wait_for_status(&griffin, "notes.txt already exists");
     wait_for_tree(&griffin, TOP);
-    wait_for_selected(&griffin, 4, "  README.md");
+    wait_for_selected(&griffin, 5, "  README.md");
     assert_eq!(
         fs::read(dir.path().join("notes.txt")).expect("read notes"),
         notes

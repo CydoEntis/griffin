@@ -8,6 +8,8 @@ const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(5);
 const RENDER: &str = "tests/fixtures/render.txt";
 const LONG: &str = "tests/fixtures/long.txt";
+/// The first row of the editor pane, just below the tab bar.
+const TOP: u16 = 1;
 /// The last row of the editor pane, just above the status line.
 const LAST_TEXT_ROW: u16 = ROWS - 2;
 
@@ -51,36 +53,36 @@ fn quit(griffin: &mut Griffin) {
 fn status_shows_position() {
     let mut griffin = Griffin::spawn(&[RENDER]);
     griffin.wait_for_text("fn main() {", START);
-    let x = col_of(&griffin, 0, "fn main() {");
+    let x = col_of(&griffin, TOP, "fn main() {");
 
     wait_for_position(&griffin, 1, 1);
-    griffin.wait_for_cursor(x, 0, WAIT);
-    assert_eq!(griffin.cursor(), (x, 0));
+    griffin.wait_for_cursor(x, TOP, WAIT);
+    assert_eq!(griffin.cursor(), (x, TOP));
 
     let g = &mut griffin;
-    press(g, "right", (1, 2), (x + 1, 0));
-    press(g, "right", (1, 3), (x + 2, 0));
-    press(g, "right", (1, 4), (x + 3, 0));
+    press(g, "right", (1, 2), (x + 1, 1));
+    press(g, "right", (1, 3), (x + 2, 1));
+    press(g, "right", (1, 4), (x + 3, 1));
     // Line 2 starts with a tab filling cells 0-3; column 3 is inside it.
-    press(g, "down", (2, 1), (x, 1));
+    press(g, "down", (2, 1), (x, 2));
     // `\tlet x = 1;`: 11 chars, 14 cells.
-    press(g, "end", (2, 12), (x + 14, 1));
+    press(g, "end", (2, 12), (x + 14, 2));
     // `日本語 ok` is 9 cells wide, shorter than the goal column 14.
-    press(g, "down", (3, 7), (x + 9, 2));
+    press(g, "down", (3, 7), (x + 9, 3));
     // The goal column survives the shorter line.
-    press(g, "up", (2, 12), (x + 14, 1));
-    press(g, "down", (3, 7), (x + 9, 2));
+    press(g, "up", (2, 12), (x + 14, 2));
+    press(g, "down", (3, 7), (x + 9, 3));
     // `😀 ok`: a 2-cell emoji, then ` ok`.
-    press(g, "down", (4, 5), (x + 5, 3));
-    press(g, "ctrl+left", (4, 3), (x + 3, 3));
-    press(g, "ctrl+left", (4, 1), (x, 3));
-    press(g, "ctrl+right", (4, 2), (x + 2, 3));
-    press(g, "left", (4, 1), (x, 3));
-    press(g, "up", (3, 1), (x, 2));
-    press(g, "right", (3, 2), (x + 2, 2));
-    press(g, "home", (3, 1), (x, 2));
-    press(g, "ctrl+end", (6, 1), (x, 5));
-    press(g, "ctrl+home", (1, 1), (x, 0));
+    press(g, "down", (4, 5), (x + 5, 4));
+    press(g, "ctrl+left", (4, 3), (x + 3, 4));
+    press(g, "ctrl+left", (4, 1), (x, 4));
+    press(g, "ctrl+right", (4, 2), (x + 2, 4));
+    press(g, "left", (4, 1), (x, 4));
+    press(g, "up", (3, 1), (x, 3));
+    press(g, "right", (3, 2), (x + 2, 3));
+    press(g, "home", (3, 1), (x, 3));
+    press(g, "ctrl+end", (6, 1), (x, 6));
+    press(g, "ctrl+home", (1, 1), (x, 1));
 
     quit(&mut griffin);
 }
@@ -89,30 +91,30 @@ fn status_shows_position() {
 fn scrolls_to_cursor() {
     let mut griffin = Griffin::spawn(&[LONG]);
     // The first frame can arrive in pieces; wait for its last text row, not its first.
-    griffin.wait_for_text("line 29", START);
+    griffin.wait_for_text("line 28", START);
     // 200 lines: a 3-digit gutter, so text starts at column 7.
-    let x = col_of(&griffin, 0, "line 1");
-    assert!(screen_row(&griffin, LAST_TEXT_ROW).ends_with(" line 29"));
+    let x = col_of(&griffin, TOP, "line 1");
+    assert!(screen_row(&griffin, LAST_TEXT_ROW).ends_with(" line 28"));
 
     // Down to the last visible row: no scrolling yet.
-    for line in 2..=29 {
+    for line in 2..=28 {
         griffin.send_keys("down");
         wait_for_position(&griffin, line, 1);
     }
     griffin.wait_for_cursor(x, LAST_TEXT_ROW, WAIT);
-    assert!(screen_row(&griffin, 0).ends_with(" line 1"));
+    assert!(screen_row(&griffin, TOP).ends_with(" line 1"));
 
     // One more scrolls by one line.
-    press(&mut griffin, "down", (30, 1), (x, LAST_TEXT_ROW));
-    assert!(screen_row(&griffin, 0).ends_with(" line 2"));
-    assert!(screen_row(&griffin, LAST_TEXT_ROW).ends_with(" line 30"));
+    press(&mut griffin, "down", (29, 1), (x, LAST_TEXT_ROW));
+    assert!(screen_row(&griffin, TOP).ends_with(" line 2"));
+    assert!(screen_row(&griffin, LAST_TEXT_ROW).ends_with(" line 29"));
 
     // Back above the first visible row scrolls up.
-    press(&mut griffin, "ctrl+home", (1, 1), (x, 0));
-    assert!(screen_row(&griffin, 0).ends_with(" line 1"));
+    press(&mut griffin, "ctrl+home", (1, 1), (x, TOP));
+    assert!(screen_row(&griffin, TOP).ends_with(" line 1"));
 
-    press(&mut griffin, "pagedown", (30, 1), (x, LAST_TEXT_ROW));
-    assert!(screen_row(&griffin, 0).ends_with(" line 2"));
+    press(&mut griffin, "pagedown", (29, 1), (x, LAST_TEXT_ROW));
+    assert!(screen_row(&griffin, TOP).ends_with(" line 2"));
 
     // The visual check: line 200 on the last text row.
     press(&mut griffin, "ctrl+end", (200, 9), (x + 8, LAST_TEXT_ROW));
@@ -121,10 +123,10 @@ fn scrolls_to_cursor() {
         "{:#?}",
         griffin.screen()
     );
-    assert!(screen_row(&griffin, 0).ends_with(" line 172"));
+    assert!(screen_row(&griffin, TOP).ends_with(" line 173"));
 
-    press(&mut griffin, "pageup", (171, 9), (x + 8, 0));
-    assert!(screen_row(&griffin, 0).ends_with(" line 171"));
+    press(&mut griffin, "pageup", (172, 9), (x + 8, TOP));
+    assert!(screen_row(&griffin, TOP).ends_with(" line 172"));
 
     quit(&mut griffin);
 }
@@ -133,8 +135,8 @@ fn scrolls_to_cursor() {
 fn scrolls_sideways_on_long_line() {
     let mut griffin = Griffin::spawn(&[RENDER]);
     griffin.wait_for_text("fn main() {", START);
-    let x = col_of(&griffin, 0, "fn main() {");
-    let long_row = 4;
+    let x = col_of(&griffin, TOP, "fn main() {");
+    let long_row = 5;
     assert!(!griffin.screen().iter().any(|row| row.contains("END")));
 
     for line in 2..=5 {
@@ -147,13 +149,13 @@ fn scrolls_sideways_on_long_line() {
     assert!(row.ends_with(" END"), "{:#?}", griffin.screen());
     // The whole pane scrolled sideways, so the short lines are out of view.
     assert!(
-        !griffin.screen()[0].contains("fn main"),
+        !griffin.screen()[usize::from(TOP)].contains("fn main"),
         "{:#?}",
         griffin.screen()
     );
 
     press(&mut griffin, "home", (5, 1), (x, long_row));
-    assert!(screen_row(&griffin, 0).contains("fn main() {"));
+    assert!(screen_row(&griffin, TOP).contains("fn main() {"));
     assert!(!griffin.screen().iter().any(|row| row.contains("END")));
 
     quit(&mut griffin);

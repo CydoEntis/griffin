@@ -29,7 +29,8 @@ fn wait_for_lines(griffin: &Griffin, lines: &[&str]) {
     let screen = griffin.screen();
     for (row, text) in lines.iter().enumerate() {
         let expected = format!("{} │ {text}", row + 1);
-        assert_eq!(screen[row].trim(), expected.trim_end(), "{screen:#?}");
+        // Row 0 is the tab bar.
+        assert_eq!(screen[row + 1].trim(), expected.trim_end(), "{screen:#?}");
     }
 }
 
@@ -48,33 +49,33 @@ fn open(text: &str) -> (tempfile::TempDir, Griffin) {
 fn shift_right_selects() {
     let (_dir, mut griffin) = open("hello world");
     wait_for_lines(&griffin, &["hello world"]);
-    assert_eq!(griffin.reversed_text(0), "");
+    assert_eq!(griffin.reversed_text(1), "");
 
     for _ in 0..5 {
         griffin.send_keys("shift+right");
     }
     wait_for_position(&griffin, 1, 6);
-    griffin.wait_for_reversed(0, "hello", WAIT);
+    griffin.wait_for_reversed(1, "hello", WAIT);
 
     // A plain movement drops the selection.
     griffin.send_keys("right");
     wait_for_position(&griffin, 1, 7);
-    griffin.wait_for_reversed(0, "", WAIT);
+    griffin.wait_for_reversed(1, "", WAIT);
 
     // Select it again and type over it.
     griffin.send_keys("home");
     for _ in 0..5 {
         griffin.send_keys("shift+right");
     }
-    griffin.wait_for_reversed(0, "hello", WAIT);
+    griffin.wait_for_reversed(1, "hello", WAIT);
     griffin.type_text("bye");
     wait_for_lines(&griffin, &["bye world"]);
-    griffin.wait_for_reversed(0, "", WAIT);
+    griffin.wait_for_reversed(1, "", WAIT);
     wait_for_position(&griffin, 1, 4);
 
     // Select all covers every line.
     griffin.send_keys("ctrl+a");
-    griffin.wait_for_reversed(0, "bye world", WAIT);
+    griffin.wait_for_reversed(1, "bye world", WAIT);
 }
 
 #[test]
@@ -95,7 +96,7 @@ fn paste_is_one_undo_step() {
 
     // A paste replaces the selection, still as one step.
     griffin.send_keys("ctrl+a");
-    griffin.wait_for_reversed(0, "ab", WAIT);
+    griffin.wait_for_reversed(1, "ab", WAIT);
     griffin.write(b"\x1b[200~xyz\x1b[201~");
     wait_for_lines(&griffin, &["xyz"]);
     griffin.send_keys("ctrl+z");

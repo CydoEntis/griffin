@@ -26,6 +26,7 @@ use crate::keymap::{Action, Input, Keymap, Scope};
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
 use crate::ui::prompt::{Outcome, PromptBar};
 use crate::ui::status::render_status;
+use crate::ui::tabs::{TabLabel, render_tabs, tab_at};
 use crate::ui::tree::{TREE_WIDTH, render_divider, render_tree};
 use crate::view::{View, render_buffer};
 use crate::workspace::ops::{self, Trash};
@@ -45,31 +46,43 @@ pub enum AppEvent {
 /// A question that takes over the keyboard until it's answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Prompt {
-    /// Ctrl+Q with unsaved changes.
+    /// Ctrl+Q with unsaved changes, asked once per dirty tab, about the active one.
     UnsavedQuit,
+    /// Closing the active tab with unsaved changes.
+    UnsavedClose,
     /// The file opened with a newer crash backup beside it.
     Recover,
-    /// Opening another file from the tree with unsaved changes.
-    UnsavedOpen,
     /// Moving the tree's selected entry to the trash.
     Trash,
 }
 
+/// What happens once a save as succeeds, for the saves a question started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterSave {
+    Nothing,
+    /// The close prompt's save: close the tab.
+    Close,
+    /// The quit prompt's save: go on to the next dirty tab, or quit.
+    Quit,
+}
+
 /// What the prompt bar's answer will be used for.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum TreeOp {
+enum BarOp {
     /// A new file in this folder.
     NewFile(PathBuf),
     /// A new folder in this folder.
     NewFolder(PathBuf),
     /// A new name for this file or folder.
     Rename(PathBuf),
+    /// A path, relative to the project root, to save the active buffer to.
+    SaveAs(AfterSave),
 }
 
 /// The prompt bar while it asks for a name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NamePrompt {
-    op: TreeOp,
+    op: BarOp,
     bar: PromptBar,
 }
 
@@ -140,14 +153,117 @@ struct Click {
     row: u16,
 }
 
+/// One open buffer and the part of it the editor shows.
+#[derive(Debug)]
+struct Tab {
+    /// Unique for the run; names an untitled buffer's crash backup.
+    id: u64,
+    buffer: Buffer,
+    view: View,
+    /// Edited since its last backup was started.
+    backup_due: bool,
+}
+
+impl Tab {
+    fn label(&self) -> TabLabel {
+        TabLabel {
+            name: self
+                .buffer
+                .path
+                .as_deref()
+                .map_or_else(|| "untitled".to_string(), file_name),
+            dirty: self.buffer.dirty,
+        }
+    }
+
+    /// An untitled buffer nobody has typed in, which opening a file may replace.
+    fn is_pristine(&self) -> bool {
+        self.buffer.path.is_none() && !self.buffer.dirty && self.buffer.rope.len_chars() == 0
+    }
+}
+
+/// The open tabs, never empty: closing the last one leaves an untitled tab.
+#[derive(Debug)]
+struct Tabs {
+    list: Vec<Tab>,
+    /// Index into `list`; always in bounds.
+    active: usize,
+    next_id: u64,
+}
+
+impl Default for Tabs {
+    fn default() -> Self {
+        Self::new(Buffer::empty())
+    }
+}
+
+impl Tabs {
+    fn new(buffer: Buffer) -> Self {
+        let mut tabs = Tabs {
+            list: Vec::new(),
+            active: 0,
+            next_id: 0,
+        };
+        tabs.push(buffer);
+        tabs
+    }
+
+    /// Adds `buffer` as the last tab and makes it active.
+    fn push(&mut self, buffer: Buffer) {
+        self.list.push(Tab {
+            id: self.next_id,
+            buffer,
+            view: View::default(),
+            backup_due: false,
+        });
+        self.next_id += 1;
+        self.active = self.list.len() - 1;
+    }
+
+    fn active(&self) -> &Tab {
+        &self.list[self.active]
+    }
+
+    fn active_mut(&mut self) -> &mut Tab {
+        &mut self.list[self.active]
+    }
+
+    /// The tab holding `path`, however the path was spelled.
+    fn find(&self, path: &Path) -> Option<usize> {
+        let wanted = absolute(path);
+        self.list
+            .iter()
+            .position(|tab| tab.buffer.path.as_deref().map(absolute).as_ref() == Some(&wanted))
+    }
+
+    /// Removes tab `index`; the one to its right (or, at the end, its left) takes
+    /// its place as active if it was.
+    fn remove(&mut self, index: usize) -> Tab {
+        let tab = self.list.remove(index);
+        if self.list.is_empty() {
+            self.push(Buffer::empty());
+        } else if index < self.active || self.active >= self.list.len() {
+            self.active -= 1;
+        }
+        tab
+    }
+
+    fn labels(&self) -> Vec<TabLabel> {
+        self.list.iter().map(Tab::label).collect()
+    }
+}
+
+/// `path` made absolute, so two spellings of one file compare equal.
+fn absolute(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// All editor state, owned by the main task.
 #[derive(Debug, Default)]
 pub struct App {
     keymap: Keymap,
     editor: EditorConfig,
-    /// The one open buffer; tabs arrive in phase 2.
-    buffer: Buffer,
-    view: View,
+    tabs: Tabs,
     /// The terminal's size as of the last draw; movement needs the editor pane's
     /// height for paging and both dimensions for scrolling.
     screen: Rect,
@@ -159,12 +275,13 @@ pub struct App {
     tree: Tree,
     tree_visible: bool,
     focus: Focus,
-    /// The file the unsaved-changes prompt will open once answered.
-    pending_open: Option<PathBuf>,
     /// The prompt bar, while it's asking for a name; it takes every key.
     name_prompt: Option<NamePrompt>,
     /// The entry the trash prompt will move once answered.
     pending_trash: Option<PathBuf>,
+    /// Tabs whose changes the user chose to discard while quitting, so the quit
+    /// prompt moves on to the next one. Emptied when the quit is cancelled.
+    quit_discarded: Vec<u64>,
     trash: Box<dyn Trash>,
     clipboard: Box<dyn Clipboard>,
     /// The previous left press, until a double-click uses it up.
@@ -210,11 +327,8 @@ impl App {
         Self {
             keymap,
             editor,
-            buffer,
-            view: View::default(),
-            screen: Rect::default(),
+            tabs: Tabs::new(buffer),
             message,
-            prompt: None,
             tree: Tree::new(&launch.root),
             tree_visible: launch.show_tree,
             // With only a folder open there's nothing to edit yet.
@@ -223,19 +337,7 @@ impl App {
             } else {
                 Focus::Editor
             },
-            pending_open: None,
-            name_prompt: None,
-            pending_trash: None,
-            trash: Box::default(),
-            clipboard: Box::default(),
-            last_click: None,
-            drag_from: None,
-            backups: Backups::default(),
-            recovery: None,
-            backup_failed: false,
-            edits: None,
-            events: None,
-            should_quit: false,
+            ..Self::default()
         }
     }
 
@@ -243,13 +345,26 @@ impl App {
     /// it has a newer one.
     pub fn with_backups(mut self, backups: Backups) -> Self {
         self.backups = backups;
-        if let Some(path) = &self.buffer.path
-            && let Some(text) = self.backups.recoverable(path)
+        if let Some(path) = self.buffer().path.clone()
+            && let Some(text) = self.backups.recoverable(&path)
         {
             self.recovery = Some(text);
             self.prompt = Some(Prompt::Recover);
         }
         self
+    }
+
+    fn buffer(&self) -> &Buffer {
+        &self.tabs.active().buffer
+    }
+
+    fn buffer_mut(&mut self) -> &mut Buffer {
+        &mut self.tabs.active_mut().buffer
+    }
+
+    #[cfg(test)]
+    fn view(&self) -> &View {
+        &self.tabs.active().view
     }
 
     pub async fn run(&mut self, terminal: &mut Tui) -> Result<()> {
@@ -361,7 +476,16 @@ impl App {
             Action::TreeNewFolder => self.start_create(true),
             Action::TreeRename => self.start_rename(),
             Action::TreeDelete => self.start_trash(),
-            Action::Quit | Action::Save | Action::ToggleTree | Action::FocusTree => {
+            Action::Quit
+            | Action::Save
+            | Action::ToggleTree
+            | Action::FocusTree
+            | Action::PrevTab
+            | Action::NextTab
+            | Action::GoToTab(_)
+            | Action::CloseTab
+            | Action::NewFile
+            | Action::SaveAs => {
                 self.handle_action(action);
             }
             _ => {}
@@ -370,7 +494,7 @@ impl App {
     }
 
     /// Enter or a click on the selected row: a folder opens or closes, a file opens
-    /// in the editor.
+    /// in a tab.
     fn activate_tree_row(&mut self) {
         let Some(row) = self.tree.selected_row() else {
             return;
@@ -379,28 +503,29 @@ impl App {
             self.tree.toggle();
         } else {
             let path = row.entry.path.clone();
-            self.request_open(path);
-        }
-    }
-
-    /// Opens `path` in place of the current buffer (tabs come later), asking first
-    /// when that would throw away unsaved changes.
-    fn request_open(&mut self, path: PathBuf) {
-        if self.buffer.dirty {
-            self.pending_open = Some(path);
-            self.prompt = Some(Prompt::UnsavedOpen);
-        } else {
             self.open(&path);
         }
     }
 
+    /// Shows `path` in the editor: switches to its tab when it's already open,
+    /// otherwise opens it in a new one. An untouched untitled tab is replaced rather
+    /// than left behind.
     fn open(&mut self, path: &Path) {
+        if let Some(index) = self.tabs.find(path) {
+            self.switch_tab(index);
+            self.focus = Focus::Editor;
+            return;
+        }
         match Buffer::open(path) {
             Ok(buffer) => {
-                // The old buffer goes without unsaved edits, so its backup can too.
-                self.delete_backup();
-                self.buffer = buffer;
-                self.view = View::default();
+                if self.tabs.active().is_pristine() {
+                    let tab = self.tabs.active_mut();
+                    tab.buffer = buffer;
+                    tab.view = View::default();
+                } else {
+                    self.tabs.push(buffer);
+                }
+                self.reset_mouse();
                 self.focus = Focus::Editor;
                 if let Some(text) = self.backups.recoverable(path) {
                     self.recovery = Some(text);
@@ -409,6 +534,70 @@ impl App {
                 self.follow_cursor();
             }
             Err(err) => self.message = Some(format!("cannot open {}: {err}", path.display())),
+        }
+    }
+
+    fn switch_tab(&mut self, index: usize) {
+        if index < self.tabs.list.len() && index != self.tabs.active {
+            self.tabs.active = index;
+            self.reset_mouse();
+            // The pane may have changed size while this tab was hidden.
+            self.follow_cursor();
+        }
+    }
+
+    /// Steps `delta` tabs along, wrapping at either end.
+    fn cycle_tab(&mut self, delta: isize) {
+        let len = self.tabs.list.len();
+        let index = self
+            .tabs
+            .active
+            .checked_add_signed(delta)
+            .unwrap_or(len - 1)
+            % len;
+        self.switch_tab(index);
+    }
+
+    /// A click or drag in one buffer means nothing in another.
+    fn reset_mouse(&mut self) {
+        self.last_click = None;
+        self.drag_from = None;
+    }
+
+    /// Ctrl+W or a middle click: closes the active tab, asking first when that
+    /// would throw away unsaved changes.
+    fn request_close(&mut self) {
+        if self.buffer().dirty {
+            self.prompt = Some(Prompt::UnsavedClose);
+        } else {
+            self.close_active();
+        }
+    }
+
+    /// Closes the active tab without asking; its edits, if any, were saved or
+    /// discarded, so its backup goes too.
+    fn close_active(&mut self) {
+        self.delete_backup();
+        self.tabs.remove(self.tabs.active);
+        self.reset_mouse();
+        self.follow_cursor();
+    }
+
+    /// Ctrl+Q, and each answer to the quit prompt: asks about the next tab with
+    /// unsaved changes (switching to it, so the user sees what they're deciding
+    /// about), or quits when none is left.
+    fn continue_quit(&mut self) {
+        let next = self
+            .tabs
+            .list
+            .iter()
+            .position(|tab| tab.buffer.dirty && !self.quit_discarded.contains(&tab.id));
+        match next {
+            Some(index) => {
+                self.switch_tab(index);
+                self.prompt = Some(Prompt::UnsavedQuit);
+            }
+            None => self.quit(),
         }
     }
 
@@ -448,19 +637,22 @@ impl App {
     fn handle_action(&mut self, action: Action) {
         // Enter joins the run of typing it ends; every other action closes it.
         if action != Action::Newline {
-            self.buffer.seal_undo_group();
+            self.buffer_mut().seal_undo_group();
         }
         match action {
-            Action::Quit if self.buffer.dirty => self.prompt = Some(Prompt::UnsavedQuit),
-            Action::Quit => self.quit(),
+            Action::Quit => {
+                self.quit_discarded.clear();
+                self.continue_quit();
+            }
             Action::Save => {
-                self.save();
+                self.save_or_ask(AfterSave::Nothing);
             }
             // Nothing to cancel outside a prompt.
             Action::Cancel => {}
             Action::Move(motion) => {
                 let page = usize::from(self.panes().editor.height);
-                self.buffer.move_cursor(motion, page, self.editor.tab_width);
+                let tab_width = self.editor.tab_width;
+                self.buffer_mut().move_cursor(motion, page, tab_width);
                 self.follow_cursor();
             }
             Action::Newline => self.edit(Buffer::newline),
@@ -478,11 +670,12 @@ impl App {
             }),
             Action::Select(motion) => {
                 let page = usize::from(self.panes().editor.height);
-                self.buffer.select(motion, page, self.editor.tab_width);
+                let tab_width = self.editor.tab_width;
+                self.buffer_mut().select(motion, page, tab_width);
                 self.follow_cursor();
             }
             Action::SelectAll => {
-                self.buffer.select_all();
+                self.buffer_mut().select_all();
                 self.follow_cursor();
             }
             Action::Copy => {
@@ -501,6 +694,17 @@ impl App {
             },
             Action::ToggleTree => self.toggle_tree(),
             Action::FocusTree => self.switch_focus(),
+            Action::PrevTab => self.cycle_tab(-1),
+            Action::NextTab => self.cycle_tab(1),
+            Action::GoToTab(n) => self.switch_tab(usize::from(n).saturating_sub(1)),
+            Action::CloseTab => self.request_close(),
+            Action::NewFile => {
+                self.tabs.push(Buffer::empty());
+                self.reset_mouse();
+                self.focus = Focus::Editor;
+                self.follow_cursor();
+            }
+            Action::SaveAs => self.start_save_as(AfterSave::Nothing),
             // Bound only in tree scope, so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
@@ -512,7 +716,7 @@ impl App {
     /// The card a confirm prompt shows.
     fn confirm(&self, prompt: Prompt) -> Confirm {
         match prompt {
-            Prompt::UnsavedQuit | Prompt::UnsavedOpen => UNSAVED_QUIT,
+            Prompt::UnsavedQuit | Prompt::UnsavedClose => UNSAVED_QUIT,
             Prompt::Recover => RECOVER,
             Prompt::Trash => Confirm {
                 question: Cow::Owned(format!(
@@ -545,9 +749,9 @@ impl App {
     fn start_create(&mut self, folder: bool) {
         let dir = self.target_folder();
         let (op, label) = if folder {
-            (TreeOp::NewFolder(dir), "New folder")
+            (BarOp::NewFolder(dir), "New folder")
         } else {
-            (TreeOp::NewFile(dir), "New file")
+            (BarOp::NewFile(dir), "New file")
         };
         self.open_name_prompt(op, PromptBar::new(label, ""));
     }
@@ -557,10 +761,23 @@ impl App {
             return;
         };
         let bar = PromptBar::new("Rename", &row.entry.name);
-        self.open_name_prompt(TreeOp::Rename(row.entry.path.clone()), bar);
+        self.open_name_prompt(BarOp::Rename(row.entry.path.clone()), bar);
     }
 
-    fn open_name_prompt(&mut self, op: TreeOp, bar: PromptBar) {
+    /// Opens the prompt bar for a path to save the active buffer to, holding its
+    /// current path relative to the project root.
+    fn start_save_as(&mut self, after: AfterSave) {
+        let current = self.buffer().path.as_deref().map(|path| {
+            path.strip_prefix(self.tree.root())
+                .unwrap_or(path)
+                .display()
+                .to_string()
+        });
+        let bar = PromptBar::new("Save as", current.as_deref().unwrap_or_default());
+        self.open_name_prompt(BarOp::SaveAs(after), bar);
+    }
+
+    fn open_name_prompt(&mut self, op: BarOp, bar: PromptBar) {
         self.name_prompt = Some(NamePrompt { op, bar });
         // The bar takes a row from the panes above it.
         self.follow_cursor();
@@ -583,14 +800,21 @@ impl App {
         };
         self.follow_cursor();
         self.follow_tree();
+        if let BarOp::SaveAs(after) = op {
+            let saved = outcome == Outcome::Submit && self.save_as(bar.text());
+            self.after_save(after, saved);
+            return;
+        }
         if outcome == Outcome::Cancel {
             return;
         }
         let name = bar.text();
         let result = match &op {
-            TreeOp::NewFile(dir) => ops::create_file(dir, name),
-            TreeOp::NewFolder(dir) => ops::create_folder(dir, name),
-            TreeOp::Rename(path) => ops::rename(path, name),
+            BarOp::NewFile(dir) => ops::create_file(dir, name),
+            BarOp::NewFolder(dir) => ops::create_folder(dir, name),
+            BarOp::Rename(path) => ops::rename(path, name),
+            // Handled above.
+            BarOp::SaveAs(_) => return,
         };
         let path = match result {
             Ok(path) => path,
@@ -602,37 +826,107 @@ impl App {
         self.tree.reload(Some(&path));
         self.follow_tree();
         match op {
-            TreeOp::NewFile(_) => {
+            BarOp::NewFile(_) => {
                 self.message = Some(format!("created {name}"));
-                self.request_open(path);
+                self.open(&path);
             }
-            TreeOp::NewFolder(_) => self.message = Some(format!("created {name}")),
-            TreeOp::Rename(old) => {
+            BarOp::NewFolder(_) => self.message = Some(format!("created {name}")),
+            BarOp::Rename(old) => {
                 self.message = Some(format!("renamed to {name}"));
                 self.follow_rename(&old, &path);
+            }
+            BarOp::SaveAs(_) => {}
+        }
+    }
+
+    /// Carries on with what a save from a question was for. A save that failed or
+    /// was cancelled stops a close or a quit, leaving everything open.
+    fn after_save(&mut self, after: AfterSave, saved: bool) {
+        match (after, saved) {
+            (AfterSave::Close, true) => self.close_active(),
+            (AfterSave::Quit, true) => self.continue_quit(),
+            (AfterSave::Quit, false) => self.quit_discarded.clear(),
+            _ => {}
+        }
+    }
+
+    /// Saves the active buffer to `relative` (to the project root) and points its
+    /// tab there. Refuses a path another tab has open or that names some other file
+    /// already on disk, so save as never overwrites anything by surprise.
+    fn save_as(&mut self, relative: &str) -> bool {
+        let relative = relative.trim();
+        if relative.is_empty() {
+            self.message = Some("no file name".into());
+            return false;
+        }
+        let root = self.tree.root();
+        // A root of "." would otherwise show up as a "./" in every message.
+        let target = if root == Path::new(".") {
+            PathBuf::from(relative)
+        } else {
+            root.join(relative)
+        };
+        let same_file = self
+            .buffer()
+            .path
+            .as_deref()
+            .is_some_and(|path| absolute(path) == absolute(&target));
+        if !same_file {
+            if self.tabs.find(&target).is_some() {
+                self.message = Some(format!("{relative} is open in another tab"));
+                return false;
+            }
+            if target.exists() {
+                self.message = Some(format!("{relative} already exists"));
+                return false;
+            }
+        }
+        let (id, old) = (self.tabs.active().id, self.buffer().path.clone());
+        self.buffer_mut().path = Some(target.clone());
+        let name = self.buffer().name();
+        match self.buffer_mut().save() {
+            Ok(()) => {
+                // The backup was keyed by the old path (or the tab, if untitled).
+                let _ = self.backups.delete(old.as_deref(), id);
+                self.message = Some(format!("saved {name}"));
+                self.tree.reload(Some(&target));
+                self.follow_tree();
+                true
+            }
+            Err(err) => {
+                self.buffer_mut().path = old;
+                self.message = Some(format!("cannot save {name}: {err}"));
+                false
             }
         }
     }
 
-    /// Points the open buffer at its new path when it, or a folder holding it, was
-    /// renamed, moving its crash backup along with it.
+    /// Points every tab at its file's new path when it, or a folder holding it, was
+    /// renamed, moving crash backups along.
     fn follow_rename(&mut self, old: &Path, new: &Path) {
-        let Some(moved) = self
-            .buffer
-            .path
-            .as_deref()
-            .and_then(|path| ops::rebase(path, old, new))
-        else {
-            return;
-        };
-        // Backups are keyed by path, so the old one would never be found again.
-        self.delete_backup();
-        self.buffer.path = Some(moved);
-        self.back_up();
+        let mut moved_any = false;
+        for tab in &mut self.tabs.list {
+            let Some(moved) = tab
+                .buffer
+                .path
+                .as_deref()
+                .and_then(|path| ops::rebase(path, old, new))
+            else {
+                continue;
+            };
+            // Backups are keyed by path, so the old one would never be found again.
+            let _ = self.backups.delete(tab.buffer.path.as_deref(), tab.id);
+            tab.buffer.path = Some(moved);
+            tab.backup_due = true;
+            moved_any = true;
+        }
+        if moved_any {
+            self.back_up();
+        }
     }
 
-    /// The trash prompt's yes: moves the entry to the OS trash and closes the open
-    /// buffer if it was that file or inside that folder.
+    /// The trash prompt's yes: moves the entry to the OS trash and closes the tabs
+    /// showing that file or anything inside that folder.
     fn trash_pending(&mut self) {
         let Some(path) = self.pending_trash.take() else {
             return;
@@ -642,19 +936,25 @@ impl App {
             self.message = Some(format!("cannot move {name} to trash: {err}"));
             return;
         }
-        let open = self.buffer.path.as_deref();
-        if open.is_some_and(|open| open.starts_with(&path)) {
-            self.delete_backup();
-            self.buffer = Buffer::empty();
-            self.view = View::default();
+        while let Some(index) = self.tabs.list.iter().position(|tab| {
+            tab.buffer
+                .path
+                .as_deref()
+                .is_some_and(|open| open.starts_with(&path))
+        }) {
+            let tab = self.tabs.remove(index);
+            let _ = self.backups.delete(tab.buffer.path.as_deref(), tab.id);
         }
+        self.reset_mouse();
+        self.follow_cursor();
         self.message = Some(format!("moved {name} to trash"));
         self.tree.reload(None);
         self.follow_tree();
     }
 
-    /// Click, drag, double-click and wheel in the editor pane. `now` is when the
-    /// event arrived, passed in so double-click timing is testable.
+    /// Click, drag, double-click and wheel in the editor pane, clicks on the tab
+    /// bar. `now` is when the event arrived, passed in so double-click timing is
+    /// testable.
     fn handle_mouse(&mut self, mouse: MouseEvent, now: Instant) {
         let panes = self.panes();
         let area = panes.editor;
@@ -665,11 +965,16 @@ impl App {
             self.handle_tree_mouse(mouse, tree);
             return;
         }
+        if panes.tabs.contains(Position::new(col, row)) {
+            self.handle_tab_mouse(mouse, panes.tabs);
+            return;
+        }
         let inside = area.contains(Position::new(col, row));
         let tab_width = self.editor.tab_width;
         let pos = |app: &Self| {
-            app.view
-                .screen_to_char(&app.buffer, area, col, row, tab_width)
+            let tab = app.tabs.active();
+            tab.view
+                .screen_to_char(&tab.buffer, area, col, row, tab_width)
         };
         match mouse.kind {
             // Ctrl+click is left for go to definition (#32).
@@ -683,12 +988,11 @@ impl App {
                         && now.saturating_duration_since(last.at) <= DOUBLE_CLICK
                 });
                 if double {
-                    self.buffer.select_word_at(pos);
+                    self.buffer_mut().select_word_at(pos);
                     // A third click starts over rather than counting as another double.
-                    self.last_click = None;
-                    self.drag_from = None;
+                    self.reset_mouse();
                 } else {
-                    self.buffer.place_cursor(pos);
+                    self.buffer_mut().place_cursor(pos);
                     self.last_click = Some(Click { at: now, col, row });
                     self.drag_from = Some(pos);
                 }
@@ -698,7 +1002,7 @@ impl App {
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(from) = self.drag_from {
                     let pos = pos(self);
-                    self.buffer.select_to(from, pos);
+                    self.buffer_mut().select_to(from, pos);
                     self.follow_cursor();
                 }
             }
@@ -707,28 +1011,50 @@ impl App {
                 // ends the selection there.
                 if let Some(from) = self.drag_from.take() {
                     let pos = pos(self);
-                    if pos != self.buffer.cursor {
-                        self.buffer.select_to(from, pos);
+                    if pos != self.buffer().cursor {
+                        self.buffer_mut().select_to(from, pos);
                         self.follow_cursor();
                     }
                 }
             }
             MouseEventKind::ScrollUp if inside => {
-                self.view.scroll_by(&self.buffer, area, -WHEEL_LINES);
+                let tab = self.tabs.active_mut();
+                tab.view.scroll_by(&tab.buffer, area, -WHEEL_LINES);
             }
             MouseEventKind::ScrollDown if inside => {
-                self.view.scroll_by(&self.buffer, area, WHEEL_LINES);
+                let tab = self.tabs.active_mut();
+                tab.view.scroll_by(&tab.buffer, area, WHEEL_LINES);
+            }
+            _ => {}
+        }
+    }
+
+    /// A left click selects the tab under it; a middle click closes it, asking
+    /// first (about that tab, now active) when it has unsaved changes.
+    fn handle_tab_mouse(&mut self, mouse: MouseEvent, area: Rect) {
+        self.reset_mouse();
+        let labels = self.tabs.labels();
+        let Some(index) = tab_at(&labels, self.tabs.active, area, mouse.column) else {
+            return;
+        };
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.switch_tab(index);
+                self.focus = Focus::Editor;
+            }
+            MouseEventKind::Down(MouseButton::Middle) => {
+                self.switch_tab(index);
+                self.request_close();
             }
             _ => {}
         }
     }
 
     /// A click selects the row under it and opens it (a folder opens or closes, a
-    /// file opens in the editor); the wheel scrolls the tree.
+    /// file opens in a tab); the wheel scrolls the tree.
     fn handle_tree_mouse(&mut self, mouse: MouseEvent, area: Rect) {
         // Whatever the editor was tracking for a drag or double-click is over.
-        self.drag_from = None;
-        self.last_click = None;
+        self.reset_mouse();
         let height = usize::from(area.height);
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -749,7 +1075,7 @@ impl App {
     /// Puts the selection on the clipboard. Returns whether something was copied,
     /// so cut never deletes text the clipboard didn't take.
     fn copy(&mut self) -> bool {
-        let Some(text) = self.buffer.selected_text() else {
+        let Some(text) = self.buffer().selected_text() else {
             return false;
         };
         match self.clipboard.set(&text) {
@@ -765,28 +1091,23 @@ impl App {
         self.prompt = None;
         match (prompt, answer) {
             (Prompt::UnsavedQuit, Answer::Picked('s')) => {
-                // A failed save leaves the editor open with the error showing.
-                if self.save() {
-                    self.quit();
-                }
+                self.save_or_ask(AfterSave::Quit);
             }
-            (Prompt::UnsavedQuit, Answer::Picked('d')) => self.quit(),
-            (Prompt::UnsavedQuit, _) => {}
-            (Prompt::UnsavedOpen, Answer::Picked(choice @ ('s' | 'd'))) => {
-                let Some(path) = self.pending_open.take() else {
-                    return;
-                };
-                // A failed save leaves the old buffer open with the error showing.
-                if choice == 'd' || self.save() {
-                    self.open(&path);
-                }
+            (Prompt::UnsavedQuit, Answer::Picked('d')) => {
+                self.quit_discarded.push(self.tabs.active().id);
+                self.continue_quit();
             }
-            (Prompt::UnsavedOpen, _) => self.pending_open = None,
+            (Prompt::UnsavedQuit, _) => self.quit_discarded.clear(),
+            (Prompt::UnsavedClose, Answer::Picked('s')) => {
+                self.save_or_ask(AfterSave::Close);
+            }
+            (Prompt::UnsavedClose, Answer::Picked('d')) => self.close_active(),
+            (Prompt::UnsavedClose, _) => {}
             (Prompt::Trash, Answer::Picked('y')) => self.trash_pending(),
             (Prompt::Trash, _) => self.pending_trash = None,
             (Prompt::Recover, Answer::Picked('r')) => {
                 if let Some(text) = self.recovery.take() {
-                    self.buffer.recover(&text);
+                    self.buffer_mut().recover(&text);
                     self.follow_cursor();
                 }
             }
@@ -800,33 +1121,52 @@ impl App {
         }
     }
 
-    /// Ends the session cleanly, which means the buffer's backup isn't needed.
+    /// Saves the active buffer, or asks for a path first when it's untitled; then
+    /// does `after`. A failed save leaves everything open with the error showing.
+    fn save_or_ask(&mut self, after: AfterSave) {
+        if self.buffer().path.is_none() {
+            self.start_save_as(after);
+        } else {
+            let saved = self.save();
+            self.after_save(after, saved);
+        }
+    }
+
+    /// Ends the session cleanly: every tab was saved or its changes discarded, so
+    /// no backup is needed.
     fn quit(&mut self) {
-        self.delete_backup();
+        for tab in &self.tabs.list {
+            let _ = self.backups.delete(tab.buffer.path.as_deref(), tab.id);
+        }
         self.should_quit = true;
     }
 
-    /// Starts writing the buffer's crash backup, if it has unsaved changes. The
-    /// write runs on a blocking thread with a copy of the text (ADR-0001).
+    /// Starts writing a crash backup of each tab edited since its last one that
+    /// still has unsaved changes. Writes run on a blocking thread with a copy of
+    /// the text (ADR-0001).
     fn back_up(&mut self) {
-        if !self.buffer.dirty {
-            return;
-        }
-        let Some(job) = self
-            .backups
-            .job(self.buffer.path.as_deref(), self.buffer.disk_text())
-        else {
-            return;
-        };
-        match &self.events {
-            Some(events) => {
-                let events = events.clone();
-                tokio::task::spawn_blocking(move || {
-                    // The loop has stopped if this fails; nobody is left to tell.
-                    let _ = events.send(AppEvent::BackupWritten(job.run()));
-                });
+        let mut jobs = Vec::new();
+        for tab in &mut self.tabs.list {
+            if !std::mem::take(&mut tab.backup_due) || !tab.buffer.dirty {
+                continue;
             }
-            None => self.backup_written(job.run()),
+            jobs.extend(self.backups.job(
+                tab.buffer.path.as_deref(),
+                tab.id,
+                tab.buffer.disk_text(),
+            ));
+        }
+        for job in jobs {
+            match &self.events {
+                Some(events) => {
+                    let events = events.clone();
+                    tokio::task::spawn_blocking(move || {
+                        // The loop has stopped if this fails; nobody is left to tell.
+                        let _ = events.send(AppEvent::BackupWritten(job.run()));
+                    });
+                }
+                None => self.backup_written(job.run()),
+            }
         }
     }
 
@@ -835,27 +1175,25 @@ impl App {
             Ok(()) => self.backup_failed = false,
             Err(err) if !self.backup_failed => {
                 self.backup_failed = true;
-                self.message = Some(format!("cannot back up {}: {err}", self.buffer.name()));
+                self.message = Some(format!("cannot back up {}: {err}", self.buffer().name()));
             }
             Err(_) => {}
         }
     }
 
+    /// Removes the active tab's backup.
     fn delete_backup(&mut self) {
         // Best effort: a leftover backup is only offered again if it is newer than
         // the file and differs from it, so failing here loses nothing.
-        let _ = self.backups.delete(self.buffer.path.as_deref());
+        let tab = self.tabs.active();
+        let _ = self.backups.delete(tab.buffer.path.as_deref(), tab.id);
     }
 
-    /// Saves the buffer and says how it went in the status line. Returns whether
-    /// the buffer is now saved.
+    /// Saves the active buffer and says how it went in the status line. Returns
+    /// whether the buffer is now saved.
     fn save(&mut self) -> bool {
-        if self.buffer.path.is_none() {
-            self.message = Some("no file name (save as comes later)".into());
-            return false;
-        }
-        let name = self.buffer.name();
-        match self.buffer.save() {
+        let name = self.buffer().name();
+        match self.buffer_mut().save() {
             Ok(()) => {
                 self.message = Some(format!("saved {name}"));
                 self.delete_backup();
@@ -869,7 +1207,9 @@ impl App {
     }
 
     fn edit(&mut self, edit: impl FnOnce(&mut Buffer)) {
-        edit(&mut self.buffer);
+        let tab = self.tabs.active_mut();
+        edit(&mut tab.buffer);
+        tab.backup_due = true;
         self.follow_cursor();
         if let Some(edits) = &self.edits {
             // The timer only stops with the loop, after which nothing edits.
@@ -878,8 +1218,9 @@ impl App {
     }
 
     fn follow_cursor(&mut self) {
-        self.view
-            .follow(&self.buffer, self.panes().editor, self.editor.tab_width);
+        let (area, tab_width) = (self.panes().editor, self.editor.tab_width);
+        let tab = self.tabs.active_mut();
+        tab.view.follow(&tab.buffer, area, tab_width);
     }
 
     fn panes(&self) -> Panes {
@@ -889,9 +1230,11 @@ impl App {
     /// Draws the whole screen. Pure: reads `self`, never changes it.
     pub fn render(&self, frame: &mut Frame) {
         let panes = Panes::new(frame.area(), self.tree_visible, self.name_prompt.is_some());
+        render_tabs(&self.tabs.labels(), self.tabs.active, panes.tabs, frame);
+        let tab = self.tabs.active();
         render_buffer(
-            &self.buffer,
-            &self.view,
+            &tab.buffer,
+            &tab.view,
             self.editor.tab_width,
             panes.editor,
             frame,
@@ -908,10 +1251,10 @@ impl App {
         render_status(
             frame,
             panes.status,
-            &self.buffer.name(),
-            self.buffer.dirty,
+            &tab.buffer.name(),
+            tab.buffer.dirty,
             self.message.as_deref(),
-            self.buffer.cursor_line_col(),
+            tab.buffer.cursor_line_col(),
         );
         if let (Some(name_prompt), Some(area)) = (&self.name_prompt, panes.bar) {
             let at = name_prompt.bar.render(frame, area);
@@ -923,7 +1266,7 @@ impl App {
     }
 }
 
-/// The last part of `path`, for messages.
+/// The last part of `path`, for messages and tab names.
 fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
@@ -931,13 +1274,14 @@ fn file_name(path: &Path) -> String {
     )
 }
 
-/// Where each part of the screen goes: the tree (when shown), a `│` divider and
-/// the editor side by side, above the prompt bar (while open) and a one-row status
-/// line.
+/// Where each part of the screen goes: the tree (when shown) from row 1 down, a
+/// `│` divider, then the tab bar on row 0 above the editor; below them the prompt
+/// bar (while open) and a one-row status line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Panes {
     tree: Option<Rect>,
     divider: Option<Rect>,
+    tabs: Rect,
     editor: Rect,
     bar: Option<Rect>,
     status: Rect,
@@ -952,24 +1296,26 @@ impl Panes {
         ])
         .areas(screen);
         let bar = bar_open.then_some(bar);
-        if !tree_visible {
-            return Panes {
-                tree: None,
-                divider: None,
-                editor: main,
-                bar,
-                status,
-            };
-        }
-        let [tree, divider, editor] = Layout::horizontal([
-            Constraint::Length(TREE_WIDTH),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .areas(main);
+        let (tree, divider, right) = if tree_visible {
+            let [tree, divider, right] = Layout::horizontal([
+                Constraint::Length(TREE_WIDTH),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .areas(main);
+            // The tree starts below the tab bar's row; the divider runs through it.
+            let [_, tree] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(tree);
+            (Some(tree), Some(divider), right)
+        } else {
+            (None, None, main)
+        };
+        let [tabs, editor] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(right);
         Panes {
-            tree: Some(tree),
-            divider: Some(divider),
+            tree,
+            divider,
+            tabs,
             editor,
             bar,
             status,
@@ -1042,7 +1388,7 @@ mod tests {
         assert_eq!(app.prompt, Some(Prompt::UnsavedQuit));
         // Keys answer the prompt instead of editing.
         app.handle_event(key("y"));
-        assert_eq!(app.buffer.rope.to_string(), "x");
+        assert_eq!(app.buffer().rope.to_string(), "x");
         app.handle_event(key("esc"));
         assert_eq!(app.prompt, None);
         app.handle_event(key("ctrl+q"));
@@ -1055,16 +1401,14 @@ mod tests {
     }
 
     #[test]
-    fn save_then_quit_on_an_untitled_buffer_stays_open() {
+    fn save_then_quit_on_an_untitled_buffer_asks_for_a_path() {
         let mut app = App::default();
         app.handle_event(key("x"));
         app.handle_event(key("ctrl+q"));
         app.handle_event(key("s"));
         assert!(!app.should_quit);
-        assert_eq!(
-            app.message.as_deref(),
-            Some("no file name (save as comes later)")
-        );
+        let label = app.name_prompt.as_ref().map(|p| p.bar.label);
+        assert_eq!(label, Some("Save as"));
     }
 
     #[test]
@@ -1079,9 +1423,9 @@ mod tests {
             None,
         );
         app.handle_event(key("x"));
-        assert!(app.buffer.dirty);
+        assert!(app.buffer().dirty);
         app.handle_event(key("ctrl+s"));
-        assert!(!app.buffer.dirty);
+        assert!(!app.buffer().dirty);
         assert_eq!(std::fs::read_to_string(&path)?, "xhi\r\n");
         let message = app.message.unwrap_or_default();
         assert!(message.starts_with("saved "), "{message}");
@@ -1120,22 +1464,23 @@ mod tests {
     fn movement_keys_move_the_cursor_and_scroll_the_view() {
         let text: String = (1..=100).map(|n| format!("line {n}\n")).collect();
         let mut app = App {
-            buffer: Buffer {
+            tabs: Tabs::new(Buffer {
                 rope: ropey::Rope::from_str(&text),
                 ..Buffer::empty()
-            },
+            }),
             screen: Rect::new(0, 0, 100, 30),
             ..App::default()
         };
         app.handle_event(key("pagedown"));
-        assert_eq!(app.buffer.cursor_line_col(), (29, 0));
-        assert_eq!(app.view.scroll_row, 1);
+        // The editor pane is 28 rows: the tab bar and status line take two.
+        assert_eq!(app.buffer().cursor_line_col(), (28, 0));
+        assert_eq!(app.view().scroll_row, 1);
         app.handle_event(key("ctrl+end"));
-        assert_eq!(app.buffer.cursor_line_col(), (100, 0));
-        assert_eq!(app.view.scroll_row, 72);
+        assert_eq!(app.buffer().cursor_line_col(), (100, 0));
+        assert_eq!(app.view().scroll_row, 73);
         app.handle_event(key("ctrl+home"));
-        assert_eq!(app.buffer.cursor, 0);
-        assert_eq!(app.view.scroll_row, 0);
+        assert_eq!(app.buffer().cursor, 0);
+        assert_eq!(app.view().scroll_row, 0);
     }
 
     #[test]
@@ -1158,8 +1503,8 @@ mod tests {
         ] {
             app.handle_event(key(k));
         }
-        assert_eq!(app.buffer.rope.to_string(), "fn {\n    y");
-        assert!(app.buffer.dirty);
+        assert_eq!(app.buffer().rope.to_string(), "fn {\n    y");
+        assert!(app.buffer().dirty);
     }
 
     #[test]
@@ -1168,25 +1513,25 @@ mod tests {
             screen: Rect::new(0, 0, 100, 30),
             ..App::default()
         };
-        for k in ["a", "b", "ctrl+s", "c", "d"] {
+        for k in ["a", "b", "ctrl+c", "c", "d"] {
             app.handle_event(key(k));
         }
-        // Saving is a non-typing action, so it split the run.
+        // Copying is a non-typing action, so it split the run.
         app.handle_event(key("ctrl+z"));
-        assert_eq!(app.buffer.rope.to_string(), "ab");
+        assert_eq!(app.buffer().rope.to_string(), "ab");
         app.handle_event(key("ctrl+z"));
-        assert_eq!(app.buffer.rope.to_string(), "");
+        assert_eq!(app.buffer().rope.to_string(), "");
         app.handle_event(key("ctrl+y"));
-        assert_eq!(app.buffer.rope.to_string(), "ab");
-        assert_eq!(app.buffer.cursor, 2);
+        assert_eq!(app.buffer().rope.to_string(), "ab");
+        assert_eq!(app.buffer().cursor, 2);
     }
 
     fn app_with(text: &str, clipboard: &FakeClipboard) -> App {
         App {
-            buffer: Buffer {
+            tabs: Tabs::new(Buffer {
                 rope: ropey::Rope::from_str(text),
                 ..Buffer::empty()
-            },
+            }),
             screen: Rect::new(0, 0, 100, 30),
             clipboard: Box::new(clipboard.clone()),
             ..App::default()
@@ -1203,19 +1548,19 @@ mod tests {
     fn shift_right_then_typing_replaces_the_selection() {
         let mut app = app_with("hello world", &FakeClipboard::default());
         press(&mut app, &["shift+right"; 5]);
-        assert_eq!(app.buffer.selected_text().as_deref(), Some("hello"));
+        assert_eq!(app.buffer().selected_text().as_deref(), Some("hello"));
         press(&mut app, &["b", "y", "e"]);
-        assert_eq!(app.buffer.rope.to_string(), "bye world");
+        assert_eq!(app.buffer().rope.to_string(), "bye world");
         press(&mut app, &["ctrl+z"]);
-        assert_eq!(app.buffer.rope.to_string(), "hello world");
+        assert_eq!(app.buffer().rope.to_string(), "hello world");
     }
 
     #[test]
     fn a_plain_movement_clears_the_selection() {
         let mut app = app_with("hello", &FakeClipboard::default());
         press(&mut app, &["ctrl+shift+right", "left"]);
-        assert_eq!(app.buffer.selection(), None);
-        assert_eq!(app.buffer.cursor, 4);
+        assert_eq!(app.buffer().selection(), None);
+        assert_eq!(app.buffer().cursor, 4);
     }
 
     #[test]
@@ -1227,8 +1572,8 @@ mod tests {
         assert_eq!(*clipboard.text.borrow(), "old");
         press(&mut app, &["ctrl+shift+right", "ctrl+c"]);
         assert_eq!(*clipboard.text.borrow(), "hello");
-        assert_eq!(app.buffer.rope.to_string(), "hello world");
-        assert!(!app.buffer.dirty);
+        assert_eq!(app.buffer().rope.to_string(), "hello world");
+        assert!(!app.buffer().dirty);
     }
 
     #[test]
@@ -1237,12 +1582,12 @@ mod tests {
         let mut app = app_with("one\ntwo", &clipboard);
         press(&mut app, &["ctrl+a", "ctrl+x"]);
         assert_eq!(*clipboard.text.borrow(), "one\ntwo");
-        assert_eq!(app.buffer.rope.to_string(), "");
+        assert_eq!(app.buffer().rope.to_string(), "");
         press(&mut app, &["ctrl+z"]);
-        assert_eq!(app.buffer.rope.to_string(), "one\ntwo");
+        assert_eq!(app.buffer().rope.to_string(), "one\ntwo");
         // Nothing selected: cut leaves the clipboard and the text alone.
         press(&mut app, &["ctrl+x"]);
-        assert_eq!(app.buffer.rope.to_string(), "one\ntwo");
+        assert_eq!(app.buffer().rope.to_string(), "one\ntwo");
     }
 
     #[test]
@@ -1251,14 +1596,14 @@ mod tests {
         *clipboard.text.borrow_mut() = "a\r\nb\r\n".into();
         let mut app = app_with("xy", &clipboard);
         press(&mut app, &["right", "ctrl+v"]);
-        assert_eq!(app.buffer.rope.to_string(), "xa\nb\ny");
+        assert_eq!(app.buffer().rope.to_string(), "xa\nb\ny");
         press(&mut app, &["ctrl+z"]);
-        assert_eq!(app.buffer.rope.to_string(), "xy");
+        assert_eq!(app.buffer().rope.to_string(), "xy");
         // Pasting over a selection replaces it, still one step.
         press(&mut app, &["ctrl+a", "ctrl+v"]);
-        assert_eq!(app.buffer.rope.to_string(), "a\nb\n");
+        assert_eq!(app.buffer().rope.to_string(), "a\nb\n");
         press(&mut app, &["ctrl+z"]);
-        assert_eq!(app.buffer.rope.to_string(), "xy");
+        assert_eq!(app.buffer().rope.to_string(), "xy");
     }
 
     #[test]
@@ -1269,7 +1614,7 @@ mod tests {
             &mut app,
             &["shift+right", "ctrl+c", "end", "ctrl+v", "ctrl+v"],
         );
-        assert_eq!(app.buffer.rope.to_string(), "abaa");
+        assert_eq!(app.buffer().rope.to_string(), "abaa");
     }
 
     #[test]
@@ -1277,9 +1622,9 @@ mod tests {
         let mut app = app_with("hello world", &FakeClipboard::default());
         press(&mut app, &["shift+end"]);
         app.handle_event(AppEvent::Input(Event::Paste("bye\r\nnow".into())));
-        assert_eq!(app.buffer.rope.to_string(), "bye\nnow");
+        assert_eq!(app.buffer().rope.to_string(), "bye\nnow");
         press(&mut app, &["ctrl+z"]);
-        assert_eq!(app.buffer.rope.to_string(), "hello world");
+        assert_eq!(app.buffer().rope.to_string(), "hello world");
     }
 
     #[test]
@@ -1287,7 +1632,7 @@ mod tests {
         let mut app = app_with("", &FakeClipboard::default());
         press(&mut app, &["x", "ctrl+q"]);
         app.handle_event(AppEvent::Input(Event::Paste("d".into())));
-        assert_eq!(app.buffer.rope.to_string(), "x");
+        assert_eq!(app.buffer().rope.to_string(), "x");
         assert!(!app.should_quit);
     }
 
@@ -1310,71 +1655,71 @@ mod tests {
 
     #[test]
     fn click_places_the_cursor_past_the_gutter() {
-        // Gutter " 1 │ " is 5 cells.
+        // Gutter " 1 │ " is 5 cells; the tab bar takes row 0.
         let mut app = app_with(
             "hello
 world",
             &FakeClipboard::default(),
         );
-        click(&mut app, 7, 1, Instant::now());
-        assert_eq!(app.buffer.cursor_line_col(), (1, 2));
-        assert_eq!(app.buffer.selection(), None);
+        click(&mut app, 7, 2, Instant::now());
+        assert_eq!(app.buffer().cursor_line_col(), (1, 2));
+        assert_eq!(app.buffer().selection(), None);
         // The status line isn't the editor.
         click(&mut app, 5, 29, Instant::now());
-        assert_eq!(app.buffer.cursor_line_col(), (1, 2));
+        assert_eq!(app.buffer().cursor_line_col(), (1, 2));
     }
 
     #[test]
     fn double_click_needs_the_same_cell_within_400_ms() {
         let mut app = app_with("hello world", &FakeClipboard::default());
         let t0 = Instant::now();
-        click(&mut app, 6, 0, t0);
-        click(&mut app, 6, 0, t0 + Duration::from_millis(400));
-        assert_eq!(app.buffer.selected_text().as_deref(), Some("hello"));
+        click(&mut app, 6, 1, t0);
+        click(&mut app, 6, 1, t0 + Duration::from_millis(400));
+        assert_eq!(app.buffer().selected_text().as_deref(), Some("hello"));
 
         // Too slow: a second plain click.
         let t1 = t0 + Duration::from_secs(5);
-        click(&mut app, 12, 0, t1);
-        click(&mut app, 12, 0, t1 + Duration::from_millis(401));
-        assert_eq!(app.buffer.selection(), None);
-        assert_eq!(app.buffer.cursor, 7);
+        click(&mut app, 12, 1, t1);
+        click(&mut app, 12, 1, t1 + Duration::from_millis(401));
+        assert_eq!(app.buffer().selection(), None);
+        assert_eq!(app.buffer().cursor, 7);
 
         // Another cell: a plain click.
         let t2 = t1 + Duration::from_secs(5);
-        click(&mut app, 12, 0, t2);
-        click(&mut app, 13, 0, t2 + Duration::from_millis(10));
-        assert_eq!(app.buffer.selection(), None);
+        click(&mut app, 12, 1, t2);
+        click(&mut app, 13, 1, t2 + Duration::from_millis(10));
+        assert_eq!(app.buffer().selection(), None);
 
         // A third quick click is a plain click again.
         let t3 = t2 + Duration::from_secs(5);
         for i in 0..3 {
-            click(&mut app, 6, 0, t3 + Duration::from_millis(i * 10));
+            click(&mut app, 6, 1, t3 + Duration::from_millis(i * 10));
         }
-        assert_eq!(app.buffer.selection(), None);
-        assert_eq!(app.buffer.cursor, 1);
+        assert_eq!(app.buffer().selection(), None);
+        assert_eq!(app.buffer().cursor, 1);
     }
 
     #[test]
     fn drag_selects_from_press_to_release() {
         let mut app = app_with("hello world", &FakeClipboard::default());
         let now = Instant::now();
-        app.handle_mouse(mouse(LEFT_DOWN, 11, 0), now);
-        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 7, 0), now);
-        app.handle_mouse(mouse(LEFT_UP, 7, 0), now);
-        assert_eq!(app.buffer.selected_text().as_deref(), Some("llo "));
-        assert_eq!(app.buffer.cursor, 2);
+        app.handle_mouse(mouse(LEFT_DOWN, 11, 1), now);
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 7, 1), now);
+        app.handle_mouse(mouse(LEFT_UP, 7, 1), now);
+        assert_eq!(app.buffer().selected_text().as_deref(), Some("llo "));
+        assert_eq!(app.buffer().cursor, 2);
         // A drag without a press in the editor selects nothing.
-        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 15, 0), now);
-        assert_eq!(app.buffer.cursor, 2);
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 15, 1), now);
+        assert_eq!(app.buffer().cursor, 2);
     }
 
     #[test]
     fn ctrl_click_is_not_a_click() {
         let mut app = app_with("hello", &FakeClipboard::default());
-        let mut event = mouse(LEFT_DOWN, 8, 0);
+        let mut event = mouse(LEFT_DOWN, 8, 1);
         event.modifiers = KeyModifiers::CONTROL;
         app.handle_mouse(event, Instant::now());
-        assert_eq!(app.buffer.cursor, 0);
+        assert_eq!(app.buffer().cursor, 0);
     }
 
     #[test]
@@ -1382,19 +1727,19 @@ world",
         let text: String = (1..=100).map(|n| format!("line {n}\n")).collect();
         let mut app = app_with(&text, &FakeClipboard::default());
         app.handle_mouse(mouse(MouseEventKind::ScrollDown, 10, 10), Instant::now());
-        assert_eq!(app.view.scroll_row, 3);
-        assert_eq!(app.buffer.cursor, 0);
+        assert_eq!(app.view().scroll_row, 3);
+        assert_eq!(app.buffer().cursor, 0);
         app.handle_mouse(mouse(MouseEventKind::ScrollUp, 10, 10), Instant::now());
         app.handle_mouse(mouse(MouseEventKind::ScrollUp, 10, 10), Instant::now());
-        assert_eq!(app.view.scroll_row, 0);
+        assert_eq!(app.view().scroll_row, 0);
     }
 
     #[test]
     fn mouse_is_ignored_while_a_prompt_is_open() {
         let mut app = app_with("", &FakeClipboard::default());
         press(&mut app, &["x", "x", "ctrl+q"]);
-        app.handle_event(AppEvent::Input(Event::Mouse(mouse(LEFT_DOWN, 5, 0))));
-        assert_eq!(app.buffer.cursor, 2);
+        app.handle_event(AppEvent::Input(Event::Mouse(mouse(LEFT_DOWN, 5, 1))));
+        assert_eq!(app.buffer().cursor, 2);
     }
 
     /// `a.txt` holding `contents` in a temp folder, opened with backups in another.
@@ -1425,7 +1770,7 @@ world",
 
         fn backup(&self) -> PathBuf {
             Backups::new(Some(self.data.path().to_path_buf()))
-                .path_for(Some(&self.files.path().join("a.txt")))
+                .path_for(Some(&self.files.path().join("a.txt")), 0)
                 .expect("backups are on")
         }
     }
@@ -1475,7 +1820,7 @@ world",
         let mut t = Backed::new("hi\n")?;
         press(&mut t.app, &["x"]);
         t.app.handle_event(AppEvent::BackupDue);
-        t.app.buffer.dirty = false;
+        t.app.buffer_mut().dirty = false;
         press(&mut t.app, &["ctrl+q"]);
         assert!(t.app.should_quit);
         assert!(!t.backup().exists());
@@ -1506,7 +1851,7 @@ world",
         press(&mut app, &["b"]);
         app.handle_event(AppEvent::BackupDue);
         assert_eq!(app.message, None);
-        assert_eq!(app.buffer.rope.to_string(), "ab");
+        assert_eq!(app.buffer().rope.to_string(), "ab");
         assert_eq!(app.prompt, None);
 
         // A success resets it, so the next failure is reported again.
@@ -1534,14 +1879,14 @@ world",
         // Crash: the old app just goes away.
         let mut app = Backed::open(t.files.path(), t.data.path());
         assert_eq!(app.prompt, Some(Prompt::Recover));
-        assert_eq!(app.buffer.rope.to_string(), "hi\n");
+        assert_eq!(app.buffer().rope.to_string(), "hi\n");
         // Esc doesn't decide for the user.
         press(&mut app, &["esc", "x"]);
         assert_eq!(app.prompt, Some(Prompt::Recover));
         press(&mut app, &["r"]);
         assert_eq!(app.prompt, None);
-        assert_eq!(app.buffer.rope.to_string(), "xhi\n");
-        assert!(app.buffer.dirty);
+        assert_eq!(app.buffer().rope.to_string(), "xhi\n");
+        assert!(app.buffer().dirty);
         assert!(t.backup().exists(), "still the only copy of the edits");
         Ok(())
     }
@@ -1560,8 +1905,8 @@ world",
         let mut app = Backed::open(t.files.path(), t.data.path());
         press(&mut app, &["d"]);
         assert_eq!(app.prompt, None);
-        assert_eq!(app.buffer.rope.to_string(), "hi\n");
-        assert!(!app.buffer.dirty);
+        assert_eq!(app.buffer().rope.to_string(), "hi\n");
+        assert!(!app.buffer().dirty);
         assert!(!t.backup().exists());
         Ok(())
     }
@@ -1587,24 +1932,189 @@ world",
         assert!(app.tree_visible);
         assert_eq!(app.focus, Focus::Tree);
         press(&mut app, &["x", "backspace", "ctrl+v"]);
-        assert_eq!(app.buffer.rope.to_string(), "");
-        assert!(!app.buffer.dirty);
+        assert_eq!(app.buffer().rope.to_string(), "");
+        assert!(!app.buffer().dirty);
+        Ok(())
+    }
+
+    fn tab_names(app: &App) -> Vec<String> {
+        app.tabs
+            .labels()
+            .into_iter()
+            .map(|label| {
+                if label.dirty {
+                    format!("{} ●", label.name)
+                } else {
+                    label.name
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn opening_from_the_tree_opens_tabs_and_reuses_open_ones() -> Result<()> {
+        let (_dir, mut app) = project()?;
+        press(&mut app, &["enter"]);
+        // The untouched untitled tab made way for the file.
+        assert_eq!(tab_names(&app), ["a.txt"]);
+        assert_eq!(app.focus, Focus::Editor);
+        press(&mut app, &["x", "ctrl+e", "down", "enter"]);
+        assert_eq!(app.prompt, None);
+        assert_eq!(tab_names(&app), ["a.txt ●", "b.txt"]);
+        assert_eq!(app.buffer().rope.to_string(), "b");
+        // Opening a.txt again switches back to its tab, edits intact.
+        press(&mut app, &["ctrl+e", "up", "enter"]);
+        assert_eq!(app.tabs.list.len(), 2);
+        assert_eq!(app.tabs.active, 0);
+        assert_eq!(app.buffer().rope.to_string(), "xa");
         Ok(())
     }
 
     #[test]
-    fn opening_from_the_tree_saves_first_when_asked() -> Result<()> {
+    fn tab_keys_move_between_tabs_and_wrap() {
+        let mut app = app_with("one", &FakeClipboard::default());
+        press(&mut app, &["ctrl+n", "2", "ctrl+n", "3"]);
+        assert_eq!(app.tabs.active, 2);
+        press(&mut app, &["alt+."]);
+        assert_eq!(app.buffer().rope.to_string(), "one");
+        press(&mut app, &["alt+,"]);
+        assert_eq!(app.buffer().rope.to_string(), "3");
+        press(&mut app, &["alt+2"]);
+        assert_eq!(app.buffer().rope.to_string(), "2");
+        // No tab 9: nothing happens.
+        press(&mut app, &["alt+9"]);
+        assert_eq!(app.tabs.active, 1);
+    }
+
+    #[test]
+    fn ctrl_w_closes_clean_tabs_and_asks_about_dirty_ones() {
+        let mut app = app_with("", &FakeClipboard::default());
+        press(&mut app, &["ctrl+n", "x", "ctrl+n", "alt+2", "ctrl+w"]);
+        assert_eq!(app.prompt, Some(Prompt::UnsavedClose));
+        press(&mut app, &["c"]);
+        assert_eq!(app.tabs.list.len(), 3);
+        press(&mut app, &["ctrl+w", "d"]);
+        assert_eq!(app.tabs.list.len(), 2);
+        // The tab to the right took over.
+        assert_eq!(app.tabs.active, 1);
+        press(&mut app, &["ctrl+w", "ctrl+w"]);
+        // Closing the last tab leaves a fresh untitled one.
+        assert_eq!(tab_names(&app), ["untitled"]);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_q_asks_about_each_dirty_tab_in_turn() -> Result<()> {
         let (dir, mut app) = project()?;
-        press(&mut app, &["enter"]);
-        assert_eq!(app.buffer.rope.to_string(), "a");
-        assert_eq!(app.focus, Focus::Editor);
-        press(&mut app, &["x", "ctrl+e", "down", "enter"]);
-        assert_eq!(app.prompt, Some(Prompt::UnsavedOpen));
-        press(&mut app, &["s"]);
-        assert_eq!(app.prompt, None);
-        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt"))?, "xa");
-        assert_eq!(app.buffer.rope.to_string(), "b");
+        press(&mut app, &["enter", "x", "ctrl+e", "down", "enter", "y"]);
+        press(&mut app, &["ctrl+n", "ctrl+q"]);
+        // The first dirty tab comes up first.
+        assert_eq!(app.prompt, Some(Prompt::UnsavedQuit));
+        assert_eq!(app.tabs.active, 0);
+        press(&mut app, &["d"]);
+        assert_eq!(app.prompt, Some(Prompt::UnsavedQuit));
+        assert_eq!(app.tabs.active, 1);
+        // Cancel stops the whole quit, and a new Ctrl+Q starts over.
+        press(&mut app, &["c"]);
+        assert!(!app.should_quit);
+        press(&mut app, &["ctrl+q"]);
+        assert_eq!(app.tabs.active, 0);
+        press(&mut app, &["d", "s"]);
+        assert!(app.should_quit);
+        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt"))?, "a");
+        assert_eq!(std::fs::read_to_string(dir.path().join("b.txt"))?, "yb");
         Ok(())
+    }
+
+    #[test]
+    fn save_as_writes_the_new_path_and_renames_the_tab() -> Result<()> {
+        let (dir, mut app) = project()?;
+        press(&mut app, &["ctrl+n", "h", "i", "alt+s"]);
+        let bar = app.name_prompt.as_ref().map(|p| p.bar.text().to_string());
+        assert_eq!(bar.as_deref(), Some(""));
+        type_keys(&mut app, "docs/new.txt");
+        press(&mut app, &["enter"]);
+        // No such folder: nothing written, still untitled.
+        let message = app.message.clone().unwrap_or_default();
+        assert!(message.starts_with("cannot save"), "{message}");
+        assert_eq!(app.buffer().path, None);
+
+        press(&mut app, &["alt+s"]);
+        type_keys(&mut app, "a.txt");
+        press(&mut app, &["enter"]);
+        assert_eq!(app.message.as_deref(), Some("a.txt already exists"));
+        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt"))?, "a");
+
+        press(&mut app, &["alt+s"]);
+        type_keys(&mut app, "new.txt");
+        press(&mut app, &["enter"]);
+        let new = dir.path().join("new.txt");
+        assert_eq!(std::fs::read_to_string(&new)?, "hi");
+        assert_eq!(app.buffer().path.as_deref(), Some(new.as_path()));
+        assert_eq!(tab_names(&app), ["untitled", "new.txt"]);
+        // The bar now offers the current path, relative to the root.
+        press(&mut app, &["alt+s"]);
+        let bar = app.name_prompt.as_ref().map(|p| p.bar.text().to_string());
+        assert_eq!(bar.as_deref(), Some("new.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn ctrl_s_on_an_untitled_tab_asks_for_a_path_and_quit_waits_for_it() -> Result<()> {
+        let (dir, mut app) = project()?;
+        press(&mut app, &["ctrl+n", "z", "ctrl+q", "s"]);
+        assert!(app.name_prompt.is_some());
+        // Esc on the path cancels the quit.
+        press(&mut app, &["esc"]);
+        assert!(!app.should_quit);
+        press(&mut app, &["ctrl+q", "s"]);
+        type_keys(&mut app, "z.txt");
+        press(&mut app, &["enter"]);
+        assert!(app.should_quit);
+        assert_eq!(std::fs::read_to_string(dir.path().join("z.txt"))?, "z");
+        Ok(())
+    }
+
+    fn backup_texts(dir: &Path) -> Result<Vec<String>> {
+        let mut texts = std::fs::read_dir(dir)?
+            .map(|entry| std::fs::read_to_string(entry?.path()))
+            .collect::<io::Result<Vec<_>>>()?;
+        texts.sort();
+        Ok(texts)
+    }
+
+    #[test]
+    fn each_untitled_tab_has_its_own_backup() -> Result<()> {
+        let data = tempfile::tempdir()?;
+        let mut app = App {
+            screen: Rect::new(0, 0, 100, 30),
+            ..App::default()
+        }
+        .with_backups(Backups::new(Some(data.path().to_path_buf())));
+        press(&mut app, &["a", "ctrl+n", "b"]);
+        app.handle_event(AppEvent::BackupDue);
+        let dir = data.path().join("backups");
+        assert_eq!(backup_texts(&dir)?, ["a", "b"]);
+        // Closing one with discard removes only its backup.
+        press(&mut app, &["ctrl+w", "d"]);
+        assert_eq!(backup_texts(&dir)?, ["a"]);
+        Ok(())
+    }
+
+    #[test]
+    fn tab_bar_click_selects_and_middle_click_closes() {
+        let mut app = app_with("one", &FakeClipboard::default());
+        press(&mut app, &["ctrl+n"]);
+        // " untitled " is 10 cells wide; the second tab starts at column 10.
+        app.handle_mouse(mouse(LEFT_DOWN, 2, 0), Instant::now());
+        assert_eq!(app.tabs.active, 0);
+        let middle = MouseEventKind::Down(MouseButton::Middle);
+        app.handle_mouse(mouse(middle, 12, 0), Instant::now());
+        assert_eq!(app.tabs.list.len(), 1);
+        assert_eq!(app.buffer().rope.to_string(), "one");
+        press(&mut app, &["x"]);
+        app.handle_mouse(mouse(middle, 2, 0), Instant::now());
+        assert_eq!(app.prompt, Some(Prompt::UnsavedClose));
     }
 
     fn type_keys(app: &mut App, text: &str) {
@@ -1624,7 +2134,7 @@ world",
         app.trash = Box::new(trash.clone());
         let a = dir.path().join("a.txt");
         press(&mut app, &["enter", "ctrl+e"]);
-        assert_eq!(app.buffer.path.as_deref(), Some(a.as_path()));
+        assert_eq!(app.buffer().path.as_deref(), Some(a.as_path()));
 
         press(&mut app, &["d"]);
         assert_eq!(app.prompt, Some(Prompt::Trash));
@@ -1639,12 +2149,12 @@ world",
         assert_eq!(app.prompt, None);
         assert!(trash.trashed.borrow().is_empty());
         assert!(a.exists());
-        assert_eq!(app.buffer.path.as_deref(), Some(a.as_path()));
+        assert_eq!(app.buffer().path.as_deref(), Some(a.as_path()));
 
         press(&mut app, &["d", "y"]);
         assert_eq!(trash.trashed.borrow().as_slice(), std::slice::from_ref(&a));
         assert!(!a.exists());
-        assert_eq!(app.buffer.path, None);
+        assert_eq!(app.buffer().path, None);
         assert_eq!(app.message.as_deref(), Some("moved a.txt to trash"));
         // The tree read the disk again and kept a selection.
         assert_eq!(app.tree.rows().len(), 1);
@@ -1665,7 +2175,7 @@ world",
             Some("cannot move a.txt to trash: trash unavailable")
         );
         assert!(dir.path().join("a.txt").exists());
-        assert_eq!(app.buffer.rope.to_string(), "a");
+        assert_eq!(app.buffer().rope.to_string(), "a");
         assert_eq!(app.tree.rows().len(), 2);
         Ok(())
     }
@@ -1676,7 +2186,7 @@ world",
         // In the tree `a` opens the bar; inside the bar `a`, `r`, `d` are text.
         press(&mut app, &["a"]);
         assert!(app.name_prompt.is_some());
-        assert_eq!(app.panes().editor.height, 28);
+        assert_eq!(app.panes().editor.height, 27);
         type_keys(&mut app, "dra.txt");
         press(&mut app, &["enter"]);
         assert_eq!(app.name_prompt, None);
@@ -1684,7 +2194,7 @@ world",
         // The new file is open with focus in the editor, where letters are text.
         assert_eq!(app.focus, Focus::Editor);
         type_keys(&mut app, "ard");
-        assert_eq!(app.buffer.rope.to_string(), "ard");
+        assert_eq!(app.buffer().rope.to_string(), "ard");
         assert_eq!(selected_name(&app), Some("dra.txt"));
         Ok(())
     }
@@ -1700,7 +2210,7 @@ world",
         press(&mut app, &["enter"]);
         let renamed = dir.path().join("a.md");
         assert!(renamed.exists() && !dir.path().join("a.txt").exists());
-        assert_eq!(app.buffer.path.as_deref(), Some(renamed.as_path()));
+        assert_eq!(app.buffer().path.as_deref(), Some(renamed.as_path()));
         assert_eq!(selected_name(&app), Some("a.md"));
         // Unsaved edits survive and save to the new name.
         press(&mut app, &["ctrl+e", "ctrl+s"]);
@@ -1720,10 +2230,12 @@ world",
     #[test]
     fn the_tree_takes_31_columns_from_the_editor_while_shown() -> Result<()> {
         let (_dir, mut app) = project()?;
-        assert_eq!(app.panes().editor, Rect::new(31, 0, 69, 29));
-        assert_eq!(app.panes().tree, Some(Rect::new(0, 0, 30, 29)));
+        assert_eq!(app.panes().editor, Rect::new(31, 1, 69, 28));
+        assert_eq!(app.panes().tabs, Rect::new(31, 0, 69, 1));
+        assert_eq!(app.panes().tree, Some(Rect::new(0, 1, 30, 28)));
+        assert_eq!(app.panes().divider, Some(Rect::new(30, 0, 1, 29)));
         press(&mut app, &["ctrl+b"]);
-        assert_eq!(app.panes().editor, Rect::new(0, 0, 100, 29));
+        assert_eq!(app.panes().editor, Rect::new(0, 1, 100, 28));
         assert_eq!(app.panes().tree, None);
         assert_eq!(app.focus, Focus::Editor);
         // Ctrl+E brings a hidden tree back with focus.
@@ -1761,9 +2273,10 @@ world",
 
         let buffer = terminal.backend().buffer();
         let row = |y: u16| -> String { (0..100).map(|x| buffer[(x, y)].symbol()).collect() };
-        // An empty buffer has one numbered line and nothing below it.
-        assert_eq!(row(0).trim(), "1 │");
-        for y in 1..29 {
+        // The tab bar, then an empty buffer: one numbered line and nothing below.
+        assert_eq!(row(0).trim(), "untitled");
+        assert_eq!(row(1).trim(), "1 │");
+        for y in 2..29 {
             assert_eq!(row(y).trim(), "", "row {y} should be blank");
         }
         assert!(row(29).starts_with("griffin"));
@@ -1781,7 +2294,7 @@ world",
             Some(path.clone()),
             Some("config error: boom".into()),
         );
-        assert!(app.buffer.path.is_none());
+        assert!(app.buffer().path.is_none());
         let message = app.message.unwrap_or_default();
         assert!(message.contains("config error: boom"), "{message}");
         assert!(

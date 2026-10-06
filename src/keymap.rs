@@ -42,6 +42,16 @@ pub enum Action {
     TreeRename,
     /// Tree focus only: asks, then moves the selected entry to the OS trash.
     TreeDelete,
+    PrevTab,
+    NextTab,
+    /// Jumps to tab n, counting from 1 as the keys do.
+    GoToTab(u8),
+    /// Closes the active tab, asking first when it has unsaved changes.
+    CloseTab,
+    /// Opens a new untitled tab.
+    NewFile,
+    /// Prompts for a path and saves the active buffer there.
+    SaveAs,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -97,6 +107,20 @@ impl Action {
         Action::TreeNewFolder,
         Action::TreeRename,
         Action::TreeDelete,
+        Action::PrevTab,
+        Action::NextTab,
+        Action::GoToTab(1),
+        Action::GoToTab(2),
+        Action::GoToTab(3),
+        Action::GoToTab(4),
+        Action::GoToTab(5),
+        Action::GoToTab(6),
+        Action::GoToTab(7),
+        Action::GoToTab(8),
+        Action::GoToTab(9),
+        Action::CloseTab,
+        Action::NewFile,
+        Action::SaveAs,
     ];
 
     pub fn scope(self) -> Scope {
@@ -159,6 +183,23 @@ impl Action {
             Action::TreeNewFolder => "tree_new_folder",
             Action::TreeRename => "tree_rename",
             Action::TreeDelete => "tree_delete",
+            Action::PrevTab => "prev_tab",
+            Action::NextTab => "next_tab",
+            Action::GoToTab(n) => match n {
+                1 => "tab_1",
+                2 => "tab_2",
+                3 => "tab_3",
+                4 => "tab_4",
+                5 => "tab_5",
+                6 => "tab_6",
+                7 => "tab_7",
+                8 => "tab_8",
+                // `ALL` only holds 1..=9, so this arm is tab 9.
+                _ => "tab_9",
+            },
+            Action::CloseTab => "close_tab",
+            Action::NewFile => "new_file",
+            Action::SaveAs => "save_as",
         }
     }
 
@@ -168,7 +209,7 @@ impl Action {
 }
 
 /// The spec's "Default keymap" table plus R4's movement, R6's editing, R10's
-/// selection and R14's tree keys, one line per binding.
+/// selection, R14's tree keys and R16's tab keys, one line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -213,6 +254,20 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::TreeNewFolder, "shift+a"),
     (Action::TreeRename, "r"),
     (Action::TreeDelete, "d"),
+    (Action::PrevTab, "alt+,"),
+    (Action::NextTab, "alt+."),
+    (Action::GoToTab(1), "alt+1"),
+    (Action::GoToTab(2), "alt+2"),
+    (Action::GoToTab(3), "alt+3"),
+    (Action::GoToTab(4), "alt+4"),
+    (Action::GoToTab(5), "alt+5"),
+    (Action::GoToTab(6), "alt+6"),
+    (Action::GoToTab(7), "alt+7"),
+    (Action::GoToTab(8), "alt+8"),
+    (Action::GoToTab(9), "alt+9"),
+    (Action::CloseTab, "ctrl+w"),
+    (Action::NewFile, "ctrl+n"),
+    (Action::SaveAs, "alt+s"),
 ];
 
 /// What a key event means to the editor.
@@ -910,6 +965,30 @@ mod tests {
             map.resolve_in(&ev(KeyCode::Char('d'), none), Scope::Tree),
             Input::Text('d')
         );
+    }
+
+    #[test]
+    fn tab_keys_resolve_to_their_actions_by_default() {
+        let map = Keymap::default();
+        let ctrl = |c| ev(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let alt = |c| ev(KeyCode::Char(c), KeyModifiers::ALT);
+        let mut expected = vec![
+            (alt(','), Action::PrevTab),
+            (alt('.'), Action::NextTab),
+            (ctrl('w'), Action::CloseTab),
+            (ctrl('n'), Action::NewFile),
+            (alt('s'), Action::SaveAs),
+        ];
+        for n in 1..=9u8 {
+            expected.push((alt(char::from(b'0' + n)), Action::GoToTab(n)));
+        }
+        for (event, action) in expected {
+            assert_eq!(map.resolve(&event), Input::Action(action), "{event:?}");
+        }
+        assert_eq!(Action::from_name("tab_9"), Some(Action::GoToTab(9)));
+        let map = Keymap::new(&keys(&[("tab_3", one("ctrl+3"))])).unwrap();
+        assert_eq!(map.resolve(&ctrl('3')), Input::Action(Action::GoToTab(3)));
+        assert_eq!(map.resolve(&alt('3')), Input::Ignored);
     }
 
     #[test]

@@ -20,10 +20,12 @@ fn tree_text(line: &str) -> String {
         .to_string()
 }
 
-/// The tree pane's rows from the top, up to the first empty one.
+/// The tree pane's rows from the top (row 1, below the tab bar's row), up to the
+/// first empty one.
 fn tree_rows(screen: &[String]) -> Vec<String> {
     screen
         .iter()
+        .skip(1)
         .map(|line| tree_text(line))
         .take_while(|text| !text.is_empty())
         .collect()
@@ -60,7 +62,7 @@ fn folder_opens_with_a_30_column_tree_folders_first() {
     let griffin = open_project();
     wait_for_tree(&griffin, TOP);
     // The first row starts selected, highlighted across the pane.
-    wait_for_selected(&griffin, 0, "▸ docs");
+    wait_for_selected(&griffin, 1, "▸ docs");
 
     let screen = griffin.screen();
     for (y, line) in screen.iter().enumerate().take(usize::from(ROWS - 1)) {
@@ -72,13 +74,13 @@ fn folder_opens_with_a_30_column_tree_folders_first() {
     }
     // The empty editor starts right of the divider.
     assert!(
-        screen[0]
+        screen[1]
             .chars()
             .skip(TREE + 1)
             .collect::<String>()
             .starts_with(" 1 │"),
         "{:?}",
-        screen[0]
+        screen[1]
     );
 }
 
@@ -121,10 +123,10 @@ fn dot_git_and_nested_ignores_are_hidden() {
 #[test]
 fn arrows_browse_and_enter_opens_a_file() {
     let mut griffin = open_project();
-    wait_for_selected(&griffin, 0, "▸ docs");
+    wait_for_selected(&griffin, 1, "▸ docs");
 
     griffin.send_keys("down");
-    wait_for_selected(&griffin, 1, "▸ src");
+    wait_for_selected(&griffin, 2, "▸ src");
     griffin.send_keys("right");
     wait_for_tree(
         &griffin,
@@ -155,13 +157,13 @@ fn arrows_browse_and_enter_opens_a_file() {
         ],
     );
     griffin.send_keys("down");
-    wait_for_selected(&griffin, 2, "  ▸ util");
+    wait_for_selected(&griffin, 3, "  ▸ util");
     griffin.send_keys("down");
-    wait_for_selected(&griffin, 3, "    main.rs");
+    wait_for_selected(&griffin, 4, "    main.rs");
     griffin.send_keys("up");
-    wait_for_selected(&griffin, 2, "  ▸ util");
+    wait_for_selected(&griffin, 3, "  ▸ util");
     griffin.send_keys("down");
-    wait_for_selected(&griffin, 3, "    main.rs");
+    wait_for_selected(&griffin, 4, "    main.rs");
 
     griffin.send_keys("enter");
     griffin.wait_for_text("hello from main", WAIT);
@@ -170,7 +172,7 @@ fn arrows_browse_and_enter_opens_a_file() {
     // The editor has focus now: arrows move its cursor, not the tree selection.
     griffin.send_keys("down");
     griffin.wait_for_text("Ln 2, Col 1", WAIT);
-    wait_for_selected(&griffin, 3, "    main.rs");
+    wait_for_selected(&griffin, 4, "    main.rs");
 }
 
 #[test]
@@ -179,12 +181,12 @@ fn clicking_selects_rows_and_opens_files() {
     wait_for_tree(&griffin, TOP);
 
     // A file row: selected and opened.
-    griffin.click(5, 3);
+    griffin.click(5, 4);
     griffin.wait_for_text("notes for the tree test", WAIT);
-    wait_for_selected(&griffin, 3, "  notes.txt");
+    wait_for_selected(&griffin, 4, "  notes.txt");
 
     // A folder row: selected and expanded.
-    griffin.click(3, 1);
+    griffin.click(3, 2);
     wait_for_tree(
         &griffin,
         &[
@@ -197,48 +199,48 @@ fn clicking_selects_rows_and_opens_files() {
             "  README.md",
         ],
     );
-    wait_for_selected(&griffin, 1, "▾ src");
+    wait_for_selected(&griffin, 2, "▾ src");
 
-    griffin.click(10, 3);
+    griffin.click(10, 4);
     griffin.wait_for_text("hello from main", WAIT);
-    wait_for_selected(&griffin, 3, "    main.rs");
+    wait_for_selected(&griffin, 4, "    main.rs");
 
     // Clicking the editor gives it focus back: typing edits the file.
     let x = griffin
-        .text_col(0, "fn main")
+        .text_col(1, "fn main")
         .expect("main.rs is showing on row 0");
-    griffin.click(x, 0);
+    griffin.click(x, 1);
     griffin.type_text("x");
     griffin.wait_for_text("xfn main", WAIT);
 }
 
 #[test]
-fn opening_another_file_with_unsaved_changes_asks_first() {
+fn opening_another_file_keeps_unsaved_changes_in_their_tab() {
     let notes_path = format!("{PROJECT}/notes.txt");
     let before = fs::read(&notes_path).expect("read notes");
     let mut griffin = open_project();
     wait_for_tree(&griffin, TOP);
-    griffin.click(5, 3);
+    griffin.click(5, 4);
     griffin.wait_for_text("notes for the tree test", WAIT);
     griffin.type_text("x");
     griffin.wait_for_text("xnotes for the tree test", WAIT);
 
-    griffin.click(5, 4);
-    griffin.wait_for_text("Unsaved changes", WAIT);
-    griffin.send_keys("c");
-    griffin.wait_for_text_gone("Unsaved changes", WAIT);
-    assert!(
-        griffin
-            .screen()
-            .join("\n")
-            .contains("xnotes for the tree test")
-    );
-
-    griffin.click(5, 4);
-    griffin.wait_for_text("Unsaved changes", WAIT);
-    griffin.send_keys("d");
+    // The other file opens in a tab of its own, without asking.
+    griffin.click(5, 5);
     griffin.wait_for_text("# Project fixture", WAIT);
-    // Discarding never touched the file on disk.
+    griffin.wait_for_text(" notes.txt ●  README.md ", WAIT);
+    assert!(
+        !griffin
+            .screen()
+            .join(
+                "
+"
+            )
+            .contains("Unsaved changes")
+    );
+    // Back on the first tab, the edit is still there and still unsaved.
+    griffin.click(5, 4);
+    griffin.wait_for_text("xnotes for the tree test", WAIT);
     assert_eq!(fs::read(&notes_path).expect("read notes"), before);
 }
 
@@ -246,17 +248,17 @@ fn opening_another_file_with_unsaved_changes_asks_first() {
 fn ctrl_b_toggles_the_tree_and_ctrl_e_switches_focus() {
     let mut griffin = open_project();
     wait_for_tree(&griffin, TOP);
-    griffin.click(5, 4);
+    griffin.click(5, 5);
     griffin.wait_for_text("# Project fixture", WAIT);
     let editor_x = griffin
-        .text_col(0, "# Project")
+        .text_col(1, "# Project")
         .expect("README.md is showing on row 0");
     assert!(usize::from(editor_x) > TREE, "editor at column {editor_x}");
 
     // Ctrl+B hides the tree: the editor starts at column 0.
     griffin.send_keys("ctrl+b");
     griffin.wait_for_screen("the editor at column 0", WAIT, |screen| {
-        screen[0].starts_with(" 1 │ # Project fixture")
+        screen[1].starts_with(" 1 │ # Project fixture")
     });
     griffin.send_keys("ctrl+b");
     wait_for_tree(&griffin, TOP);
@@ -264,9 +266,9 @@ fn ctrl_b_toggles_the_tree_and_ctrl_e_switches_focus() {
     // Ctrl+E moves focus to the tree: the cursor sits on the selected row and
     // arrows move the selection.
     griffin.send_keys("ctrl+e");
-    griffin.wait_for_cursor(0, 4, WAIT);
+    griffin.wait_for_cursor(0, 5, WAIT);
     griffin.send_keys("up");
-    wait_for_selected(&griffin, 3, "  notes.txt");
+    wait_for_selected(&griffin, 4, "  notes.txt");
     // And back to the editor, where typing edits.
     griffin.send_keys("ctrl+e");
     griffin.type_text("y");
@@ -275,11 +277,11 @@ fn ctrl_b_toggles_the_tree_and_ctrl_e_switches_focus() {
     // With the tree hidden, Ctrl+E brings it back focused.
     griffin.send_keys("ctrl+b");
     griffin.wait_for_screen("the editor at column 0", WAIT, |screen| {
-        screen[0].starts_with(" 1 │ y# Project fixture")
+        screen[1].starts_with(" 1 │ y# Project fixture")
     });
     griffin.send_keys("ctrl+e");
     wait_for_tree(&griffin, TOP);
-    griffin.wait_for_cursor(0, 3, WAIT);
+    griffin.wait_for_cursor(0, 4, WAIT);
 }
 
 #[test]
