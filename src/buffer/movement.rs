@@ -124,6 +124,20 @@ impl Buffer {
         self.place_cursor(self.rope.line_to_char(index));
     }
 
+    /// Puts the cursor on `line` at char column `col`, both counting from 0, as a
+    /// search hit names them; each is clamped to what the buffer has.
+    pub fn go_to_line_col(&mut self, line: usize, col: usize) {
+        let line = line.min(self.rope.len_lines().saturating_sub(1));
+        let start = self.rope.line_to_char(line);
+        let len = self
+            .rope
+            .line(line)
+            .chars()
+            .take_while(|&c| c != '\n' && c != '\r')
+            .count();
+        self.place_cursor(start + col.min(len));
+    }
+
     /// Moves the cursor. `page_height` is how many lines PageUp/PageDown move;
     /// `tab_width` makes Up/Down keep the on-screen column across tabs.
     pub fn move_cursor(&mut self, motion: Motion, page_height: usize, tab_width: usize) {
@@ -421,6 +435,20 @@ mod tests {
         let line = rope.line(0);
         let cols: Vec<usize> = (0..=6).map(|c| display_col(line, c, TAB)).collect();
         assert_eq!(cols, [0, 1, 4, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn go_to_line_col_clamps_to_the_line_and_the_buffer() {
+        let mut b = at("one\r\ntwo\r\nthree", 0);
+        b.anchor = Some(1);
+        b.go_to_line_col(1, 2);
+        assert_eq!(b.cursor_line_col(), (1, 2));
+        assert_eq!(b.anchor, None);
+        // Past the end of the line stops before its line break.
+        b.go_to_line_col(0, 50);
+        assert_eq!(b.cursor_line_col(), (0, 3));
+        b.go_to_line_col(9, 1);
+        assert_eq!(b.cursor_line_col(), (2, 1));
     }
 
     #[test]

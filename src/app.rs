@@ -1,6 +1,9 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -26,17 +29,19 @@ use crate::config::EditorConfig;
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
+use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
 use crate::ui::find::{FindBar, Step};
 use crate::ui::picker::{Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
+use crate::ui::search::{ProjectSearch, Searched};
 use crate::ui::status::render_status;
 use crate::ui::tabs::{TabLabel, render_tabs, tab_at};
 use crate::ui::tree::{TREE_WIDTH, render_divider, render_tree};
 use crate::view::{View, render_buffer};
 use crate::workspace::ops::{self, Trash};
-use crate::workspace::walk::list_files;
+use crate::workspace::walk::{list_files, relative_name};
 use crate::workspace::{Launch, Tree};
 
 /// Everything the event loop reacts to. Background work (LSP, run output, timers)
@@ -51,6 +56,15 @@ pub enum AppEvent {
     /// The background walk for the go-to-file picker finished: every file in the
     /// project, relative to the root.
     FilesListed(Vec<String>),
+    /// A batch of hits from project search number `search`.
+    SearchHits {
+        search: u64,
+        hits: Vec<Hit>,
+    },
+    /// Project search number `search` has looked at every file.
+    SearchDone {
+        search: u64,
+    },
 }
 
 /// A question that takes over the keyboard until it's answered.
@@ -596,6 +610,13 @@ pub struct App {
     /// The find bar, while it's open; it takes every key, so the active buffer
     /// can't change under its matches.
     find: Option<FindBar>,
+    /// The project search panel, while it's open; it takes every key.
+    project_search: Option<ProjectSearch>,
+    /// How many project searches have started, numbering them so hits from one
+    /// that was replaced are dropped.
+    searches: u64,
+    /// Set to stop the running project search's walk.
+    search_cancel: Option<Arc<AtomicBool>>,
     /// The entry the trash prompt will move once answered.
     pending_trash: Option<PathBuf>,
     /// Tabs whose changes the user chose to discard while quitting, so the quit
@@ -743,6 +764,12 @@ impl App {
                     }
                     return;
                 }
+                if let Some(panel) = &mut self.project_search {
+                    if let Some(step) = panel.paste(&text) {
+                        self.project_search_step(step);
+                    }
+                    return;
+                }
                 if let Some(name_prompt) = &mut self.name_prompt {
                     if let Some(outcome) = name_prompt.bar.paste(&text) {
                         self.finish_name_prompt(outcome);
@@ -763,6 +790,7 @@ impl App {
                 if self.prompt.is_none()
                     && self.name_prompt.is_none()
                     && self.picker.is_none()
+                    && self.project_search.is_none()
                     && self.find.is_none() =>
             {
                 self.handle_mouse(mouse, Instant::now());
@@ -779,22 +807,35 @@ impl App {
                     picker.set_files(files);
                 }
             }
+            // The panel drops hits from a search it has replaced; with the panel
+            // closed there's nothing to show them in.
+            AppEvent::SearchHits { search, hits } => {
+                if let Some(panel) = &mut self.project_search {
+                    panel.add(search, hits);
+                }
+            }
+            AppEvent::SearchDone { search } => {
+                if let Some(panel) = &mut self.project_search {
+                    panel.finish(search);
+                }
+            }
         }
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
         // Tree letters are only actions when nothing else is reading keys as text.
-        let scope = if self.find.is_some() && self.prompt.is_none() {
-            Scope::Find
-        } else if self.focus == Focus::Tree
-            && self.prompt.is_none()
-            && self.name_prompt.is_none()
-            && self.picker.is_none()
-        {
-            Scope::Tree
-        } else {
-            Scope::Global
-        };
+        let scope =
+            if (self.find.is_some() || self.project_search.is_some()) && self.prompt.is_none() {
+                Scope::Find
+            } else if self.focus == Focus::Tree
+                && self.prompt.is_none()
+                && self.name_prompt.is_none()
+                && self.picker.is_none()
+            {
+                Scope::Tree
+            } else {
+                Scope::Global
+            };
         let input = self.keymap.resolve_in(&key, scope);
         if let Some(prompt) = self.prompt {
             if let Some(answer) = self.confirm(prompt).answer(input) {
@@ -805,6 +846,12 @@ impl App {
         if let Some(picker) = &mut self.picker {
             if let Some(picked) = picker.handle(input) {
                 self.finish_picker(picked);
+            }
+            return;
+        }
+        if let Some(panel) = &mut self.project_search {
+            if let Some(step) = panel.handle(input) {
+                self.project_search_step(step);
             }
             return;
         }
@@ -862,7 +909,8 @@ impl App {
             | Action::GoToFile
             | Action::GoToLine
             | Action::Find
-            | Action::Replace => {
+            | Action::Replace
+            | Action::ProjectSearch => {
                 self.handle_action(action);
             }
             _ => {}
@@ -1136,6 +1184,7 @@ impl App {
             }
             Action::Find => self.open_find(false),
             Action::Replace => self.open_find(true),
+            Action::ProjectSearch => self.project_search = Some(ProjectSearch::new()),
             // Bound only in tree or find bar scope, so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
@@ -1390,6 +1439,118 @@ impl App {
             None => picker.set_files(list_files(&root)),
         }
         self.picker = Some(picker);
+    }
+
+    /// Follows what a key did in the project search panel.
+    fn project_search_step(&mut self, step: Searched) {
+        match step {
+            Searched::Start(query) => self.start_project_search(query),
+            Searched::Open(hit) => {
+                self.close_project_search();
+                self.open_hit(&hit);
+            }
+            Searched::Close => self.close_project_search(),
+        }
+    }
+
+    fn close_project_search(&mut self) {
+        self.stop_project_search();
+        self.project_search = None;
+    }
+
+    fn stop_project_search(&mut self) {
+        if let Some(cancel) = self.search_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Searches the project for `query` on a background thread, so a large
+    /// project never stalls typing (ADR-0001); hits stream back in batches.
+    /// Open buffers are searched as they are in memory, edits and all, and their
+    /// files left out of the walk. Outside the event loop (unit tests) the search
+    /// runs inline.
+    fn start_project_search(&mut self, query: Query) {
+        self.stop_project_search();
+        self.searches += 1;
+        let id = self.searches;
+        let Some(panel) = &mut self.project_search else {
+            return;
+        };
+        panel.start(id, query.clone());
+        let re = match search::compile(&query) {
+            Ok(re) => re,
+            Err(err) => {
+                panel.fail(err);
+                return;
+            }
+        };
+        let root = self.tree.root().to_path_buf();
+        let root_path = absolute(&root);
+        let mut skip = HashSet::new();
+        let mut open = Vec::new();
+        for doc in &self.tabs.docs {
+            let Some(path) = doc.buffer.path.as_deref().map(absolute) else {
+                continue;
+            };
+            if let Ok(relative) = path.strip_prefix(&root_path) {
+                open.push((relative_name(relative), doc.buffer.rope.to_string()));
+                skip.insert(path);
+            }
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.search_cancel = Some(Arc::clone(&cancel));
+        let run = move |send: &(dyn Fn(Vec<Hit>) + Sync)| {
+            for (path, text) in &open {
+                let hits = search::hits_in(path, text, &re);
+                if !hits.is_empty() {
+                    send(hits);
+                }
+            }
+            search::search_project(&root, &re, &skip, &cancel, send);
+        };
+        match &self.events {
+            Some(events) => {
+                let events = events.clone();
+                tokio::task::spawn_blocking(move || {
+                    // The loop has stopped if a send fails; nobody is left to tell.
+                    let send = |hits| {
+                        let _ = events.send(AppEvent::SearchHits { search: id, hits });
+                    };
+                    run(&send);
+                    let _ = events.send(AppEvent::SearchDone { search: id });
+                });
+            }
+            None => {
+                let found = Mutex::new(Vec::new());
+                run(&|hits| {
+                    found
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .extend(hits);
+                });
+                panel.add(
+                    id,
+                    found
+                        .into_inner()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+                panel.finish(id);
+            }
+        }
+    }
+
+    /// Opens a hit's file in a tab with the cursor on the match.
+    fn open_hit(&mut self, hit: &Hit) {
+        let mut path = self.tree.root().to_path_buf();
+        path.extend(hit.path.split('/'));
+        self.open(&path);
+        // A file that failed to open left some other buffer active.
+        let opened = self.buffer().path.as_deref().map(absolute) == Some(absolute(&path));
+        if opened {
+            self.buffer_mut()
+                .go_to_line_col(hit.line.line, hit.line.col);
+            self.follow_cursor();
+        }
     }
 
     /// Closes the picker and, on Enter, opens the chosen file in a tab.
@@ -1708,6 +1869,8 @@ impl App {
     /// Ends the session cleanly: every tab was saved or its changes discarded, so
     /// no backup is needed.
     fn quit(&mut self) {
+        // The runtime waits for blocking threads on the way out.
+        self.stop_project_search();
         for doc in &self.tabs.docs {
             let _ = self.backups.delete(doc.buffer.path.as_deref(), doc.id);
         }
@@ -1901,6 +2064,10 @@ impl App {
         }
         if let Some(picker) = &self.picker {
             let at = picker.render(theme, frame, frame.area());
+            frame.set_cursor_position(at);
+        }
+        if let Some(panel) = &self.project_search {
+            let at = panel.render(theme, frame, frame.area());
             frame.set_cursor_position(at);
         }
         if let Some(prompt) = self.prompt {
@@ -3099,6 +3266,110 @@ world",
             message.contains(&format!("cannot open {}: not UTF-8", path.display())),
             "{message}"
         );
+        Ok(())
+    }
+
+    fn panel(app: &App) -> &ProjectSearch {
+        app.project_search.as_ref().expect("project search is open")
+    }
+
+    fn hit_rows(app: &App) -> Vec<String> {
+        panel(app)
+            .hits()
+            .iter()
+            .map(|hit| format!("{}:{}: {}", hit.path, hit.line.line + 1, hit.line.text))
+            .collect()
+    }
+
+    #[test]
+    fn project_search_reads_open_buffers_from_memory_and_opens_a_hit() -> Result<()> {
+        let (dir, mut app) = project()?;
+        std::fs::create_dir(dir.path().join("sub"))?;
+        std::fs::write(
+            dir.path().join("sub").join("c.txt"),
+            "one
+  two a
+",
+        )?;
+        app.open(&dir.path().join("a.txt"));
+        // Unsaved: the file on disk still holds just `a`.
+        press(&mut app, &["ctrl+end", "x"]);
+        press(&mut app, &["alt+f", "a", "enter"]);
+        // `a.txt` shows once, as the buffer has it, not again as the disk does.
+        assert_eq!(hit_rows(&app), ["a.txt:1: ax", "sub/c.txt:2: two a"]);
+        assert_eq!(panel(&app).status(), "2 hits");
+        press(&mut app, &["down", "enter"]);
+        assert!(app.project_search.is_none());
+        assert_eq!(
+            app.buffer().path,
+            Some(dir.path().join("sub").join("c.txt"))
+        );
+        assert_eq!(app.buffer().cursor_line_col(), (1, 6));
+        assert_eq!(app.focus, Focus::Editor);
+        Ok(())
+    }
+
+    #[test]
+    fn project_search_toggles_research_and_esc_closes() -> Result<()> {
+        let (_dir, mut app) = project()?;
+        press(&mut app, &["alt+f", "shift+a", "enter"]);
+        assert_eq!(hit_rows(&app), ["a.txt:1: a"]);
+        press(&mut app, &["alt+c"]);
+        assert!(hit_rows(&app).is_empty());
+        assert_eq!(panel(&app).status(), "no hits");
+        press(&mut app, &["alt+c", "alt+r", "backspace", "("]);
+        press(&mut app, &["enter"]);
+        assert_eq!(panel(&app).status(), "invalid regex");
+        press(&mut app, &["esc"]);
+        assert!(app.project_search.is_none());
+        // Keys go back to where they went before.
+        assert_eq!(app.focus, Focus::Tree);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn project_search_streams_hits_while_keys_keep_working() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        for n in 0..2000 {
+            std::fs::write(
+                dir.path().join(format!("f{n:04}.txt")),
+                "x
+needle
+",
+            )?;
+        }
+        let mut app = App::new(
+            Keymap::default(),
+            EditorConfig::default(),
+            Some(dir.path().to_path_buf()),
+            None,
+        );
+        app.screen = Rect::new(0, 0, 100, 30);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        app.events = Some(tx);
+        press(&mut app, &["alt+f", "n", "e", "e", "d", "l", "e", "enter"]);
+        // Enter came straight back; the search goes on in the background.
+        assert!(panel(&app).status().starts_with("searching"));
+        let mut batches = 0;
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(20), rx.recv())
+                .await?
+                .expect("the search reports back");
+            let done = matches!(event, AppEvent::SearchDone { .. });
+            batches += usize::from(matches!(event, AppEvent::SearchHits { .. }));
+            app.handle_event(event);
+            if done {
+                break;
+            }
+            // A key between batches is handled at once, before the next arrives.
+            let before = panel(&app).selected().cloned();
+            press(&mut app, &["down"]);
+            let after = panel(&app).selected().cloned();
+            assert!(after.is_some() && (after != before || panel(&app).hits().len() < 2));
+        }
+        assert!(batches > 1, "every hit came in one batch");
+        assert_eq!(panel(&app).hits().len(), 2000);
+        assert_eq!(panel(&app).status(), "2000 hits");
         Ok(())
     }
 }
