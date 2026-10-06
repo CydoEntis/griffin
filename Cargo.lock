@@ -743,6 +743,7 @@ dependencies = [
  "nucleo",
  "portable-pty",
  "ratatui",
+ "regex",
  "ropey",
  "serde",
  "tempfile",
