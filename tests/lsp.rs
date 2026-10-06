@@ -436,3 +436,113 @@ fn a_new_publish_replaces_the_set_and_an_empty_one_clears_it() {
     assert!(griffin.screen()[usize::from(Y_ROW)].starts_with(" 3 │ "));
     assert!(!status_line(&griffin).contains("⚠"));
 }
+
+/// The fake's answer to every `textDocument/definition`: `greet` in `util.rs`.
+const DEFINITION_IN_UTIL: &str = r#"{"responses": {"textDocument/definition": {
+    "uri": "$dir/util.rs",
+    "range": {"start": {"line": 2, "character": 7}, "end": {"line": 2, "character": 12}}
+}}}"#;
+
+/// A project holding the `tests/fixtures/definition` files, with `main.rs` open:
+/// `util::greet()` on its line 4 calls `greet`, defined on `util.rs` line 3.
+fn definition_project(script: &str) -> (Project, Griffin) {
+    let project = Project::new(Some(script));
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/definition");
+    for name in ["main.rs", "util.rs"] {
+        fs::copy(fixtures.join(name), project.dir.path().join(name)).expect("copy fixture");
+    }
+    let griffin = project.open(&rust_server(fake()), "main.rs");
+    project.wait_for(&griffin, "textDocument/didOpen", "main.rs");
+    (project, griffin)
+}
+
+// `greet` in `    util::greet();` starts at char 10 of line 4, which is screen
+// column 5 + 10 past the gutter, on row 4 below the tab bar.
+const GREET_COL: u16 = 15;
+const GREET_ROW: u16 = 4;
+
+/// The position of the last `textDocument/definition` the fake received, as
+/// (line, character).
+fn definition_position(project: &Project) -> (u64, u64) {
+    let log = project.log();
+    let (_, request) = log
+        .iter()
+        .rev()
+        .find(|(_, m)| is(m, "textDocument/definition", "main.rs"))
+        .expect("definition request logged");
+    let position = &request["params"]["position"];
+    (
+        position["line"].as_u64().unwrap_or(u64::MAX),
+        position["character"].as_u64().unwrap_or(u64::MAX),
+    )
+}
+
+#[test]
+fn f12_opens_the_definition_in_another_file_and_alt_left_comes_back() {
+    let (project, mut griffin) = definition_project(DEFINITION_IN_UTIL);
+    // One key at a time: a burst of keys can read as a paste on Windows.
+    for (key, at) in [
+        ("down", "Ln 2, Col 1"),
+        ("down", "Ln 3, Col 1"),
+        ("down", "Ln 4, Col 1"),
+        ("ctrl+right", "Ln 4, Col 9"),
+        ("ctrl+right", "Ln 4, Col 11"),
+    ] {
+        griffin.send_keys(key);
+        griffin.wait_for_text(at, WAIT);
+    }
+
+    griffin.send_keys("f12");
+    project.wait_for(&griffin, "textDocument/definition", "main.rs");
+    assert_eq!(definition_position(&project), (3, 10));
+    // util.rs opens in a tab of its own, cursor on `greet`.
+    griffin.wait_for_text("Ln 3, Col 8", WAIT);
+    let tabs = griffin.screen()[0].clone();
+    assert!(
+        tabs.contains("main.rs") && tabs.contains("util.rs"),
+        "{tabs:?}"
+    );
+    griffin.wait_for_cursor(5 + 7, 3, WAIT);
+    assert!(status_line(&griffin).contains("util.rs"));
+
+    griffin.send_keys("alt+left");
+    griffin.wait_for_text("Ln 4, Col 11", WAIT);
+    griffin.wait_for_cursor(GREET_COL, GREET_ROW, WAIT);
+    assert!(status_line(&griffin).contains("main.rs"));
+
+    // Nothing more to go back to: it stays put.
+    griffin.send_keys("alt+left");
+    griffin.send_keys("right");
+    griffin.wait_for_text("Ln 4, Col 12", WAIT);
+    assert!(status_line(&griffin).contains("main.rs"));
+}
+
+#[test]
+fn ctrl_click_goes_to_the_definition() {
+    let (project, mut griffin) = definition_project(DEFINITION_IN_UTIL);
+    griffin.ctrl_click(GREET_COL + 2, GREET_ROW);
+    project.wait_for(&griffin, "textDocument/definition", "main.rs");
+    assert_eq!(definition_position(&project), (3, 12));
+    griffin.wait_for_text("Ln 3, Col 8", WAIT);
+    assert!(status_line(&griffin).contains("util.rs"));
+
+    // Back to where the click put the cursor.
+    griffin.send_keys("alt+left");
+    griffin.wait_for_text("Ln 4, Col 13", WAIT);
+    assert!(status_line(&griffin).contains("main.rs"));
+}
+
+#[test]
+fn no_definition_says_so() {
+    // Unscripted, the fake answers `null`.
+    let (project, mut griffin) = definition_project("{}");
+    griffin.send_keys("f12");
+    project.wait_for(&griffin, "textDocument/definition", "main.rs");
+    griffin.wait_for_text("No definition found", WAIT);
+    let status = status_line(&griffin);
+    assert!(
+        status.contains("main.rs") && status.contains("Ln 1, Col 1"),
+        "{status:?}"
+    );
+    assert!(!griffin.screen()[0].contains("util.rs"));
+}

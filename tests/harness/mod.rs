@@ -209,6 +209,10 @@ impl Griffin {
         self.write(&click_bytes(col, row));
     }
 
+    pub fn ctrl_click(&mut self, col: u16, row: u16) {
+        self.write(&ctrl_click_bytes(col, row));
+    }
+
     pub fn middle_click(&mut self, col: u16, row: u16) {
         self.write(&middle_click_bytes(col, row));
     }
@@ -1041,6 +1045,14 @@ fn sgr(button: u8, col: u16, row: u16, press: bool) -> Vec<u8> {
 pub fn click_bytes(col: u16, row: u16) -> Vec<u8> {
     let mut out = sgr(0, col, row, true);
     out.extend(sgr(0, col, row, false));
+    out
+}
+
+/// Left press and release with Ctrl held at a 0-based cell; SGR adds 16 to the
+/// button for Ctrl.
+pub fn ctrl_click_bytes(col: u16, row: u16) -> Vec<u8> {
+    let mut out = sgr(16, col, row, true);
+    out.extend(sgr(16, col, row, false));
     out
 }
 

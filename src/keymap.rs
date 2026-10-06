@@ -90,6 +90,11 @@ pub enum Action {
     NextDiagnostic,
     /// Moves the cursor to the previous diagnostic in the buffer, wrapping around.
     PrevDiagnostic,
+    /// Asks the language server where the symbol under the cursor is defined and
+    /// goes there.
+    GoToDefinition,
+    /// Returns to where the cursor was before the last go to definition.
+    JumpBack,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -181,6 +186,8 @@ impl Action {
         Action::RestartRun,
         Action::NextDiagnostic,
         Action::PrevDiagnostic,
+        Action::GoToDefinition,
+        Action::JumpBack,
     ];
 
     pub fn scope(self) -> Scope {
@@ -285,6 +292,8 @@ impl Action {
             Action::RestartRun => "restart_run",
             Action::NextDiagnostic => "next_diagnostic",
             Action::PrevDiagnostic => "prev_diagnostic",
+            Action::GoToDefinition => "go_to_definition",
+            Action::JumpBack => "jump_back",
         }
     }
 
@@ -296,8 +305,8 @@ impl Action {
 /// The spec's "Default keymap" table plus R4's movement, R6's editing, R10's
 /// selection, R14's tree keys, R16's tab keys, R17's split keys, R18's picker
 /// keys, R20's find bar keys, R21's Replace All, R22's project search, R23's
-/// project replace, R26's run keys, R27's stop and restart and R30's diagnostic
-/// jumps, one line per binding.
+/// project replace, R26's run keys, R27's stop and restart, R30's diagnostic
+/// jumps and R31's definition keys, one line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -375,6 +384,8 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::RestartRun, "ctrl+f5"),
     (Action::NextDiagnostic, "f8"),
     (Action::PrevDiagnostic, "shift+f8"),
+    (Action::GoToDefinition, "f12"),
+    (Action::JumpBack, "alt+left"),
 ];
 
 /// What a key event means to the editor.
@@ -762,6 +773,19 @@ mod tests {
         assert_eq!(
             map.resolve(&ev(KeyCode::F(8), KeyModifiers::SHIFT)),
             Input::Action(Action::PrevDiagnostic)
+        );
+    }
+
+    #[test]
+    fn f12_goes_to_definition_and_alt_left_jumps_back_by_default() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(12), KeyModifiers::NONE)),
+            Input::Action(Action::GoToDefinition)
+        );
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Left, KeyModifiers::ALT)),
+            Input::Action(Action::JumpBack)
         );
     }
 

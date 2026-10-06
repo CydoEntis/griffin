@@ -13,7 +13,9 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use lsp_types::{DiagnosticSeverity, PublishDiagnosticsParams, Uri};
+use lsp_types::{
+    DiagnosticSeverity, GotoDefinitionResponse, Position, PublishDiagnosticsParams, Uri,
+};
 use ropey::Rope;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
@@ -23,7 +25,8 @@ use crate::buffer::Buffer;
 use crate::config::LspServer;
 use crate::highlight::languages;
 use client::Client;
-use position::{char_index, path_to_uri};
+pub use position::char_index;
+use position::{lsp_position, path_to_uri, uri_to_path};
 
 /// Something one server did, tagged with the server it came from.
 #[derive(Debug)]
@@ -82,6 +85,34 @@ pub fn diagnostic_at(diagnostics: &[Diagnostic], cursor: usize) -> Option<&Diagn
         .min_by_key(|d| d.severity)
 }
 
+/// A place a server pointed to: a file and an LSP position in it. The position
+/// stays in protocol terms until the file is open and its text known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Location {
+    pub path: PathBuf,
+    pub position: Position,
+}
+
+/// The location a go to definition goes to: the first the server returned. `None`
+/// for an empty or unreadable result.
+fn first_location(result: &Value) -> Option<Location> {
+    let (uri, position) = match serde_json::from_value(result.clone()).ok()? {
+        GotoDefinitionResponse::Scalar(location) => (location.uri, location.range.start),
+        GotoDefinitionResponse::Array(locations) => {
+            let location = locations.into_iter().next()?;
+            (location.uri, location.range.start)
+        }
+        GotoDefinitionResponse::Link(links) => {
+            let link = links.into_iter().next()?;
+            (link.target_uri, link.target_selection_range.start)
+        }
+    };
+    Some(Location {
+        path: uri_to_path(&uri)?,
+        position,
+    })
+}
+
 /// What a server's message means for the app.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LspNews {
@@ -93,6 +124,9 @@ pub enum LspNews {
         doc: u64,
         diagnostics: Vec<Diagnostic>,
     },
+    /// The answer to the latest go to definition: where to go, or `None` when
+    /// the server found nothing.
+    Definition(Option<Location>),
 }
 
 /// The `[lsp.<lang>]` key for `path`: the highlight registry's language name, except
@@ -144,6 +178,9 @@ pub struct Lsp {
     by_root: HashMap<(&'static str, PathBuf), u64>,
     docs: HashMap<u64, Attached>,
     next_server: u64,
+    /// The go to definition awaiting its reply, as (server, request id). A newer
+    /// request replaces it, so a slow reply to an older one is ignored.
+    definition: Option<(u64, i64)>,
 }
 
 impl Lsp {
@@ -303,12 +340,50 @@ impl Lsp {
         Some(id)
     }
 
-    /// Hands a server's message or exit to its client, and turns published
-    /// diagnostics into char ranges for each buffer they name.
+    /// Asks the server following buffer `doc` where the symbol at char index
+    /// `cursor` is defined; the answer comes back from `handle` as
+    /// `LspNews::Definition`. `false` when no ready server follows the buffer.
+    pub fn definition(&mut self, doc: u64, cursor: usize) -> bool {
+        let Some(attached) = self.docs.get(&doc).filter(|d| d.opened) else {
+            return false;
+        };
+        let Some(client) = self
+            .servers
+            .get_mut(&attached.server)
+            .filter(|c| c.is_ready())
+        else {
+            return false;
+        };
+        // The server's copy of the text is the buffer's: every event is followed
+        // by a sync, so the position means the same to both.
+        let position = lsp_position(&attached.rope, cursor);
+        let id = client.definition(&attached.uri, position);
+        self.definition = Some((attached.server, id));
+        true
+    }
+
+    /// Hands a server's message or exit to its client, turns published
+    /// diagnostics into char ranges for each buffer they name, and passes on the
+    /// answer to the latest go to definition.
     pub fn handle(&mut self, event: LspEvent) -> Vec<LspNews> {
+        let definition_reply = match &event.event {
+            ServerEvent::Message(message) => {
+                message.get("method").is_none()
+                    && message["id"]
+                        .as_i64()
+                        .is_some_and(|id| self.definition == Some((event.server, id)))
+            }
+            ServerEvent::Exited(_) => false,
+        };
         let Some(client) = self.servers.get_mut(&event.server) else {
             return Vec::new();
         };
+        if definition_reply && let ServerEvent::Message(message) = event.event {
+            self.definition = None;
+            let location = first_location(&message["result"]);
+            client.handle(message);
+            return vec![LspNews::Definition(location)];
+        }
         let message = match event.event {
             ServerEvent::Message(message)
                 if message["method"] == "textDocument/publishDiagnostics"
@@ -533,6 +608,35 @@ mod tests {
         );
         // Another server's report on the same file isn't this one's.
         assert!(lsp.diagnostics(2, message).is_empty());
+    }
+
+    #[test]
+    fn the_first_definition_location_wins_in_any_result_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = std::path::absolute(dir.path().join("b.rs")).unwrap();
+        let uri = path_to_uri(&path).unwrap();
+        let range = serde_json::json!({"start": {"line": 2, "character": 4},
+                                       "end": {"line": 2, "character": 9}});
+        let expected = Some(Location {
+            path: path.clone(),
+            position: Position::new(2, 4),
+        });
+        let location = serde_json::json!({"uri": uri.as_str(), "range": range});
+        assert_eq!(first_location(&location), expected);
+        let other = serde_json::json!({"uri": "file:///elsewhere.rs", "range": range});
+        assert_eq!(
+            first_location(&serde_json::json!([location, other])),
+            expected
+        );
+        let link = serde_json::json!([{
+            "targetUri": uri.as_str(),
+            "targetRange": {"start": {"line": 0, "character": 0},
+                            "end": {"line": 5, "character": 0}},
+            "targetSelectionRange": range,
+        }]);
+        assert_eq!(first_location(&link), expected);
+        assert_eq!(first_location(&Value::Null), None);
+        assert_eq!(first_location(&serde_json::json!([])), None);
     }
 
     #[test]

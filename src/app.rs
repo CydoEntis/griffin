@@ -29,7 +29,10 @@ use crate::config::{self, EditorConfig, RunEntry};
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
-use crate::lsp::{Diagnostic, Lsp, LspEvent, LspNews, Severity, diagnostic_at, diagnostic_jump};
+use crate::lsp::{
+    Diagnostic, Location, Lsp, LspEvent, LspNews, Severity, char_index, diagnostic_at,
+    diagnostic_jump,
+};
 use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
@@ -629,6 +632,18 @@ impl Shown<'_> {
     }
 }
 
+/// How many places Alt+Left can go back through; older ones are forgotten.
+const JUMP_LIST_LEN: usize = 50;
+
+/// Where the cursor was before a go to definition, for Alt+Left to return to.
+#[derive(Debug, Clone)]
+struct Jump {
+    doc: u64,
+    /// So the place can still be reached after its tab was closed.
+    path: Option<PathBuf>,
+    cursor: usize,
+}
+
 /// `path` made absolute, so two spellings of one file compare equal.
 fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
@@ -705,6 +720,8 @@ pub struct App {
     events: Option<mpsc::UnboundedSender<AppEvent>>,
     /// Language servers and the buffers they follow.
     lsp: Lsp,
+    /// Places go to definition left, newest last, at most `JUMP_LIST_LEN`.
+    jumps: Vec<Jump>,
     should_quit: bool,
 }
 
@@ -884,13 +901,7 @@ impl App {
                 self.edit(|buffer| buffer.paste(&text));
             }
             // The mouse bypasses the keymap too: only keys are remappable.
-            AppEvent::Input(Event::Mouse(mouse))
-                if self.prompt.is_none()
-                    && self.name_prompt.is_none()
-                    && self.picker.is_none()
-                    && self.project_search.is_none()
-                    && self.find.is_none() =>
-            {
+            AppEvent::Input(Event::Mouse(mouse)) if !self.modal_open() => {
                 self.handle_mouse(mouse, Instant::now());
             }
             // A smaller pane can leave the cursor outside it.
@@ -944,6 +955,13 @@ impl App {
                             if let Some(open) = self.tabs.docs.iter_mut().find(|d| d.id == doc) {
                                 open.diagnostics = diagnostics;
                             }
+                        }
+                        // Something else took the keys since F12; moving the
+                        // buffer under it would surprise.
+                        LspNews::Definition(_) if self.modal_open() => {}
+                        LspNews::Definition(Some(location)) => self.go_to(&location),
+                        LspNews::Definition(None) => {
+                            self.message = Some("No definition found".into());
                         }
                     }
                 }
@@ -1324,6 +1342,8 @@ impl App {
             Action::RestartRun => self.restart_run(),
             Action::NextDiagnostic => self.jump_to_diagnostic(true),
             Action::PrevDiagnostic => self.jump_to_diagnostic(false),
+            Action::GoToDefinition => self.request_definition(),
+            Action::JumpBack => self.jump_back(),
             // Bound only in tree or find bar scope, so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
@@ -2078,7 +2098,6 @@ impl App {
                 .screen_to_char(app.buffer(), area, col, row, tab_width)
         };
         match (mouse.kind, hovered) {
-            // Ctrl+click is left for go to definition (#32).
             (MouseEventKind::Down(MouseButton::Left), Some(split))
                 if !mouse.modifiers.contains(KeyModifiers::CONTROL) =>
             {
@@ -2101,6 +2120,18 @@ impl App {
                     self.drag_from = Some(pos);
                 }
                 self.follow_cursor();
+            }
+            // Ctrl+click: the cursor goes to the symbol, then to its definition.
+            (MouseEventKind::Down(MouseButton::Left), Some(split)) => {
+                if split != self.tabs.focused {
+                    self.switch_to(split, self.tabs.splits[split].active);
+                }
+                self.focus = Focus::Editor;
+                let pos = pos(self);
+                self.reset_mouse();
+                self.buffer_mut().place_cursor(pos);
+                self.follow_cursor();
+                self.request_definition();
             }
             (MouseEventKind::Down(_), _) => self.drag_from = None,
             (MouseEventKind::Drag(MouseButton::Left), _) => {
@@ -2353,6 +2384,79 @@ impl App {
         };
         self.buffer_mut().set_caret(Caret {
             cursor: target,
+            goal_col: None,
+            anchor: None,
+        });
+        self.follow_cursor();
+    }
+
+    /// Whether a prompt, picker, bar or panel is taking the keys.
+    fn modal_open(&self) -> bool {
+        self.prompt.is_some()
+            || self.name_prompt.is_some()
+            || self.picker.is_some()
+            || self.project_search.is_some()
+            || self.find.is_some()
+    }
+
+    /// Asks the active buffer's language server for the definition of the symbol
+    /// at the cursor. The answer arrives later as an `AppEvent::Lsp`.
+    fn request_definition(&mut self) {
+        let doc = self.tabs.active().id;
+        let cursor = self.buffer().cursor;
+        if !self.lsp.definition(doc, cursor) {
+            self.message = Some("No definition found".into());
+        }
+    }
+
+    /// Goes to `location`, opening its file in a tab first when it isn't the
+    /// active one, and remembers where the cursor was for Alt+Left.
+    fn go_to(&mut self, location: &Location) {
+        let from = Jump {
+            doc: self.tabs.active().id,
+            path: self.buffer().path.clone(),
+            cursor: self.buffer().cursor,
+        };
+        self.open(&location.path);
+        // `open` says why in the status line when the file can't be read.
+        if self.tabs.find(&location.path) != Some(self.tabs.active().id) {
+            return;
+        }
+        let cursor = char_index(&self.buffer().rope, location.position);
+        self.place_caret(cursor);
+        if self.jumps.len() == JUMP_LIST_LEN {
+            self.jumps.remove(0);
+        }
+        self.jumps.push(from);
+    }
+
+    /// Returns to the place the last go to definition left, reopening its file
+    /// if its tab was closed since.
+    fn jump_back(&mut self) {
+        let Some(jump) = self.jumps.pop() else {
+            return;
+        };
+        if self.tabs.docs.iter().any(|doc| doc.id == jump.doc) {
+            self.tabs.show(jump.doc);
+            self.reset_mouse();
+            self.focus = Focus::Editor;
+        } else if let Some(path) = &jump.path {
+            self.open(path);
+            if self.tabs.find(path) != Some(self.tabs.active().id) {
+                return;
+            }
+        } else {
+            return;
+        }
+        // The text may have shrunk since.
+        let cursor = jump.cursor.min(self.buffer().rope.len_chars());
+        self.place_caret(cursor);
+    }
+
+    /// Moves the cursor to `cursor`, dropping any selection, and scrolls to it.
+    fn place_caret(&mut self, cursor: usize) {
+        self.buffer_mut().set_caret(Caret {
+            cursor,
             goal_col: None,
             anchor: None,
         });
@@ -2988,12 +3092,45 @@ world",
     }
 
     #[test]
-    fn ctrl_click_is_not_a_click() {
+    fn ctrl_click_places_the_cursor_and_asks_for_the_definition() {
         let mut app = app_with("hello", &FakeClipboard::default());
         let mut event = mouse(LEFT_DOWN, 8, 1);
         event.modifiers = KeyModifiers::CONTROL;
         app.handle_mouse(event, Instant::now());
-        assert_eq!(app.buffer().cursor, 0);
+        assert_eq!(app.buffer().cursor, 3);
+        // No drag starts, and without a server there's nothing to go to.
+        assert!(app.drag_from.is_none());
+        assert_eq!(app.message.as_deref(), Some("No definition found"));
+    }
+
+    #[test]
+    fn the_jump_list_keeps_the_last_50_places() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "x".repeat(100))?;
+        let mut app = App::new(
+            Keymap::default(),
+            EditorConfig::default(),
+            Some(path.clone()),
+            None,
+        );
+        for i in 0..60 {
+            app.place_caret(i);
+            app.go_to(&Location {
+                path: path.clone(),
+                position: lsp_types::Position::new(0, 99),
+            });
+        }
+        assert_eq!(app.buffer().cursor, 99);
+        assert_eq!(app.jumps.len(), JUMP_LIST_LEN);
+        app.handle_action(Action::JumpBack);
+        assert_eq!(app.buffer().cursor, 59);
+        for _ in 0..60 {
+            app.handle_action(Action::JumpBack);
+        }
+        // The oldest ten were forgotten.
+        assert_eq!(app.buffer().cursor, 10);
+        Ok(())
     }
 
     #[test]

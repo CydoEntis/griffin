@@ -1,7 +1,7 @@
 //! Where Griffin's char indices meet the protocol: LSP positions count UTF-16 code
 //! units within a line, and documents are named by `file://` URIs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use lsp_types::{Position, Range, Uri};
@@ -105,6 +105,33 @@ pub fn path_to_uri(path: &Path) -> Option<Uri> {
     Uri::from_str(&uri).ok()
 }
 
+/// The path a `file://` URI names: the inverse of `path_to_uri`. `None` for any
+/// other scheme, or bytes that don't decode to a path.
+pub fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
+    let rest = uri.as_str().strip_prefix("file://")?;
+    // A host part (`file://localhost/...`) names this machine as well.
+    let rest = &rest[rest.find('/')?..];
+    let mut bytes = Vec::with_capacity(rest.len());
+    let mut iter = rest.bytes();
+    while let Some(byte) = iter.next() {
+        if byte == b'%' {
+            let hex = [iter.next()?, iter.next()?];
+            let hex = std::str::from_utf8(&hex).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+        } else {
+            bytes.push(byte);
+        }
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    #[cfg(windows)]
+    let text = {
+        // `/C:/x` is `C:\x`.
+        let trimmed = text.strip_prefix('/').unwrap_or(&text);
+        trimmed.replace('/', "\\")
+    };
+    Some(PathBuf::from(text))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +227,15 @@ mod tests {
         assert!(text.starts_with("file:///"), "{text}");
         assert!(text.ends_with("/my%20file.rs"), "{text}");
         assert!(!text.contains('\\'), "{text}");
+    }
+
+    #[test]
+    fn uris_turn_back_into_the_paths_they_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = std::path::absolute(dir.path().join("my file é.rs")).unwrap();
+        let uri = path_to_uri(&path).unwrap();
+        assert_eq!(uri_to_path(&uri), Some(path));
+        let other = Uri::from_str("https://example.com/a.rs").unwrap();
+        assert_eq!(uri_to_path(&other), None);
     }
 }
