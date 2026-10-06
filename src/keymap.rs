@@ -22,6 +22,8 @@ pub enum Action {
     Backspace,
     Delete,
     Tab,
+    Undo,
+    Redo,
 }
 
 impl Action {
@@ -45,6 +47,8 @@ impl Action {
         Action::Backspace,
         Action::Delete,
         Action::Tab,
+        Action::Undo,
+        Action::Redo,
     ];
 
     /// The name used on the left of `[keys]`.
@@ -71,6 +75,8 @@ impl Action {
             Action::Backspace => "backspace",
             Action::Delete => "delete",
             Action::Tab => "tab",
+            Action::Undo => "undo",
+            Action::Redo => "redo",
         }
     }
 
@@ -101,6 +107,8 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Backspace, "backspace"),
     (Action::Delete, "delete"),
     (Action::Tab, "tab"),
+    (Action::Undo, "ctrl+z"),
+    (Action::Redo, "ctrl+y"),
 ];
 
 /// What a key event means to the editor.
@@ -585,6 +593,19 @@ mod tests {
                 "{code:?}"
             );
         }
+    }
+
+    #[test]
+    fn ctrl_z_undoes_and_ctrl_y_redoes_by_default() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            Input::Action(Action::Undo)
+        );
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+            Input::Action(Action::Redo)
+        );
     }
 
     #[test]

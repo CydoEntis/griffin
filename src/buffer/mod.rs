@@ -1,4 +1,5 @@
 pub mod edit;
+pub mod history;
 pub mod movement;
 
 use std::fs;
@@ -9,6 +10,7 @@ use anyhow::{Result, anyhow, bail};
 use ropey::Rope;
 
 use crate::save::save_atomic;
+use history::History;
 
 /// The line ending a file used on disk. The rope always holds LF; saving writes
 /// this one back.
@@ -42,6 +44,7 @@ pub struct Buffer {
     /// Display column Up/Down aim for, so crossing a shorter line doesn't lose it.
     /// Cleared by any other motion.
     pub goal_col: Option<usize>,
+    pub history: History,
 }
 
 impl Buffer {
@@ -82,6 +85,7 @@ impl Buffer {
             dirty: false,
             cursor: 0,
             goal_col: None,
+            history: History::default(),
         }
     }
 

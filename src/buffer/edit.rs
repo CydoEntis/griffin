@@ -1,7 +1,8 @@
-//! Text edits. Every change to the rope goes through `Buffer::apply`, so undo (#8)
-//! can record each `Change` in one place.
+//! Text edits. Every change to the rope goes through `Buffer::apply`, which records
+//! each `Change` for undo in one place.
 
 use super::Buffer;
+use super::history::EditKind;
 use super::movement::display_col;
 
 /// Replace `removed` at char index `at` with `inserted`. An insertion has an empty
@@ -14,9 +15,22 @@ pub struct Change {
 }
 
 impl Buffer {
-    /// The only path that mutates the rope. Leaves the cursor after the inserted
-    /// text and marks the buffer dirty.
+    /// The only path that mutates the rope (besides undo/redo replaying history).
+    /// Records the change for undo, leaves the cursor after the inserted text and
+    /// marks the buffer dirty.
     pub fn apply(&mut self, change: Change) {
+        self.apply_as(change, EditKind::Other);
+    }
+
+    fn apply_as(&mut self, change: Change, kind: EditKind) {
+        let cursor_before = self.cursor;
+        self.apply_unrecorded(&change);
+        self.history.record(change, kind, cursor_before);
+    }
+
+    /// Mutates the rope without touching history; undo and redo use it so their
+    /// replays aren't recorded as new edits.
+    pub(super) fn apply_unrecorded(&mut self, change: &Change) {
         let removed_len = change.removed.chars().count();
         debug_assert_eq!(
             self.rope
@@ -32,16 +46,26 @@ impl Buffer {
         self.dirty = true;
     }
 
+    /// Typed text at the cursor; a run of it undoes as one step.
+    pub fn type_text(&mut self, text: &str) {
+        self.insert_as(text, EditKind::Typing);
+    }
+
     /// Inserts `text` at the cursor.
     pub fn insert(&mut self, text: &str) {
+        self.insert_as(text, EditKind::Other);
+    }
+
+    fn insert_as(&mut self, text: &str, kind: EditKind) {
         if text.is_empty() {
             return;
         }
-        self.apply(Change {
+        let change = Change {
             at: self.cursor,
             removed: String::new(),
             inserted: text.to_string(),
-        });
+        };
+        self.apply_as(change, kind);
     }
 
     /// Splits the line at the cursor; the new line starts with the current line's
@@ -56,7 +80,7 @@ impl Buffer {
             .chars()
             .take_while(|&c| c == ' ' || c == '\t')
             .collect();
-        self.insert(&format!("\n{indent}"));
+        self.insert_as(&format!("\n{indent}"), EditKind::Newline);
     }
 
     /// Deletes the char before the cursor; at column 0 that is the previous line
