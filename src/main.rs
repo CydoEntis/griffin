@@ -1,7 +1,9 @@
 mod app;
+mod buffer;
 mod config;
 mod keymap;
 mod ui;
+mod view;
 
 use std::io::{self, Stdout};
 use std::panic;
@@ -20,6 +22,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::app::App;
+use crate::config::EditorConfig;
 use crate::keymap::Keymap;
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
@@ -34,11 +37,10 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Opening a path arrives in #4; parsing it now keeps the CLI shape stable.
-    let _path = Cli::parse().path;
+    let path = Cli::parse().path;
 
     // Loaded before the terminal switches screens; a bad config never stops startup.
-    let (keymap, config_error) = load_keymap();
+    let (keymap, editor, config_error) = load_config();
 
     install_panic_hook(|| {
         // Best effort: the process is already panicking, so a failed restore can
@@ -54,22 +56,33 @@ async fn main() -> Result<()> {
         }
     };
 
-    let result = App::new(keymap, config_error).run(&mut terminal).await;
+    let result = App::new(keymap, editor, path, config_error)
+        .run(&mut terminal)
+        .await;
     let restored = restore_terminal();
     result?;
     restored
 }
 
-/// Builds the keymap from `config.toml`, falling back to the defaults (and saying
-/// why in the status line) when the file is malformed or names a bad key.
-fn load_keymap() -> (Keymap, Option<String>) {
+/// Reads `config.toml` and builds the keymap from it, falling back to the defaults
+/// (and saying why in the status line) when the file is malformed or names a bad key.
+fn load_config() -> (Keymap, EditorConfig, Option<String>) {
     let loaded = config::load();
     if let Some(err) = loaded.error {
-        return (Keymap::default(), Some(format!("config error: {err}")));
+        return (
+            Keymap::default(),
+            EditorConfig::default(),
+            Some(format!("config error: {err}")),
+        );
     }
+    let editor = loaded.config.editor;
     match Keymap::new(&loaded.config.keys) {
-        Ok(keymap) => (keymap, None),
-        Err(err) => (Keymap::default(), Some(format!("config error: {err}"))),
+        Ok(keymap) => (keymap, editor, None),
+        Err(err) => (
+            Keymap::default(),
+            editor,
+            Some(format!("config error: {err}")),
+        ),
     }
 }
 

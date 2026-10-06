@@ -11,7 +11,22 @@ use serde::Deserialize;
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub editor: EditorConfig,
     pub keys: KeysConfig,
+}
+
+/// `[editor]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct EditorConfig {
+    /// Display columns between tab stops.
+    pub tab_width: usize,
+}
+
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self { tab_width: 4 }
+    }
 }
 
 /// `[keys]`: action name to one key or a list of keys, in the spec's notation.
@@ -112,6 +127,14 @@ mod tests {
         let loaded = parse("");
         assert!(loaded.error.is_none());
         assert!(loaded.config.keys.is_empty());
+        assert_eq!(loaded.config.editor.tab_width, 4);
+    }
+
+    #[test]
+    fn tab_width_is_read_from_editor() {
+        let loaded = parse("[editor]\ntab_width = 8\n");
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert_eq!(loaded.config.editor.tab_width, 8);
     }
 
     #[test]
