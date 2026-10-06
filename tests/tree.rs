@@ -214,6 +214,8 @@ fn clicking_selects_rows_and_opens_files() {
 
 #[test]
 fn opening_another_file_with_unsaved_changes_asks_first() {
+    let notes_path = format!("{PROJECT}/notes.txt");
+    let before = fs::read(&notes_path).expect("read notes");
     let mut griffin = open_project();
     wait_for_tree(&griffin, TOP);
     griffin.click(5, 3);
@@ -237,8 +239,7 @@ fn opening_another_file_with_unsaved_changes_asks_first() {
     griffin.send_keys("d");
     griffin.wait_for_text("# Project fixture", WAIT);
     // Discarding never touched the file on disk.
-    let notes = fs::read_to_string(format!("{PROJECT}/notes.txt")).expect("read notes");
-    assert_eq!(notes, "notes for the tree test\n");
+    assert_eq!(fs::read(&notes_path).expect("read notes"), before);
 }
 
 #[test]
