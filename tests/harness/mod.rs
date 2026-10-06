@@ -165,6 +165,33 @@ impl Griffin {
         screen_lines(&self.parser())
     }
 
+    /// The screen column (0-based) where `text` starts on `row`, counting wide
+    /// characters as the two cells they fill. `None` if `text` isn't on that row.
+    pub fn text_col(&self, row: u16, text: &str) -> Option<u16> {
+        let parser = self.parser();
+        let screen = parser.screen();
+        let mut line = String::new();
+        // Byte offset in `line` where each drawn cell's text starts, with its column.
+        let mut starts: Vec<(usize, u16)> = Vec::new();
+        for col in 0..COLS {
+            let Some(cell) = screen.cell(row, col) else {
+                break;
+            };
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            starts.push((line.len(), col));
+            let contents = cell.contents();
+            line.push_str(if contents.is_empty() { " " } else { contents });
+        }
+        let at = line.find(text)?;
+        starts
+            .iter()
+            .rev()
+            .find(|(offset, _)| *offset <= at)
+            .map(|&(_, col)| col)
+    }
+
     /// Cursor position as (col, row), both 0-based.
     pub fn cursor(&self) -> (u16, u16) {
         let (row, col) = self.parser().screen().cursor_position();
