@@ -6,6 +6,8 @@ use harness::{Griffin, ROWS};
 
 const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(5);
+/// The editor's first row, below the tab bar.
+const TOP: u16 = 1;
 
 /// Waits for the status line to end with `Ln <line>, Col <col>`.
 fn wait_for_position(griffin: &Griffin, line: usize, col: usize) {
@@ -18,11 +20,12 @@ fn wait_for_position(griffin: &Griffin, line: usize, col: usize) {
     );
 }
 
-/// Waits until screen row `row` reads `text` after the gutter.
+/// Waits until editor row `row` (0 is the first, on screen row `TOP`) reads
+/// `text` after the gutter.
 fn wait_for_row(griffin: &Griffin, row: u16, number: usize, text: &str) {
     let expected = format!("{number} │ {text}");
     griffin.wait_for_text(&expected, WAIT);
-    let line = griffin.screen()[usize::from(row)].clone();
+    let line = griffin.screen()[usize::from(TOP + row)].clone();
     assert_eq!(line.trim(), expected.trim_end(), "{:#?}", griffin.screen());
 }
 
@@ -34,10 +37,10 @@ fn start_empty(config: &str) -> (Griffin, u16) {
     // Text starts one cell after the gutter's divider. The terminal cursor moves
     // there only after the frame is drawn, so wait for it rather than read it.
     let divider = griffin
-        .text_col(0, "│")
+        .text_col(TOP, "│")
         .unwrap_or_else(|| panic!("no gutter: {:#?}", griffin.screen()));
     let x = divider + 2;
-    griffin.wait_for_cursor(x, 0, WAIT);
+    griffin.wait_for_cursor(x, TOP, WAIT);
     (griffin, x)
 }
 
@@ -63,7 +66,7 @@ fn typing_inserts() {
     griffin.type_text("hello");
     wait_for_row(&griffin, 0, 1, "hello");
     wait_for_position(&griffin, 1, 6);
-    griffin.wait_for_cursor(x + 5, 0, WAIT);
+    griffin.wait_for_cursor(x + 5, TOP, WAIT);
 
     // Typing in the middle pushes the rest along.
     griffin.send_keys("left");
@@ -73,7 +76,7 @@ fn typing_inserts() {
     wait_for_row(&griffin, 0, 1, "help 日lo");
     wait_for_position(&griffin, 1, 7);
     // The wide character fills two cells.
-    griffin.wait_for_cursor(x + 7, 0, WAIT);
+    griffin.wait_for_cursor(x + 7, TOP, WAIT);
 
     quit(&mut griffin);
 }
@@ -92,7 +95,7 @@ fn enter_tab_and_typing_match_the_visual_check() {
     wait_for_position(&griffin, 2, 6);
     wait_for_row(&griffin, 1, 2, "    y");
     wait_for_row(&griffin, 0, 1, "fn x() {");
-    griffin.wait_for_cursor(x + 5, 1, WAIT);
+    griffin.wait_for_cursor(x + 5, TOP + 1, WAIT);
 
     // Enter on an indented line keeps the indent.
     griffin.send_keys("enter");
@@ -157,7 +160,7 @@ fn tab_inserts_a_tab_character_when_spaces_are_off() {
     griffin.send_keys("tab");
     // One char, drawn as far as the next 8-column stop.
     wait_for_position(&griffin, 1, 4);
-    griffin.wait_for_cursor(x + 8, 0, WAIT);
+    griffin.wait_for_cursor(x + 8, TOP, WAIT);
     griffin.type_text("c");
     wait_for_row(&griffin, 0, 1, "ab      c");
 

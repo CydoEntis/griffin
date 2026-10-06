@@ -28,7 +28,8 @@ fn wait_for_lines(griffin: &Griffin, lines: &[&str]) {
     let screen = griffin.screen();
     for (row, text) in lines.iter().enumerate() {
         let expected = format!("{} │ {text}", row + 1);
-        assert_eq!(screen[row].trim(), expected.trim_end(), "{screen:#?}");
+        // Row 0 is the tab bar.
+        assert_eq!(screen[row + 1].trim(), expected.trim_end(), "{screen:#?}");
     }
 }
 

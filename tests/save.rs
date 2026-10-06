@@ -76,14 +76,17 @@ fn ctrl_s_saves() {
 }
 
 #[test]
-fn ctrl_s_on_an_untitled_buffer_says_it_needs_a_name() {
+fn ctrl_s_on_an_untitled_buffer_asks_for_a_path() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let mut griffin = Griffin::spawn_in(dir.path(), &[]);
     griffin.wait_for_text("untitled", START);
     griffin.type_text("x");
     griffin.wait_for_text("untitled ●", WAIT);
     griffin.send_keys("ctrl+s");
-    griffin.wait_for_text("no file name (save as comes later)", WAIT);
+    griffin.wait_for_text("Save as:", WAIT);
+    // Esc leaves it unsaved.
+    griffin.send_keys("esc");
+    griffin.wait_for_text_gone("Save as:", WAIT);
     assert!(status_line(&griffin).contains("untitled ●"));
     assert_eq!(fs::read_dir(dir.path()).expect("list dir").count(), 0);
 
