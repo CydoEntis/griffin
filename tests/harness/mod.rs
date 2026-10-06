@@ -340,6 +340,38 @@ impl Griffin {
         }
     }
 
+    /// Waits until `check` holds for the screen lines (as `screen` returns them), so
+    /// a test can wait for a whole layout rather than one string. Panics with `what`
+    /// and the screen on timeout.
+    pub fn wait_for_screen(
+        &self,
+        what: &str,
+        timeout: Duration,
+        check: impl Fn(&[String]) -> bool,
+    ) {
+        let deadline = Instant::now() + timeout;
+        let mut parser = self.parser();
+        loop {
+            let lines = screen_lines(&parser);
+            if check(&lines) {
+                return;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                panic!(
+                    "timed out after {timeout:?} waiting for {what}\n{}",
+                    dump(&lines)
+                );
+            }
+            parser = self
+                .shared
+                .changed
+                .wait_timeout(parser, deadline - now)
+                .expect("screen lock poisoned")
+                .0;
+        }
+    }
+
     /// Checks griffin is still running after `grace`. Proving a key did nothing
     /// needs some window to wait in; this returns early if griffin exits.
     pub fn assert_running_for(&mut self, grace: Duration) {

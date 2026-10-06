@@ -7,6 +7,7 @@ mod keymap;
 mod save;
 mod ui;
 mod view;
+mod workspace;
 
 use std::io::{self, Stdout};
 use std::panic;
