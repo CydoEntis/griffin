@@ -21,11 +21,16 @@ pub struct Config {
 pub struct EditorConfig {
     /// Display columns between tab stops.
     pub tab_width: usize,
+    /// Tab inserts spaces up to the next stop instead of a tab character.
+    pub insert_spaces: bool,
 }
 
 impl Default for EditorConfig {
     fn default() -> Self {
-        Self { tab_width: 4 }
+        Self {
+            tab_width: 4,
+            insert_spaces: true,
+        }
     }
 }
 
@@ -135,6 +140,16 @@ mod tests {
         let loaded = parse("[editor]\ntab_width = 8\n");
         assert!(loaded.error.is_none(), "{:?}", loaded.error);
         assert_eq!(loaded.config.editor.tab_width, 8);
+        assert!(loaded.config.editor.insert_spaces);
+    }
+
+    #[test]
+    fn insert_spaces_defaults_to_true_and_can_be_turned_off() {
+        assert!(parse("").config.editor.insert_spaces);
+        let loaded = parse("[editor]\ninsert_spaces = false\n");
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert!(!loaded.config.editor.insert_spaces);
+        assert_eq!(loaded.config.editor.tab_width, 4);
     }
 
     #[test]

@@ -108,8 +108,11 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) {
         match self.keymap.resolve(&key) {
             Input::Action(action) => self.handle_action(action),
-            // Typing arrives with buffers in #6.
-            Input::Text(_) | Input::Ignored => {}
+            Input::Text(ch) => {
+                self.buffer.insert(ch.encode_utf8(&mut [0; 4]));
+                self.follow_cursor();
+            }
+            Input::Ignored => {}
         }
     }
 
@@ -121,7 +124,19 @@ impl App {
                 self.buffer.move_cursor(motion, page, self.editor.tab_width);
                 self.follow_cursor();
             }
+            Action::Newline => self.edit(Buffer::newline),
+            Action::Backspace => self.edit(Buffer::backspace),
+            Action::Delete => self.edit(Buffer::delete),
+            Action::Tab => {
+                let (width, spaces) = (self.editor.tab_width, self.editor.insert_spaces);
+                self.edit(|buffer| buffer.tab(width, spaces));
+            }
         }
+    }
+
+    fn edit(&mut self, edit: impl FnOnce(&mut Buffer)) {
+        edit(&mut self.buffer);
+        self.follow_cursor();
     }
 
     fn follow_cursor(&mut self) {
@@ -239,6 +254,30 @@ mod tests {
         app.handle_event(key("ctrl+home"));
         assert_eq!(app.buffer.cursor, 0);
         assert_eq!(app.view.scroll_row, 0);
+    }
+
+    #[test]
+    fn editing_keys_edit_the_buffer() {
+        let mut app = App {
+            screen: Rect::new(0, 0, 100, 30),
+            ..App::default()
+        };
+        for k in [
+            "f",
+            "n",
+            "space",
+            "{",
+            "enter",
+            "tab",
+            "y",
+            "x",
+            "backspace",
+            "delete",
+        ] {
+            app.handle_event(key(k));
+        }
+        assert_eq!(app.buffer.rope.to_string(), "fn {\n    y");
+        assert!(app.buffer.dirty);
     }
 
     #[test]
