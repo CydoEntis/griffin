@@ -1,0 +1,25 @@
+# Throwaway: proves #55 on windows-latest. Remove before merge.
+name: stress-55
+
+on:
+  pull_request:
+
+jobs:
+  stress:
+    name: editor_render x50 (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build tests
+        run: cargo test --test editor_render --no-run
+      - name: run editor_render 50 times
+        shell: bash
+        run: |
+          for i in $(seq 1 50); do
+            echo "::group::run $i"
+            cargo test --test editor_render || { echo "run $i failed"; exit 1; }
+            echo "::endgroup::"
+          done
+          echo "50/50 runs passed"
