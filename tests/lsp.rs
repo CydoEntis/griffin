@@ -546,3 +546,46 @@ fn no_definition_says_so() {
     );
     assert!(!griffin.screen()[0].contains("util.rs"));
 }
+
+/// The fake's answer to every `textDocument/definition`: the start of `main.rs`.
+const DEFINITION_AT_TOP: &str = r#"{"responses": {"textDocument/definition": {
+    "uri": "$dir/main.rs",
+    "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}
+}}}"#;
+
+#[test]
+fn the_jump_list_keeps_the_last_50_places() {
+    let project = Project::new(Some(DEFINITION_AT_TOP));
+    fs::write(
+        project.dir.path().join("main.rs"),
+        "abcdefghij\n".repeat(27),
+    )
+    .expect("write main.rs");
+    let mut griffin = project.open(&rust_server(fake()), "main.rs");
+    project.wait_for(&griffin, "textDocument/didOpen", "main.rs");
+
+    let text = griffin.text_col(1, "abcdefghij").expect("line 1 on screen");
+    // 55 different places, each left by F12: lines 2 to 26 at columns 2, 4 and 6.
+    let places: Vec<(u16, u16)> = (0..55u16).map(|i| (2 + i % 25, 2 + 2 * (i / 25))).collect();
+    for &(line, col) in &places {
+        // Line n is on screen row n, below the tab bar.
+        griffin.click(text + col - 1, line);
+        griffin.wait_for_text(&format!("Ln {line}, Col {col}"), WAIT);
+        griffin.send_keys("f12");
+        griffin.wait_for_text("Ln 1, Col 1", WAIT);
+    }
+
+    // Back through the newest 50, newest first.
+    for &(line, col) in places.iter().rev().take(50) {
+        griffin.send_keys("alt+left");
+        griffin.wait_for_text(&format!("Ln {line}, Col {col}"), WAIT);
+    }
+    // The 50th-newest is as far as it goes: the five before it were dropped.
+    let (line, col) = places[5];
+    for _ in 0..5 {
+        griffin.send_keys("alt+left");
+    }
+    griffin.send_keys("right");
+    griffin.wait_for_text(&format!("Ln {line}, Col {}", col + 1), WAIT);
+    assert!(status_line(&griffin).contains(&format!("Ln {line}, Col {}", col + 1)));
+}
