@@ -87,6 +87,21 @@ pub fn health(
     out
 }
 
+/// What to start for `command`: where the `--health` lookup finds it in this
+/// process's `PATH`/`PATHEXT`, so a `.cmd` shim starts on Windows, where spawning
+/// the bare name only tries `.exe`. A relative path with directories is left as
+/// is, since the server runs in the project root and resolves it from there; so
+/// is a command found nowhere, so starting it fails as "not found".
+pub fn program(command: &str) -> PathBuf {
+    let path = Path::new(command);
+    if path.components().count() > 1 && !path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let search = std::env::var_os("PATH");
+    let pathext = std::env::var_os("PATHEXT");
+    find(command, search.as_deref(), pathext.as_deref()).unwrap_or_else(|| path.to_path_buf())
+}
+
 /// Where `command` would be run from: the path itself when it names a directory,
 /// otherwise the first match in `path`. On Windows a name without an extension
 /// also matches each `PATHEXT` extension, as the shell does.

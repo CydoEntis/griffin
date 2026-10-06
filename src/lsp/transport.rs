@@ -69,17 +69,17 @@ pub struct Connection {
     pub tasks: Vec<JoinHandle<()>>,
 }
 
-/// Starts `command` in `root` and connects its stdio. Every message it sends comes
+/// Starts `program` in `root` and connects its stdio. Every message it sends comes
 /// back as `AppEvent::Lsp` for server `server`, and its exit as one last event once
 /// its output closes. A spawn failure (command not found, say) is returned as is.
 pub fn spawn(
     server: u64,
-    command: &str,
+    program: &Path,
     args: &[String],
     root: &Path,
     events: UnboundedSender<AppEvent>,
 ) -> io::Result<Connection> {
-    let mut child = Command::new(command)
+    let mut child = Command::new(program)
         .args(args)
         .current_dir(root)
         .stdin(Stdio::piped())
