@@ -589,3 +589,183 @@ fn the_jump_list_keeps_the_last_50_places() {
     griffin.wait_for_text(&format!("Ln {line}, Col {}", col + 1), WAIT);
     assert!(status_line(&griffin).contains(&format!("Ln {line}, Col {}", col + 1)));
 }
+
+/// The theme with `card` pinned, so the popup's background is known.
+const CARD: vt100::Color = vt100::Color::Rgb(0x20, 0x30, 0x40);
+
+/// The fake's answer to every `textDocument/hover`: markdown with a code fence
+/// and a paragraph too long for one line of the popup.
+const HOVER_MARKDOWN: &str = r#"{"responses": {"textDocument/hover": {"contents": {
+    "kind": "markdown",
+    "value": "```rust\npub fn greet()\n```\n\nGreets whoever is listening, then keeps on talking for quite a while so this line wraps."
+}}}}"#;
+
+/// A definition project (cursor still at the top) with `card` pinned, its
+/// cursor moved onto `greet` on line 4.
+fn hover_project(script: &str) -> (Project, Griffin) {
+    let project = Project::new(Some(script));
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/definition");
+    for name in ["main.rs", "util.rs"] {
+        fs::copy(fixtures.join(name), project.dir.path().join(name)).expect("copy fixture");
+    }
+    let config = format!(
+        "{}[theme_overrides]\ncard = \"#203040\"\n",
+        rust_server(fake())
+    );
+    let mut griffin = project.open(&config, "main.rs");
+    project.wait_for(&griffin, "textDocument/didOpen", "main.rs");
+    for (key, at) in [
+        ("down", "Ln 2, Col 1"),
+        ("down", "Ln 3, Col 1"),
+        ("down", "Ln 4, Col 1"),
+        ("ctrl+right", "Ln 4, Col 9"),
+        ("ctrl+right", "Ln 4, Col 11"),
+    ] {
+        griffin.send_keys(key);
+        griffin.wait_for_text(at, WAIT);
+    }
+    (project, griffin)
+}
+
+// Below the cursor on `greet` (15, 4): the border on row 5, then the text one
+// cell in from the border, on rows 6 to 9.
+const HOVER_TEXT_COL: u16 = 17;
+const HOVER_FIRST_ROW: u16 = 6;
+
+#[test]
+fn alt_k_shows_the_hover_below_the_cursor() {
+    let (project, mut griffin) = hover_project(HOVER_MARKDOWN);
+    griffin.send_keys("alt+k");
+    project.wait_for(&griffin, "textDocument/hover", "main.rs");
+    let (_, request) = project
+        .log()
+        .into_iter()
+        .rfind(|(_, m)| is(m, "textDocument/hover", "main.rs"))
+        .expect("hover request logged");
+    assert_eq!(
+        request["params"]["position"],
+        serde_json::json!({"line": 3, "character": 10})
+    );
+
+    griffin.wait_for_text("pub fn greet()", WAIT);
+    let screen = griffin.screen();
+    assert!(!screen.iter().any(|row| row.contains("```")), "{screen:#?}");
+    // Plain text, fence gone, the paragraph wrapped at the popup's 60 columns.
+    for (row, text) in [
+        (HOVER_FIRST_ROW, "pub fn greet()"),
+        (
+            HOVER_FIRST_ROW + 2,
+            "Greets whoever is listening, then keeps on talking for quite",
+        ),
+        (HOVER_FIRST_ROW + 3, "a while so this line wraps."),
+    ] {
+        assert_eq!(
+            griffin.text_col(row, text),
+            Some(HOVER_TEXT_COL),
+            "{text:?} on row {row}: {screen:#?}"
+        );
+    }
+    assert_eq!(griffin.bg_at(HOVER_TEXT_COL, HOVER_FIRST_ROW), CARD);
+    assert_eq!(griffin.bg_at(HOVER_TEXT_COL + 40, HOVER_FIRST_ROW), CARD);
+    // The cursor stays in the text, on `greet`.
+    griffin.wait_for_cursor(GREET_COL, GREET_ROW, WAIT);
+    assert!(status_line(&griffin).contains("griffin  main.rs  Ln 4, Col 11"));
+}
+
+#[test]
+fn esc_movement_and_typing_close_the_hover() {
+    let (_project, mut griffin) = hover_project(HOVER_MARKDOWN);
+
+    griffin.send_keys("alt+k");
+    griffin.wait_for_text("pub fn greet()", WAIT);
+    griffin.send_keys("esc");
+    griffin.wait_for_text_gone("pub fn greet()", WAIT);
+    assert!(status_line(&griffin).contains("Ln 4, Col 11"));
+
+    griffin.send_keys("alt+k");
+    griffin.wait_for_text("pub fn greet()", WAIT);
+    griffin.send_keys("right");
+    griffin.wait_for_text("Ln 4, Col 12", WAIT);
+    griffin.wait_for_text_gone("pub fn greet()", WAIT);
+
+    griffin.send_keys("alt+k");
+    griffin.wait_for_text("pub fn greet()", WAIT);
+    griffin.type_text("z");
+    griffin.wait_for_text("util::gzreet();", WAIT);
+    griffin.wait_for_text_gone("pub fn greet()", WAIT);
+}
+
+#[test]
+fn an_empty_hover_shows_nothing() {
+    // The hover reply is `null`; a publish sent right after it marks when the
+    // reply has been handled.
+    let script = format!(
+        r#"{{"notify": {{"textDocument/hover": [{}]}}}}"#,
+        publish(&[(0, 0, 2, 2, "after the hover")])
+    );
+    let (project, mut griffin) = hover_project(&script);
+    let before = griffin.screen();
+    griffin.send_keys("alt+k");
+    project.wait_for(&griffin, "textDocument/hover", "main.rs");
+    griffin.wait_for_text("⚠ 1  ✕ 0", WAIT);
+
+    // No card anywhere: the text area is as it was, but for the gutter mark
+    // the publish put on line 1.
+    let after = griffin.screen();
+    assert_eq!(after[1].replacen('●', " ", 1), before[1], "{after:#?}");
+    assert_eq!(
+        &after[2..usize::from(ROWS - 1)],
+        &before[2..usize::from(ROWS - 1)]
+    );
+    let status = status_line(&griffin);
+    assert!(
+        status.contains("griffin  main.rs  Ln 4, Col 11"),
+        "{status:?}"
+    );
+}
+
+#[test]
+fn the_hover_flips_above_and_shifts_left_at_the_screen_edges() {
+    let script = r#"{"responses": {"textDocument/hover": {"contents": {
+        "kind": "plaintext",
+        "value": "fn last() -> u32\n\nReturns the last value, counting back from the very end."
+    }}}}"#;
+    let project = Project::new(Some(script));
+    // 40 lines, the last 85 characters long with no line break after it.
+    let mut text = "// filler\n".repeat(39);
+    text.push_str(&format!("fn last() -> u32 {{ 7 }} {}", "/".repeat(85 - 23)));
+    assert_eq!(text.lines().last().map(str::len), Some(85));
+    fs::write(project.dir.path().join("long.rs"), &text).expect("write long.rs");
+    let config = format!(
+        "{}[theme_overrides]\ncard = \"#203040\"\n",
+        rust_server(fake())
+    );
+    let mut griffin = project.open(&config, "long.rs");
+    project.wait_for(&griffin, "textDocument/didOpen", "long.rs");
+
+    griffin.send_keys("ctrl+end");
+    griffin.wait_for_text("Ln 40, Col 86", WAIT);
+    // The gutter " 40 │ " is 6 cells; the last editor row is just above the status.
+    let cursor = (6 + 85, ROWS - 2);
+    griffin.wait_for_cursor(cursor.0, cursor.1, WAIT);
+
+    griffin.send_keys("alt+k");
+    let doc = "Returns the last value, counting back from the very end.";
+    griffin.wait_for_text(doc, WAIT);
+    // 56 columns of text in a 60-wide card, pushed left to end at the right
+    // edge, and flipped above: border, three text rows, border ending just over
+    // the cursor's row.
+    let row = cursor.1 - 2;
+    let col = griffin.text_col(row, doc);
+    assert_eq!(col, Some(100 - 60 + 2), "{:#?}", griffin.screen());
+    assert_eq!(griffin.text_col(row - 2, "fn last() -> u32"), Some(42));
+    assert_eq!(griffin.bg_at(42, row), CARD);
+    // The cursor's line and the status line are untouched.
+    let screen = griffin.screen();
+    assert!(
+        screen[usize::from(cursor.1)].starts_with(" 40 │ fn last()"),
+        "{screen:#?}"
+    );
+    assert!(status_line(&griffin).contains("Ln 40, Col 86"));
+    griffin.wait_for_cursor(cursor.0, cursor.1, WAIT);
+}

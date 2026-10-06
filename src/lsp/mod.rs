@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use lsp_types::{
-    DiagnosticSeverity, GotoDefinitionResponse, Position, PublishDiagnosticsParams, Uri,
+    DiagnosticSeverity, GotoDefinitionResponse, Hover, HoverContents, MarkedString, MarkupKind,
+    Position, PublishDiagnosticsParams, Uri,
 };
 use ropey::Rope;
 use serde_json::Value;
@@ -113,6 +114,44 @@ fn first_location(result: &Value) -> Option<Location> {
     })
 }
 
+/// `markdown` with its code fence lines dropped, since the popup shows plain
+/// text: the code inside them stays, the fence markers go.
+fn strip_fences(markdown: &str) -> String {
+    markdown
+        .lines()
+        .filter(|line| {
+            let line = line.trim_start();
+            !line.starts_with("```") && !line.starts_with("~~~")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A hover reply as plain text, fences stripped and blank edges trimmed. `None`
+/// for an empty or unreadable result, which shows nothing.
+fn hover_text(result: &Value) -> Option<String> {
+    let hover: Hover = serde_json::from_value(result.clone()).ok()?;
+    let marked = |marked: MarkedString| match marked {
+        MarkedString::String(text) => strip_fences(&text),
+        MarkedString::LanguageString(code) => code.value,
+    };
+    let text = match hover.contents {
+        HoverContents::Scalar(one) => marked(one),
+        HoverContents::Array(many) => many
+            .into_iter()
+            .map(marked)
+            .filter(|part| !part.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        HoverContents::Markup(markup) if markup.kind == MarkupKind::Markdown => {
+            strip_fences(&markup.value)
+        }
+        HoverContents::Markup(markup) => markup.value,
+    };
+    let text = text.trim_matches(['\n', '\r']).trim_end();
+    (!text.trim().is_empty()).then(|| text.to_string())
+}
+
 /// What a server's message means for the app.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LspNews {
@@ -127,6 +166,9 @@ pub enum LspNews {
     /// The answer to the latest go to definition: where to go, or `None` when
     /// the server found nothing.
     Definition(Option<Location>),
+    /// The answer to the latest hover, as plain text, or `None` when the server
+    /// had nothing to say.
+    Hover(Option<String>),
 }
 
 /// The `[lsp.<lang>]` key for `path`: the highlight registry's language name, except
@@ -181,6 +223,8 @@ pub struct Lsp {
     /// The go to definition awaiting its reply, as (server, request id). A newer
     /// request replaces it, so a slow reply to an older one is ignored.
     definition: Option<(u64, i64)>,
+    /// The hover awaiting its reply, likewise.
+    hover: Option<(u64, i64)>,
 }
 
 impl Lsp {
@@ -344,45 +388,66 @@ impl Lsp {
     /// `cursor` is defined; the answer comes back from `handle` as
     /// `LspNews::Definition`. `false` when no ready server follows the buffer.
     pub fn definition(&mut self, doc: u64, cursor: usize) -> bool {
-        let Some(attached) = self.docs.get(&doc).filter(|d| d.opened) else {
-            return false;
-        };
-        let Some(client) = self
+        let sent = self.request_at(doc, cursor, Client::definition);
+        self.definition = sent.or(self.definition);
+        sent.is_some()
+    }
+
+    /// Asks the server following buffer `doc` about the symbol at char index
+    /// `cursor`; the answer comes back from `handle` as `LspNews::Hover`. `false`
+    /// when no ready server follows the buffer.
+    pub fn hover(&mut self, doc: u64, cursor: usize) -> bool {
+        let sent = self.request_at(doc, cursor, Client::hover);
+        self.hover = sent.or(self.hover);
+        sent.is_some()
+    }
+
+    /// Sends the position request `send` makes for char index `cursor` in buffer
+    /// `doc`. Returns (server, request id), or `None` with no ready server.
+    fn request_at(
+        &mut self,
+        doc: u64,
+        cursor: usize,
+        send: fn(&mut Client, &Uri, Position) -> i64,
+    ) -> Option<(u64, i64)> {
+        let attached = self.docs.get(&doc).filter(|d| d.opened)?;
+        let client = self
             .servers
             .get_mut(&attached.server)
-            .filter(|c| c.is_ready())
-        else {
-            return false;
-        };
+            .filter(|c| c.is_ready())?;
         // The server's copy of the text is the buffer's: every event is followed
         // by a sync, so the position means the same to both.
         let position = lsp_position(&attached.rope, cursor);
-        let id = client.definition(&attached.uri, position);
-        self.definition = Some((attached.server, id));
-        true
+        let id = send(client, &attached.uri, position);
+        Some((attached.server, id))
     }
 
     /// Hands a server's message or exit to its client, turns published
     /// diagnostics into char ranges for each buffer they name, and passes on the
-    /// answer to the latest go to definition.
+    /// answers to the latest go to definition and hover.
     pub fn handle(&mut self, event: LspEvent) -> Vec<LspNews> {
-        let definition_reply = match &event.event {
-            ServerEvent::Message(message) => {
-                message.get("method").is_none()
-                    && message["id"]
-                        .as_i64()
-                        .is_some_and(|id| self.definition == Some((event.server, id)))
-            }
-            ServerEvent::Exited(_) => false,
+        let reply = match &event.event {
+            ServerEvent::Message(message) if message.get("method").is_none() => message["id"]
+                .as_i64()
+                .map(|id| (event.server, id))
+                .filter(|reply| self.definition == Some(*reply) || self.hover == Some(*reply)),
+            _ => None,
         };
         let Some(client) = self.servers.get_mut(&event.server) else {
             return Vec::new();
         };
-        if definition_reply && let ServerEvent::Message(message) = event.event {
-            self.definition = None;
-            let location = first_location(&message["result"]);
+        if let Some(reply) = reply
+            && let ServerEvent::Message(message) = event.event
+        {
+            let news = if self.definition == Some(reply) {
+                self.definition = None;
+                LspNews::Definition(first_location(&message["result"]))
+            } else {
+                self.hover = None;
+                LspNews::Hover(hover_text(&message["result"]))
+            };
             client.handle(message);
-            return vec![LspNews::Definition(location)];
+            return vec![news];
         }
         let message = match event.event {
             ServerEvent::Message(message)
@@ -637,6 +702,29 @@ mod tests {
         assert_eq!(first_location(&link), expected);
         assert_eq!(first_location(&Value::Null), None);
         assert_eq!(first_location(&serde_json::json!([])), None);
+    }
+
+    #[test]
+    fn hover_text_is_plain_with_fences_stripped_in_any_result_shape() {
+        let markdown = serde_json::json!({"contents": {"kind": "markdown",
+            "value": "```rust\nfn greet()\n```\n\nSays hello."}});
+        assert_eq!(
+            hover_text(&markdown).as_deref(),
+            Some("fn greet()\n\nSays hello.")
+        );
+        let plain = serde_json::json!({"contents": {"kind": "plaintext", "value": "```x```"}});
+        assert_eq!(hover_text(&plain).as_deref(), Some("```x```"));
+        let marked = serde_json::json!({"contents": [
+            {"language": "rust", "value": "fn a()"}, "", "docs"
+        ]});
+        assert_eq!(hover_text(&marked).as_deref(), Some("fn a()\n\ndocs"));
+        let scalar = serde_json::json!({"contents": "a"});
+        assert_eq!(hover_text(&scalar).as_deref(), Some("a"));
+        assert_eq!(hover_text(&Value::Null), None);
+        assert_eq!(hover_text(&serde_json::json!({"contents": ""})), None);
+        assert_eq!(hover_text(&serde_json::json!({"contents": []})), None);
+        let fences = serde_json::json!({"contents": {"kind": "markdown", "value": "```\n```"}});
+        assert_eq!(hover_text(&fences), None);
     }
 
     #[test]

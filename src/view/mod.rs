@@ -308,7 +308,7 @@ fn selected_cells(
 }
 
 /// The screen cell of `buf`'s cursor, or `None` when it's scrolled out of `area`.
-fn cursor_cell(buf: &Buffer, view: &View, tab_width: usize, area: Rect) -> Option<(u16, u16)> {
+pub fn cursor_cell(buf: &Buffer, view: &View, tab_width: usize, area: Rect) -> Option<(u16, u16)> {
     let (line, col) = buf.cursor_line_col();
     let row = line.checked_sub(view.scroll_row)?;
     let x = display_col(buf.rope.line(line), col, tab_width).checked_sub(view.scroll_col)?;

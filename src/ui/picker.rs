@@ -7,7 +7,7 @@ use nucleo::{Config, Matcher, Utf32Str};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Clear};
+use ratatui::widgets::Clear;
 use unicode_width::UnicodeWidthStr;
 
 use crate::buffer::movement::Motion;
@@ -190,9 +190,7 @@ impl Picker {
     pub fn render(&self, theme: &Theme, frame: &mut Frame, area: Rect) -> (u16, u16) {
         let card = Self::card(area);
         frame.render_widget(Clear, card);
-        let block = Block::bordered()
-            .border_style(Style::new().fg(theme.border))
-            .style(Style::new().bg(theme.card).fg(theme.text));
+        let block = crate::ui::card_block(theme);
         let inner = block.inner(card);
         frame.render_widget(block, card);
         if inner.height == 0 || inner.width == 0 {
