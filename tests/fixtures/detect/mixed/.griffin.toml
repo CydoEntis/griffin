@@ -1,0 +1,3 @@
+[[run]]
+name = "serve"
+command = "echo serve"

@@ -1,4 +1,4 @@
-//! Runs `[[run]]` commands as child processes. Output comes back to the event loop
+//! Runs `[[run]]` commands, or ones detected from the project, as child processes. Output comes back to the event loop
 //! only as `AppEvent::RunOutput` and `AppEvent::RunExited` (ADR-0001).
 
 use std::io;
@@ -12,8 +12,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::app::AppEvent;
 use crate::config::RunEntry;
 
+mod detect;
 mod tree;
 
+pub use detect::run_choices;
 pub use tree::ProcessTree;
 
 /// Where `entry` runs: its `cwd` under the project root, or the root itself.

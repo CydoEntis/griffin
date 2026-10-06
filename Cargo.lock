@@ -767,6 +767,7 @@ dependencies = [
  "regex",
  "ropey",
  "serde",
+ "serde_json",
  "streaming-iterator",
  "tempfile",
  "tokio",
