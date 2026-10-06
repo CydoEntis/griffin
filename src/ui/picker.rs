@@ -1,5 +1,6 @@
-//! The go-to-file picker: a centred card with a query line over the project's
-//! files, filtered fuzzily as the query is typed, best match first.
+//! The picker: a centred card with a query line over a list, filtered fuzzily as
+//! the query is typed, best match first. Go to file lists the project's files; F5
+//! lists the `[[run]]` entries by name.
 
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Matcher, Utf32Str};
@@ -21,7 +22,8 @@ const MAX_HEIGHT: u16 = 20;
 /// What a key did to the picker, when it did more than move or edit the query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Picked {
-    /// Enter on a file: its path relative to the project root, `/`-separated.
+    /// Enter on an item: for go to file, its path relative to the project root,
+    /// `/`-separated; for a list of choices, the choice as given.
     Open(String),
     /// Esc: close the picker and do nothing.
     Close,
@@ -38,8 +40,11 @@ struct Match {
 #[derive(Debug, Clone)]
 pub struct Picker {
     query: PromptBar,
-    /// Every file in the project; `None` until the background walk reports back.
+    /// Every file in the project, or the choices; `None` until the background
+    /// walk reports back.
     files: Option<Vec<String>>,
+    /// Shown when nothing matches the query.
+    no_match: &'static str,
     /// The files the query matches, best first.
     matches: Vec<Match>,
     /// Index into `matches`.
@@ -59,10 +64,25 @@ impl Picker {
         Picker {
             query: PromptBar::new("Go to file", ""),
             files: None,
+            no_match: " no matching files",
             matches: Vec::new(),
             selected: 0,
             matcher: Matcher::new(Config::DEFAULT.match_paths()),
         }
+    }
+
+    /// A picker titled `title` over `choices`, listed in the order given.
+    pub fn choices(title: &'static str, choices: Vec<String>) -> Self {
+        let mut picker = Picker {
+            query: PromptBar::new(title, ""),
+            files: None,
+            no_match: " no match",
+            matches: Vec::new(),
+            selected: 0,
+            matcher: Matcher::new(Config::DEFAULT),
+        };
+        picker.set_files(choices);
+        picker
     }
 
     /// The walk's result: the files to pick from, relative to the root.
@@ -201,7 +221,7 @@ impl Picker {
             out.set_stringn(
                 list.x,
                 list.y,
-                " no matching files",
+                self.no_match,
                 width,
                 Style::new().fg(theme.muted),
             );
@@ -333,6 +353,17 @@ mod tests {
         let mut p = picker(FILES);
         type_query(&mut p, "zzz");
         assert_eq!(p.handle(Input::Action(Action::Newline)), None);
+    }
+
+    #[test]
+    fn choices_are_listed_in_order_and_picked_by_name() {
+        let mut p = Picker::choices("Run", vec!["dev".into(), "test".into()]);
+        assert_eq!(p.matches().collect::<Vec<_>>(), ["dev", "test"]);
+        type_query(&mut p, "te");
+        assert_eq!(
+            p.handle(Input::Action(Action::Newline)),
+            Some(Picked::Open("test".into()))
+        );
     }
 
     #[test]

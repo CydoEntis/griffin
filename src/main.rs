@@ -5,6 +5,7 @@ mod clipboard;
 mod config;
 mod highlight;
 mod keymap;
+mod run;
 mod save;
 mod search;
 mod theme;

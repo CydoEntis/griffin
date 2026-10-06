@@ -1,0 +1,5 @@
+#!/bin/sh
+# Run panel fixture: a red line, a pause, then a line on stderr.
+printf '\033[31mred line\033[0m\n'
+sleep 2
+echo second line >&2

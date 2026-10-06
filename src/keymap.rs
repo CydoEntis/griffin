@@ -78,6 +78,10 @@ pub enum Action {
     ProjectSearch,
     /// Project search only: asks, then replaces the matches in every listed file.
     ProjectReplace,
+    /// Runs a `[[run]]` command from `.griffin.toml`, asking which when several.
+    Run,
+    /// Shows or hides the run panel.
+    ToggleRunPanel,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -163,6 +167,8 @@ impl Action {
         Action::ReplaceAll,
         Action::ProjectSearch,
         Action::ProjectReplace,
+        Action::Run,
+        Action::ToggleRunPanel,
     ];
 
     pub fn scope(self) -> Scope {
@@ -261,6 +267,8 @@ impl Action {
             Action::ReplaceAll => "replace_all",
             Action::ProjectSearch => "project_search",
             Action::ProjectReplace => "project_replace",
+            Action::Run => "run",
+            Action::ToggleRunPanel => "toggle_run_panel",
         }
     }
 
@@ -271,8 +279,8 @@ impl Action {
 
 /// The spec's "Default keymap" table plus R4's movement, R6's editing, R10's
 /// selection, R14's tree keys, R16's tab keys, R17's split keys, R18's picker
-/// keys, R20's find bar keys, R21's Replace All, R22's project search and R23's
-/// project replace, one line per binding.
+/// keys, R20's find bar keys, R21's Replace All, R22's project search, R23's
+/// project replace and R26's run keys, one line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -344,6 +352,8 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::ReplaceAll, "alt+a"),
     (Action::ProjectSearch, "alt+f"),
     (Action::ProjectReplace, "alt+enter"),
+    (Action::Run, "f5"),
+    (Action::ToggleRunPanel, "f4"),
 ];
 
 /// What a key event means to the editor.
@@ -688,6 +698,24 @@ mod tests {
         ];
         all.extend(DIGITS.iter().map(|&(n, c)| (n, alt(c))));
         all
+    }
+
+    #[test]
+    fn f5_runs_and_f4_toggles_the_run_panel_by_default() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(5), KeyModifiers::NONE)),
+            Input::Action(Action::Run)
+        );
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(4), KeyModifiers::NONE)),
+            Input::Action(Action::ToggleRunPanel)
+        );
+        let map = Keymap::new(&keys(&[("run", one("f9"))])).unwrap();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(9), KeyModifiers::NONE)),
+            Input::Action(Action::Run)
+        );
     }
 
     #[test]

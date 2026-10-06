@@ -25,7 +25,7 @@ use crate::backup::{self, Backups};
 use crate::buffer::movement::Motion;
 use crate::buffer::{Buffer, Caret};
 use crate::clipboard::Clipboard;
-use crate::config::EditorConfig;
+use crate::config::{self, EditorConfig, RunEntry};
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
@@ -35,6 +35,7 @@ use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
 use crate::ui::find::{FindBar, Step};
 use crate::ui::picker::{Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
+use crate::ui::run::{RunStatus, RunView, render_run_panel};
 use crate::ui::search::{ProjectSearch, Searched};
 use crate::ui::status::render_status;
 use crate::ui::tabs::{TabLabel, render_tabs, tab_at};
@@ -64,6 +65,16 @@ pub enum AppEvent {
     /// Project search number `search` has looked at every file.
     SearchDone {
         search: u64,
+    },
+    /// One line of stdout or stderr from run number `run`, colour codes and all.
+    RunOutput {
+        run: u64,
+        line: String,
+    },
+    /// Run number `run` exited, with its code when it had one.
+    RunExited {
+        run: u64,
+        code: Option<i32>,
     },
 }
 
@@ -123,6 +134,16 @@ enum BarOp {
 struct NamePrompt {
     op: BarOp,
     bar: PromptBar,
+}
+
+/// What the picker's choice will be used for.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+enum PickerFor {
+    /// Go to file: the choice is a path to open.
+    #[default]
+    File,
+    /// F5 with several `[[run]]` entries: the choice names the one to run.
+    Run(Vec<RunEntry>),
 }
 
 /// Which pane keys go to.
@@ -627,8 +648,15 @@ pub struct App {
     focus: Focus,
     /// The prompt bar, while it's asking for a name; it takes every key.
     name_prompt: Option<NamePrompt>,
-    /// The go-to-file picker, while it's open; it takes every key.
+    /// The picker, while it's open; it takes every key.
     picker: Option<Picker>,
+    picker_for: PickerFor,
+    /// The latest run, whose output the run panel shows.
+    run: Option<RunView>,
+    /// How many runs have started, numbering them so output from an earlier one
+    /// is dropped.
+    runs: u64,
+    run_panel_visible: bool,
     /// The find bar, while it's open; it takes every key, so the active buffer
     /// can't change under its matches.
     find: Option<FindBar>,
@@ -836,7 +864,9 @@ impl App {
             // A list for a picker that has since closed is dropped; the next
             // Ctrl+P walks again.
             AppEvent::FilesListed(files) => {
-                if let Some(picker) = &mut self.picker {
+                if let Some(picker) = &mut self.picker
+                    && self.picker_for == PickerFor::File
+                {
                     picker.set_files(files);
                 }
             }
@@ -850,6 +880,20 @@ impl App {
             AppEvent::SearchDone { search } => {
                 if let Some(panel) = &mut self.project_search {
                     panel.finish(search);
+                }
+            }
+            AppEvent::RunOutput { run, line } => {
+                if let Some(view) = &mut self.run
+                    && view.id == run
+                {
+                    view.push(&line);
+                }
+            }
+            AppEvent::RunExited { run, code } => {
+                if let Some(view) = &mut self.run
+                    && view.id == run
+                {
+                    view.status = RunStatus::Exited(code);
                 }
             }
         }
@@ -943,7 +987,9 @@ impl App {
             | Action::GoToLine
             | Action::Find
             | Action::Replace
-            | Action::ProjectSearch => {
+            | Action::ProjectSearch
+            | Action::Run
+            | Action::ToggleRunPanel => {
                 self.handle_action(action);
             }
             _ => {}
@@ -1218,6 +1264,8 @@ impl App {
             Action::Find => self.open_find(false),
             Action::Replace => self.open_find(true),
             Action::ProjectSearch => self.project_search = Some(ProjectSearch::new()),
+            Action::Run => self.start_run(),
+            Action::ToggleRunPanel => self.toggle_run_panel(),
             // Bound only in tree or find bar scope, so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
@@ -1476,6 +1524,7 @@ impl App {
     /// thread, so a large project never stalls typing (ADR-0001). Outside the
     /// event loop (unit tests) the walk runs inline.
     fn open_picker(&mut self) {
+        self.picker_for = PickerFor::File;
         let mut picker = Picker::new();
         let root = self.tree.root().to_path_buf();
         match &self.events {
@@ -1703,14 +1752,84 @@ impl App {
         }
     }
 
-    /// Closes the picker and, on Enter, opens the chosen file in a tab.
+    /// Closes the picker and, on Enter, opens the chosen file in a tab or runs
+    /// the chosen command.
     fn finish_picker(&mut self, picked: Picked) {
         self.picker = None;
-        if let Picked::Open(relative) = picked {
-            let mut path = self.tree.root().to_path_buf();
-            path.extend(relative.split('/'));
-            self.open(&path);
+        let picker_for = std::mem::take(&mut self.picker_for);
+        let Picked::Open(choice) = picked else {
+            return;
+        };
+        match picker_for {
+            PickerFor::File => {
+                let mut path = self.tree.root().to_path_buf();
+                path.extend(choice.split('/'));
+                self.open(&path);
+            }
+            PickerFor::Run(entries) => {
+                if let Some(entry) = entries.into_iter().find(|e| e.name == choice) {
+                    self.run_entry(entry);
+                }
+            }
         }
+    }
+
+    /// F5: reads `.griffin.toml` afresh, so edits to it count without a restart,
+    /// then runs its one entry or asks which of several.
+    fn start_run(&mut self) {
+        if let Some(run) = &self.run
+            && run.status == RunStatus::Running
+        {
+            self.message = Some(format!("{} is already running", run.name));
+            return;
+        }
+        let loaded = config::load_project(self.tree.root());
+        if let Some(error) = loaded.error {
+            self.message = Some(error);
+            return;
+        }
+        let mut entries = loaded.config.run;
+        match entries.len() {
+            0 => {
+                self.message = Some(format!("no [[run]] entries in {}", config::PROJECT_FILE));
+            }
+            1 => {
+                // The arm matched a length of one, so index 0 exists.
+                let entry = entries.remove(0);
+                self.run_entry(entry);
+            }
+            _ => {
+                let names = entries.iter().map(|e| e.name.clone()).collect();
+                self.picker = Some(Picker::choices("Run", names));
+                self.picker_for = PickerFor::Run(entries);
+            }
+        }
+    }
+
+    /// Starts `entry` and shows the panel for its output. Outside the event loop
+    /// (unit tests) there's no channel for output to come back on, so nothing runs.
+    fn run_entry(&mut self, entry: RunEntry) {
+        let Some(events) = self.events.clone() else {
+            return;
+        };
+        self.runs += 1;
+        match crate::run::spawn(self.runs, &entry, self.tree.root(), events) {
+            Ok(()) => {
+                self.run = Some(RunView::new(self.runs, entry.name));
+                if !self.run_panel_visible {
+                    self.toggle_run_panel();
+                }
+            }
+            Err(err) => self.message = Some(format!("cannot run {}: {err}", entry.name)),
+        }
+    }
+
+    /// F4: shows or hides the run panel.
+    fn toggle_run_panel(&mut self) {
+        self.run_panel_visible = !self.run_panel_visible;
+        // The editor pane just changed height.
+        self.follow_cursor();
+        self.follow_tree();
     }
 
     /// Carries on with what a save from a question was for. A save that failed or
@@ -2129,6 +2248,7 @@ impl App {
         Panes::new(
             self.screen,
             self.tree_visible,
+            self.run_panel_visible,
             self.name_prompt.is_some() || self.find.is_some(),
             self.tabs.splits.len(),
         )
@@ -2144,6 +2264,7 @@ impl App {
         let panes = Panes::new(
             frame.area(),
             self.tree_visible,
+            self.run_panel_visible,
             self.name_prompt.is_some() || self.find.is_some(),
             self.tabs.splits.len(),
         );
@@ -2195,6 +2316,9 @@ impl App {
             if focused && let Some(at) = selected {
                 frame.set_cursor_position(at);
             }
+        }
+        if let Some(area) = panes.run {
+            render_run_panel(theme, self.run.as_ref(), area, frame);
         }
         let buffer = self.buffer();
         render_status(
@@ -2250,7 +2374,8 @@ struct SplitArea {
 
 /// Where each part of the screen goes: the tree (when shown) from row 1 down, a
 /// `│` divider, then the editor splits, each with its tab bar on row 0 and a `│`
-/// between the two; below them the prompt bar (while open) and a one-row status
+/// between the two; below them the run panel (while shown, the full width and
+/// about 30% of the height), the prompt bar (while open) and a one-row status
 /// line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Panes {
@@ -2260,18 +2385,32 @@ struct Panes {
     splits: Vec<SplitArea>,
     /// Between the two splits, while there are two.
     split_divider: Option<Rect>,
+    run: Option<Rect>,
     bar: Option<Rect>,
     status: Rect,
 }
 
 impl Panes {
-    fn new(screen: Rect, tree_visible: bool, bar_open: bool, splits: usize) -> Self {
-        let [main, bar, status] = Layout::vertical([
+    fn new(
+        screen: Rect,
+        tree_visible: bool,
+        run_visible: bool,
+        bar_open: bool,
+        splits: usize,
+    ) -> Self {
+        let run_height = if run_visible {
+            (screen.height * 3 / 10).max(2)
+        } else {
+            0
+        };
+        let [main, run, bar, status] = Layout::vertical([
             Constraint::Min(0),
+            Constraint::Length(run_height),
             Constraint::Length(u16::from(bar_open)),
             Constraint::Length(1),
         ])
         .areas(screen);
+        let run = run_visible.then_some(run);
         let bar = bar_open.then_some(bar);
         let (tree, divider, right) = if tree_visible {
             let [tree, divider, right] = Layout::horizontal([
@@ -2311,6 +2450,7 @@ impl Panes {
             divider,
             splits,
             split_divider,
+            run,
             bar,
             status,
         }
