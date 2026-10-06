@@ -1,6 +1,6 @@
 //! A small centred card asking a question with one-letter answers, e.g.
-//! `Unsaved changes: [S]ave [D]iscard [C]ancel`. Later dialogs (tree delete,
-//! backup recovery) reuse it.
+//! `Unsaved changes: [S]ave [D]iscard [C]ancel` or
+//! `Recover unsaved changes? Recover / Discard`. Later dialogs (tree delete) reuse it.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -12,7 +12,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::keymap::{Action, Input};
 
 /// One answer: pressing `key` (either case) picks it; `label` starts with that
-/// letter, which is shown in brackets.
+/// letter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Choice {
     pub key: char,
@@ -27,10 +27,20 @@ pub enum Answer {
     Dismissed,
 }
 
+/// How the choices are written on the card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Labels {
+    /// `[S]ave [D]iscard`: the key letter in brackets.
+    Bracketed,
+    /// `Recover / Discard`: whole words, each picked by its first letter.
+    Words,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Confirm {
     pub question: &'static str,
     pub choices: &'static [Choice],
+    pub labels: Labels,
 }
 
 impl Confirm {
@@ -57,11 +67,24 @@ impl Confirm {
             .iter()
             .map(|choice| {
                 let mut chars = choice.label.chars();
-                let first = chars.next().map(|c| c.to_ascii_uppercase());
-                format!("[{}]{}", first.unwrap_or(' '), chars.as_str())
+                let first = chars.next().map_or(' ', |c| c.to_ascii_uppercase());
+                match self.labels {
+                    Labels::Bracketed => format!("[{first}]{}", chars.as_str()),
+                    Labels::Words => format!("{first}{}", chars.as_str()),
+                }
             })
             .collect();
-        format!("{}: {}", self.question, choices.join(" "))
+        let gap = match self.labels {
+            Labels::Bracketed => " ",
+            Labels::Words => " / ",
+        };
+        // A question that brings its own punctuation doesn't get a colon too.
+        let separator = if self.question.ends_with(['?', ':', '.']) {
+            " "
+        } else {
+            ": "
+        };
+        format!("{}{separator}{}", self.question, choices.join(gap))
     }
 
     /// Draws the card centred in `area`: one line of text with a blank row and two
@@ -106,11 +129,32 @@ mod tests {
                 label: "cancel",
             },
         ],
+        labels: Labels::Bracketed,
     };
 
     #[test]
     fn text_brackets_each_first_letter() {
         assert_eq!(CARD.text(), "Unsaved changes: [S]ave [D]iscard [C]ancel");
+    }
+
+    #[test]
+    fn words_are_slash_separated_after_a_question_mark() {
+        let card = Confirm {
+            question: "Recover unsaved changes?",
+            choices: &[
+                Choice {
+                    key: 'r',
+                    label: "recover",
+                },
+                Choice {
+                    key: 'd',
+                    label: "discard",
+                },
+            ],
+            labels: Labels::Words,
+        };
+        assert_eq!(card.text(), "Recover unsaved changes? Recover / Discard");
+        assert_eq!(card.answer(Input::Text('R')), Some(Answer::Picked('r')));
     }
 
     #[test]

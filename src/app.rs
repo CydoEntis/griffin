@@ -1,3 +1,4 @@
+use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -13,13 +14,14 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use crate::Tui;
+use crate::backup::{self, Backups};
 use crate::buffer::Buffer;
 use crate::clipboard::Clipboard;
 use crate::config::EditorConfig;
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap};
-use crate::ui::confirm::{Answer, Choice, Confirm};
+use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
 use crate::ui::status::render_status;
 use crate::view::{View, render_buffer};
 
@@ -28,6 +30,10 @@ use crate::view::{View, render_buffer};
 #[derive(Debug)]
 pub enum AppEvent {
     Input(Event),
+    /// Edits stopped long enough ago that a crash backup is due.
+    BackupDue,
+    /// How a backup write went.
+    BackupWritten(io::Result<()>),
 }
 
 /// A question that takes over the keyboard until it's answered.
@@ -35,6 +41,8 @@ pub enum AppEvent {
 enum Prompt {
     /// Ctrl+Q with unsaved changes.
     UnsavedQuit,
+    /// The file opened with a newer crash backup beside it.
+    Recover,
 }
 
 const UNSAVED_QUIT: Confirm = Confirm {
@@ -53,6 +61,22 @@ const UNSAVED_QUIT: Confirm = Confirm {
             label: "cancel",
         },
     ],
+    labels: Labels::Bracketed,
+};
+
+const RECOVER: Confirm = Confirm {
+    question: "Recover unsaved changes?",
+    choices: &[
+        Choice {
+            key: 'r',
+            label: "recover",
+        },
+        Choice {
+            key: 'd',
+            label: "discard",
+        },
+    ],
+    labels: Labels::Words,
 };
 
 /// A second left click on the same cell within this long selects a word.
@@ -73,6 +97,7 @@ impl Prompt {
     fn confirm(self) -> Confirm {
         match self {
             Prompt::UnsavedQuit => UNSAVED_QUIT,
+            Prompt::Recover => RECOVER,
         }
     }
 }
@@ -98,6 +123,18 @@ pub struct App {
     /// Char index a left press landed on while the button is held, so a drag
     /// selects from there.
     drag_from: Option<usize>,
+    backups: Backups,
+    /// The backup text the recover prompt is offering.
+    recovery: Option<String>,
+    /// A backup write failed and the status line said so; cleared by the next
+    /// success, so a run of failures shows one message instead of one per edit.
+    backup_failed: bool,
+    /// Tells the backup timer about each edit. `None` outside the event loop (unit
+    /// tests), where `AppEvent::BackupDue` is sent by hand.
+    edits: Option<mpsc::UnboundedSender<()>>,
+    /// The app channel, for background backup writes to report back on. `None`
+    /// outside the event loop, where writes run inline.
+    events: Option<mpsc::UnboundedSender<AppEvent>>,
     should_quit: bool,
 }
 
@@ -130,12 +167,32 @@ impl App {
             clipboard: Box::default(),
             last_click: None,
             drag_from: None,
+            backups: Backups::default(),
+            recovery: None,
+            backup_failed: false,
+            edits: None,
+            events: None,
             should_quit: false,
         }
     }
 
+    /// Turns crash backups on, and offers to recover the opened file's backup if
+    /// it has a newer one.
+    pub fn with_backups(mut self, backups: Backups) -> Self {
+        self.backups = backups;
+        if let Some(path) = &self.buffer.path
+            && let Some(text) = self.backups.recoverable(path)
+        {
+            self.recovery = Some(text);
+            self.prompt = Some(Prompt::Recover);
+        }
+        self
+    }
+
     pub async fn run(&mut self, terminal: &mut Tui) -> Result<()> {
         let (tx, mut rx) = mpsc::unbounded_channel();
+        self.edits = Some(backup::spawn_timer(tx.clone()));
+        self.events = Some(tx.clone());
         let input = tokio::spawn(read_input(tx));
 
         let result = self.event_loop(terminal, &mut rx).await;
@@ -179,6 +236,8 @@ impl App {
             // A smaller pane can leave the cursor outside it.
             AppEvent::Input(Event::Resize(..)) => self.follow_cursor(),
             AppEvent::Input(_) => {}
+            AppEvent::BackupDue => self.back_up(),
+            AppEvent::BackupWritten(result) => self.backup_written(result),
         }
     }
 
@@ -192,10 +251,7 @@ impl App {
         }
         match input {
             Input::Action(action) => self.handle_action(action),
-            Input::Text(ch) => {
-                self.buffer.type_text(ch.encode_utf8(&mut [0; 4]));
-                self.follow_cursor();
-            }
+            Input::Text(ch) => self.edit(|buffer| buffer.type_text(ch.encode_utf8(&mut [0; 4]))),
             Input::Ignored => {}
         }
     }
@@ -207,7 +263,7 @@ impl App {
         }
         match action {
             Action::Quit if self.buffer.dirty => self.prompt = Some(Prompt::UnsavedQuit),
-            Action::Quit => self.should_quit = true,
+            Action::Quit => self.quit(),
             Action::Save => {
                 self.save();
             }
@@ -339,11 +395,73 @@ impl App {
         match (prompt, answer) {
             (Prompt::UnsavedQuit, Answer::Picked('s')) => {
                 // A failed save leaves the editor open with the error showing.
-                self.should_quit = self.save();
+                if self.save() {
+                    self.quit();
+                }
             }
-            (Prompt::UnsavedQuit, Answer::Picked('d')) => self.should_quit = true,
+            (Prompt::UnsavedQuit, Answer::Picked('d')) => self.quit(),
             (Prompt::UnsavedQuit, _) => {}
+            (Prompt::Recover, Answer::Picked('r')) => {
+                if let Some(text) = self.recovery.take() {
+                    self.buffer.recover(&text);
+                    self.follow_cursor();
+                }
+            }
+            (Prompt::Recover, Answer::Picked('d')) => {
+                self.recovery = None;
+                self.delete_backup();
+            }
+            // Esc would leave the backup's fate open; quitting later would then
+            // delete it unasked. Only an explicit answer closes this one.
+            (Prompt::Recover, _) => self.prompt = Some(Prompt::Recover),
         }
+    }
+
+    /// Ends the session cleanly, which means the buffer's backup isn't needed.
+    fn quit(&mut self) {
+        self.delete_backup();
+        self.should_quit = true;
+    }
+
+    /// Starts writing the buffer's crash backup, if it has unsaved changes. The
+    /// write runs on a blocking thread with a copy of the text (ADR-0001).
+    fn back_up(&mut self) {
+        if !self.buffer.dirty {
+            return;
+        }
+        let Some(job) = self
+            .backups
+            .job(self.buffer.path.as_deref(), self.buffer.disk_text())
+        else {
+            return;
+        };
+        match &self.events {
+            Some(events) => {
+                let events = events.clone();
+                tokio::task::spawn_blocking(move || {
+                    // The loop has stopped if this fails; nobody is left to tell.
+                    let _ = events.send(AppEvent::BackupWritten(job.run()));
+                });
+            }
+            None => self.backup_written(job.run()),
+        }
+    }
+
+    fn backup_written(&mut self, result: io::Result<()>) {
+        match result {
+            Ok(()) => self.backup_failed = false,
+            Err(err) if !self.backup_failed => {
+                self.backup_failed = true;
+                self.message = Some(format!("cannot back up {}: {err}", self.buffer.name()));
+            }
+            Err(_) => {}
+        }
+    }
+
+    fn delete_backup(&mut self) {
+        // Best effort: a leftover backup is only offered again if it is newer than
+        // the file and differs from it, so failing here loses nothing.
+        let _ = self.backups.delete(self.buffer.path.as_deref());
     }
 
     /// Saves the buffer and says how it went in the status line. Returns whether
@@ -357,6 +475,7 @@ impl App {
         match self.buffer.save() {
             Ok(()) => {
                 self.message = Some(format!("saved {name}"));
+                self.delete_backup();
                 true
             }
             Err(err) => {
@@ -369,6 +488,10 @@ impl App {
     fn edit(&mut self, edit: impl FnOnce(&mut Buffer)) {
         edit(&mut self.buffer);
         self.follow_cursor();
+        if let Some(edits) = &self.edits {
+            // The timer only stops with the loop, after which nothing edits.
+            let _ = edits.send(());
+        }
     }
 
     fn follow_cursor(&mut self) {
@@ -830,6 +953,175 @@ world",
         press(&mut app, &["x", "x", "ctrl+q"]);
         app.handle_event(AppEvent::Input(Event::Mouse(mouse(LEFT_DOWN, 5, 0))));
         assert_eq!(app.buffer.cursor, 2);
+    }
+
+    /// `a.txt` holding `contents` in a temp folder, opened with backups in another.
+    struct Backed {
+        files: tempfile::TempDir,
+        data: tempfile::TempDir,
+        app: App,
+    }
+
+    impl Backed {
+        fn new(contents: &str) -> Result<Self> {
+            let files = tempfile::tempdir()?;
+            let data = tempfile::tempdir()?;
+            std::fs::write(files.path().join("a.txt"), contents)?;
+            let app = Self::open(files.path(), data.path());
+            Ok(Self { files, data, app })
+        }
+
+        fn open(files: &std::path::Path, data: &std::path::Path) -> App {
+            App::new(
+                Keymap::default(),
+                EditorConfig::default(),
+                Some(files.join("a.txt")),
+                None,
+            )
+            .with_backups(Backups::new(Some(data.to_path_buf())))
+        }
+
+        fn backup(&self) -> PathBuf {
+            Backups::new(Some(self.data.path().to_path_buf()))
+                .path_for(Some(&self.files.path().join("a.txt")))
+                .expect("backups are on")
+        }
+    }
+
+    #[test]
+    fn a_due_backup_writes_the_dirty_buffer_only() -> Result<()> {
+        let mut t = Backed::new("hi\r\n")?;
+        t.app.handle_event(AppEvent::BackupDue);
+        assert!(!t.backup().exists(), "a clean buffer needs no backup");
+        press(&mut t.app, &["x"]);
+        t.app.handle_event(AppEvent::BackupDue);
+        // Same bytes the file would get, line endings included.
+        assert_eq!(std::fs::read_to_string(t.backup())?, "xhi\r\n");
+        Ok(())
+    }
+
+    #[test]
+    fn saving_deletes_the_backup() -> Result<()> {
+        let mut t = Backed::new("hi\n")?;
+        press(&mut t.app, &["x"]);
+        t.app.handle_event(AppEvent::BackupDue);
+        assert!(t.backup().exists());
+        press(&mut t.app, &["ctrl+s"]);
+        assert!(!t.backup().exists());
+        Ok(())
+    }
+
+    #[test]
+    fn closing_cleanly_deletes_the_backup() -> Result<()> {
+        // Quit after discarding...
+        let mut t = Backed::new("hi\n")?;
+        press(&mut t.app, &["x"]);
+        t.app.handle_event(AppEvent::BackupDue);
+        press(&mut t.app, &["ctrl+q", "d"]);
+        assert!(t.app.should_quit);
+        assert!(!t.backup().exists());
+
+        // ...after saving from the prompt...
+        let mut t = Backed::new("hi\n")?;
+        press(&mut t.app, &["x"]);
+        t.app.handle_event(AppEvent::BackupDue);
+        press(&mut t.app, &["ctrl+q", "s"]);
+        assert!(t.app.should_quit);
+        assert!(!t.backup().exists());
+
+        // ...and a plain quit once the buffer is clean.
+        let mut t = Backed::new("hi\n")?;
+        press(&mut t.app, &["x"]);
+        t.app.handle_event(AppEvent::BackupDue);
+        t.app.buffer.dirty = false;
+        press(&mut t.app, &["ctrl+q"]);
+        assert!(t.app.should_quit);
+        assert!(!t.backup().exists());
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_backup_says_so_once_and_editing_carries_on() -> Result<()> {
+        let parent = tempfile::tempdir()?;
+        // A file where the data dir should be, so `backups/` can't be created.
+        let data = parent.path().join("data");
+        std::fs::write(&data, "not a folder")?;
+        let mut app = App {
+            screen: Rect::new(0, 0, 100, 30),
+            ..App::default()
+        }
+        .with_backups(Backups::new(Some(data)));
+
+        press(&mut app, &["a"]);
+        app.handle_event(AppEvent::BackupDue);
+        let message = app.message.take().unwrap_or_default();
+        assert!(
+            message.starts_with("cannot back up untitled: "),
+            "{message}"
+        );
+
+        // More failures don't repeat it.
+        press(&mut app, &["b"]);
+        app.handle_event(AppEvent::BackupDue);
+        assert_eq!(app.message, None);
+        assert_eq!(app.buffer.rope.to_string(), "ab");
+        assert_eq!(app.prompt, None);
+
+        // A success resets it, so the next failure is reported again.
+        app.handle_event(AppEvent::BackupWritten(Ok(())));
+        app.handle_event(AppEvent::BackupWritten(Err(io::Error::other("disk full"))));
+        assert_eq!(
+            app.message.as_deref(),
+            Some("cannot back up untitled: disk full")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reopening_offers_recover_which_loads_the_backup_dirty() -> Result<()> {
+        let mut t = Backed::new("hi\n")?;
+        press(&mut t.app, &["x"]);
+        t.app.handle_event(AppEvent::BackupDue);
+        let backup_time = std::fs::metadata(t.backup())?.modified()?;
+        // Make sure the backup reads as newer even on a coarse-clock filesystem.
+        std::fs::File::options()
+            .write(true)
+            .open(t.files.path().join("a.txt"))?
+            .set_modified(backup_time - Duration::from_secs(5))?;
+
+        // Crash: the old app just goes away.
+        let mut app = Backed::open(t.files.path(), t.data.path());
+        assert_eq!(app.prompt, Some(Prompt::Recover));
+        assert_eq!(app.buffer.rope.to_string(), "hi\n");
+        // Esc doesn't decide for the user.
+        press(&mut app, &["esc", "x"]);
+        assert_eq!(app.prompt, Some(Prompt::Recover));
+        press(&mut app, &["r"]);
+        assert_eq!(app.prompt, None);
+        assert_eq!(app.buffer.rope.to_string(), "xhi\n");
+        assert!(app.buffer.dirty);
+        assert!(t.backup().exists(), "still the only copy of the edits");
+        Ok(())
+    }
+
+    #[test]
+    fn discard_deletes_the_backup_and_keeps_the_file() -> Result<()> {
+        let mut t = Backed::new("hi\n")?;
+        press(&mut t.app, &["x"]);
+        t.app.handle_event(AppEvent::BackupDue);
+        let backup_time = std::fs::metadata(t.backup())?.modified()?;
+        std::fs::File::options()
+            .write(true)
+            .open(t.files.path().join("a.txt"))?
+            .set_modified(backup_time - Duration::from_secs(5))?;
+
+        let mut app = Backed::open(t.files.path(), t.data.path());
+        press(&mut app, &["d"]);
+        assert_eq!(app.prompt, None);
+        assert_eq!(app.buffer.rope.to_string(), "hi\n");
+        assert!(!app.buffer.dirty);
+        assert!(!t.backup().exists());
+        Ok(())
     }
 
     #[test]
