@@ -1,4 +1,5 @@
 mod app;
+mod backup;
 mod buffer;
 mod clipboard;
 mod config;
@@ -24,6 +25,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::app::App;
+use crate::backup::Backups;
 use crate::config::EditorConfig;
 use crate::keymap::Keymap;
 
@@ -58,7 +60,9 @@ async fn main() -> Result<()> {
         }
     };
 
+    let backups = Backups::new(backup::data_dir(std::env::var_os("GRIFFIN_DATA_DIR")));
     let result = App::new(keymap, editor, path, config_error)
+        .with_backups(backups)
         .run(&mut terminal)
         .await;
     let restored = restore_terminal();

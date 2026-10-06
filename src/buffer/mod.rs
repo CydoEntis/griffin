@@ -100,14 +100,28 @@ impl Buffer {
         let Some(path) = &self.path else {
             bail!("no file name");
         };
-        let text = self.rope.to_string();
-        let text = match self.line_ending {
-            LineEnding::Lf => text,
-            LineEnding::Crlf => text.replace('\n', "\r\n"),
-        };
-        save_atomic(path, &text)?;
+        save_atomic(path, &self.disk_text())?;
         self.dirty = false;
         Ok(())
+    }
+
+    /// The text as it goes to disk, with the file's line ending. Backups use it
+    /// too, so a backup compares byte for byte with the file it stands in for.
+    pub fn disk_text(&self) -> String {
+        let text = self.rope.to_string();
+        match self.line_ending {
+            LineEnding::Lf => text,
+            LineEnding::Crlf => text.replace('\n', "\r\n"),
+        }
+    }
+
+    /// Replaces the text with a recovered backup of this file. The result differs
+    /// from what's on disk, so it is dirty; undo can't reach the file's text.
+    pub fn recover(&mut self, text: &str) {
+        *self = Self {
+            dirty: true,
+            ..Self::from_text(text, self.path.take())
+        };
     }
 
     /// What the status line calls this buffer.
@@ -232,6 +246,19 @@ mod tests {
         let err = buf.save().expect_err("no path to save to");
         assert_eq!(err.to_string(), "no file name");
         assert!(buf.dirty);
+    }
+
+    #[test]
+    fn recover_loads_the_text_as_dirty_and_keeps_the_path() -> Result<()> {
+        let mut buf = open_bytes(b"one\r\n")?;
+        let path = buf.path.clone();
+        buf.recover("two\r\nthree\r\n");
+        assert_eq!(buf.rope.to_string(), "two\nthree\n");
+        assert_eq!(buf.line_ending, LineEnding::Crlf);
+        assert_eq!(buf.disk_text(), "two\r\nthree\r\n");
+        assert!(buf.dirty);
+        assert_eq!(buf.path, path);
+        Ok(())
     }
 
     #[test]

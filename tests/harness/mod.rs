@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use portable_pty::{
     ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system,
 };
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, TempDir};
 
 pub const COLS: u16 = 100;
 pub const ROWS: u16 = 30;
@@ -43,6 +43,9 @@ pub struct Griffin {
     _master: Box<dyn MasterPty + Send>,
     // Kept alive so `GRIFFIN_CONFIG` points at a real file until the end.
     _config: NamedTempFile,
+    // The run's own `GRIFFIN_DATA_DIR` when the test didn't pick one, so backups
+    // never land in the real data dir.
+    _data: Option<TempDir>,
 }
 
 impl Griffin {
@@ -65,6 +68,23 @@ impl Griffin {
 
     /// Starts griffin with `dir` as its working directory and `toml` as its config.
     pub fn spawn_in_with_config(dir: &Path, toml: &str, args: &[&str]) -> Self {
+        Self::spawn_full(dir, toml, None, args)
+    }
+
+    /// Starts griffin in `dir` with `data` as its data dir, which outlives this run
+    /// so a relaunch can find what the last one left there.
+    pub fn spawn_in_with_data(dir: &Path, data: &Path, args: &[&str]) -> Self {
+        Self::spawn_full(dir, "", Some(data.to_path_buf()), args)
+    }
+
+    fn spawn_full(dir: &Path, toml: &str, data: Option<PathBuf>, args: &[&str]) -> Self {
+        let (data, owned_data) = match data {
+            Some(data) => (data, None),
+            None => {
+                let temp = tempfile::tempdir().expect("create temp data dir");
+                (temp.path().to_path_buf(), Some(temp))
+            }
+        };
         let mut config = NamedTempFile::new().expect("create temp config");
         config
             .write_all(toml.as_bytes())
@@ -84,6 +104,7 @@ impl Griffin {
         cmd.args(args);
         cmd.cwd(dir);
         cmd.env("GRIFFIN_CONFIG", config.path());
+        cmd.env("GRIFFIN_DATA_DIR", &data);
         cmd.env("TERM", "xterm-256color");
 
         let mut child = pair.slave.spawn_command(cmd).expect("spawn griffin");
@@ -119,6 +140,16 @@ impl Griffin {
             exited: None,
             _master: pair.master,
             _config: config,
+            _data: owned_data,
+        }
+    }
+
+    /// Kills griffin without letting it clean up, as a crash would, and waits for
+    /// it to be gone.
+    pub fn kill(&mut self) {
+        if self.exited.is_none() {
+            let _ = self.killer.kill();
+            self.wait_exit(Duration::from_secs(5));
         }
     }
 
@@ -346,6 +377,22 @@ impl Griffin {
                 dump(&self.screen())
             ),
             Err(RecvTimeoutError::Disconnected) => panic!("griffin's wait thread vanished"),
+        }
+    }
+
+    /// Waits until `check` holds for the file system. Files have no change signal
+    /// to wait on, so this polls. Panics with `what` and the screen on timeout.
+    pub fn wait_for_files(&self, what: &str, timeout: Duration, check: impl Fn() -> bool) {
+        let deadline = Instant::now() + timeout;
+        while !check() {
+            if Instant::now() >= deadline {
+                panic!(
+                    "timed out after {timeout:?} waiting for {what}
+{}",
+                    dump(&self.screen())
+                );
+            }
+            thread::sleep(Duration::from_millis(20));
         }
     }
 
