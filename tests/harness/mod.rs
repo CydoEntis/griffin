@@ -128,9 +128,18 @@ impl Griffin {
 
         // ConPTY stalls the child when its output isn't read, so drain it always.
         let reader = pair.master.try_clone_reader().expect("clone PTY reader");
-        let reader_shared = Arc::clone(&shared);
+        let (chunk_tx, chunks) = mpsc::channel();
+        thread::spawn(move || read_output(reader, &chunk_tx));
+        let feeder_shared = Arc::clone(&shared);
         let reply_writer = Arc::clone(&writer);
-        thread::spawn(move || pump_output(reader, &reader_shared, &reply_writer));
+        thread::spawn(move || {
+            feed_output(&chunks, &feeder_shared, |reply| {
+                if let Ok(mut w) = reply_writer.lock() {
+                    let _ = w.write_all(reply);
+                    let _ = w.flush();
+                }
+            });
+        });
 
         Self {
             shared,
@@ -242,25 +251,8 @@ impl Griffin {
 
     /// Waits until `text` appears anywhere on screen. Panics with the screen on timeout.
     pub fn wait_for_text(&self, text: &str, timeout: Duration) {
-        let deadline = Instant::now() + timeout;
-        let mut parser = self.parser();
-        loop {
-            if parser.screen().contents().contains(text) {
-                return;
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                panic!(
-                    "timed out after {timeout:?} waiting for {text:?}\n{}",
-                    dump(&screen_lines(&parser))
-                );
-            }
-            parser = self
-                .shared
-                .changed
-                .wait_timeout(parser, deadline - now)
-                .expect("screen lock poisoned")
-                .0;
+        if let Err(screen) = wait_for_contents(&self.shared, text, timeout) {
+            panic!("timed out after {timeout:?} waiting for {text:?}\n{screen}");
         }
     }
 
@@ -522,27 +514,64 @@ impl Drop for Griffin {
     }
 }
 
-/// Feeds PTY output into the parser until the PTY closes. Answers cursor-position
-/// queries itself: portable-pty opens ConPTY with "inherit cursor", and ConPTY
-/// holds back all output until a terminal replies to its opening `ESC [ 6 n`.
-fn pump_output(mut reader: Box<dyn Read + Send>, shared: &Shared, writer: &SharedWriter) {
+/// Reads PTY output and hands it on until the PTY closes. Kept apart from the
+/// parsing so a pause in the output can be timed while a read blocks.
+fn read_output(mut reader: Box<dyn Read + Send>, chunks: &mpsc::Sender<Vec<u8>>) {
     let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => {
+                if chunks.send(buf[..n].to_vec()).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// How long output must pause before held bytes are shown anyway. ConPTY on the
+/// Windows runners can drop or split the synchronized-update markers, so a pause
+/// is the only sign left that a frame is finished.
+const QUIET: Duration = Duration::from_millis(50);
+
+/// Feeds output chunks into the screen a whole frame at a time until the sender
+/// goes away. Answers cursor-position queries through `reply`: portable-pty opens
+/// ConPTY with "inherit cursor", and ConPTY holds back all output until a terminal
+/// replies to its opening `ESC [ 6 n`.
+fn feed_output(chunks: &Receiver<Vec<u8>>, shared: &Shared, mut reply: impl FnMut(&[u8])) {
+    let mut gate = FrameGate::default();
     // The query can straddle two reads; keep enough of the previous chunk to see it.
     let mut carry: Vec<u8> = Vec::new();
-    // Output not yet shown: the rest of a synchronized frame, or a tail that may
-    // be the start of one.
-    let mut pending: Vec<u8> = Vec::new();
-    let mut in_sync = false;
     loop {
-        let n = match reader.read(&mut buf) {
-            Ok(0) | Err(_) => return,
-            Ok(n) => n,
+        let received = if gate.holding() {
+            chunks.recv_timeout(QUIET)
+        } else {
+            chunks.recv().map_err(|_| RecvTimeoutError::Disconnected)
         };
-        let chunk = &buf[..n];
+        let chunk = match received {
+            Ok(chunk) => chunk,
+            Err(RecvTimeoutError::Timeout) => {
+                let Ok(mut parser) = shared.parser.lock() else {
+                    return;
+                };
+                gate.flush(&mut parser);
+                drop(parser);
+                shared.changed.notify_all();
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                if let Ok(mut parser) = shared.parser.lock() {
+                    gate.flush(&mut parser);
+                }
+                shared.changed.notify_all();
+                return;
+            }
+        };
+
         let mut window = std::mem::take(&mut carry);
         let carried = window.len();
-        window.extend_from_slice(chunk);
-
+        window.extend_from_slice(&chunk);
         let mut queries = 0;
         let mut i = 0;
         while let Some(pos) = find(&window[i..], CURSOR_QUERY) {
@@ -555,58 +584,109 @@ fn pump_output(mut reader: Box<dyn Read + Send>, shared: &Shared, writer: &Share
         let keep = window.len().min(CURSOR_QUERY.len() - 1);
         carry = window[window.len() - keep..].to_vec();
 
-        pending.extend_from_slice(chunk);
         let cursor = {
             let Ok(mut parser) = shared.parser.lock() else {
                 return;
             };
-            feed_frames(&mut parser, &mut pending, &mut in_sync);
+            gate.feed(&mut parser, &chunk);
             parser.screen().cursor_position()
         };
         shared.changed.notify_all();
 
         for _ in 0..queries {
-            let reply = format!("[{};{}R", cursor.0 + 1, cursor.1 + 1);
-            if let Ok(mut w) = writer.lock() {
-                let _ = w.write_all(reply.as_bytes());
-                let _ = w.flush();
-            }
+            reply(format!("\x1b[{};{}R", cursor.0 + 1, cursor.1 + 1).as_bytes());
         }
+    }
+}
+
+/// Waits until `text` is on screen; on timeout returns the screen dump.
+fn wait_for_contents(shared: &Shared, text: &str, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let mut parser = shared.parser.lock().expect("screen lock poisoned");
+    loop {
+        if parser.screen().contents().contains(text) {
+            return Ok(());
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(dump(&screen_lines(&parser)));
+        }
+        parser = shared
+            .changed
+            .wait_timeout(parser, deadline - now)
+            .expect("screen lock poisoned")
+            .0;
     }
 }
 
 /// Begin and end synchronized update (DEC mode 2026), which griffin wraps around
 /// each frame.
-const SYNC_BEGIN: &[u8] = b"[?2026h";
-const SYNC_END: &[u8] = b"[?2026l";
+const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
+const SYNC_END: &[u8] = b"\x1b[?2026l";
 
-/// Feeds `pending` to the parser a whole frame at a time, as a terminal honouring
-/// synchronized updates shows it, so a test never reads a half-drawn screen. Bytes
-/// inside an unfinished frame, or that may begin a marker, stay in `pending`.
-fn feed_frames(parser: &mut vt100::Parser, pending: &mut Vec<u8>, in_sync: &mut bool) {
-    loop {
-        if *in_sync {
-            let Some(end) = find(pending, SYNC_END) else {
-                return;
+/// Holds output back until it is a whole frame, so a test never reads a
+/// half-drawn screen. Output up to the end of the last whole synchronized frame
+/// is shown at once; anything after it (an unfinished frame, or output with no
+/// markers at all) waits for `flush`, which `feed_output` calls once output has
+/// paused for `QUIET`.
+#[derive(Default)]
+struct FrameGate {
+    pending: Vec<u8>,
+    in_sync: bool,
+}
+
+impl FrameGate {
+    fn feed(&mut self, parser: &mut vt100::Parser, bytes: &[u8]) {
+        self.pending.extend_from_slice(bytes);
+        // Rescanning from the start is safe: whatever is held never contains a
+        // finished frame, and a marker split across reads is whole once its last
+        // bytes arrive.
+        let mut shown = 0;
+        let mut at = 0;
+        loop {
+            let marker = if self.in_sync { SYNC_END } else { SYNC_BEGIN };
+            let Some(pos) = find(&self.pending[at..], marker) else {
+                break;
             };
-            parser.process(&pending[..end]);
-            pending.drain(..end + SYNC_END.len());
-            *in_sync = false;
-        } else if let Some(begin) = find(pending, SYNC_BEGIN) {
-            parser.process(&pending[..begin]);
-            pending.drain(..begin + SYNC_BEGIN.len());
-            *in_sync = true;
-        } else {
-            // Hold back a tail that could be the first bytes of a begin marker.
-            let keep = (1..SYNC_BEGIN.len())
-                .rev()
-                .find(|&n| pending.ends_with(&SYNC_BEGIN[..n]))
-                .unwrap_or(0);
-            let shown = pending.len() - keep;
-            parser.process(&pending[..shown]);
-            pending.drain(..shown);
-            return;
+            at += pos + marker.len();
+            self.in_sync = !self.in_sync;
+            if !self.in_sync {
+                shown = at;
+            }
         }
+        self.process(parser, shown);
+    }
+
+    /// Shows everything held, treating an unfinished frame as done.
+    fn flush(&mut self, parser: &mut vt100::Parser) {
+        self.process(parser, self.pending.len());
+        self.in_sync = false;
+    }
+
+    fn holding(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// Feeds the first `len` held bytes to the parser, minus the markers.
+    fn process(&mut self, parser: &mut vt100::Parser, len: usize) {
+        let mut rest = &self.pending[..len];
+        while !rest.is_empty() {
+            let next = [SYNC_BEGIN, SYNC_END]
+                .iter()
+                .filter_map(|marker| find(rest, marker).map(|pos| (pos, marker.len())))
+                .min();
+            match next {
+                Some((pos, marker_len)) => {
+                    parser.process(&rest[..pos]);
+                    rest = &rest[pos + marker_len..];
+                }
+                None => {
+                    parser.process(rest);
+                    rest = &[];
+                }
+            }
+        }
+        self.pending.drain(..len);
     }
 }
 
@@ -925,23 +1005,87 @@ mod tests {
         assert_eq!(win32_input_bytes("enter"), None);
     }
 
+    fn gate_contents(gate: &mut FrameGate, parser: &mut vt100::Parser, bytes: &[u8]) -> String {
+        gate.feed(parser, bytes);
+        parser.screen().contents()
+    }
+
     #[test]
     fn frames_are_shown_whole() {
         let mut parser = vt100::Parser::new(2, 10, 0);
-        let mut pending = Vec::new();
-        let mut in_sync = false;
-        let mut feed = |bytes: &[u8], parser: &mut vt100::Parser| {
-            pending.extend_from_slice(bytes);
-            feed_frames(parser, &mut pending, &mut in_sync);
-        };
-        feed(b"ab[?20", &mut parser);
-        assert_eq!(parser.screen().contents(), "ab");
-        feed(b"26hcd", &mut parser);
-        assert_eq!(parser.screen().contents(), "ab");
-        feed(b"ef[?2026", &mut parser);
-        assert_eq!(parser.screen().contents(), "ab");
-        feed(b"lgh", &mut parser);
+        let mut gate = FrameGate::default();
+        // Markers split across reads still mark the frame.
+        assert_eq!(gate_contents(&mut gate, &mut parser, b"ab\x1b[?20"), "");
+        assert_eq!(gate_contents(&mut gate, &mut parser, b"26hcd"), "");
+        assert_eq!(gate_contents(&mut gate, &mut parser, b"ef\x1b[?2026"), "");
+        assert_eq!(gate_contents(&mut gate, &mut parser, b"lgh"), "abcdef");
+        // What follows the last whole frame waits for a pause.
+        assert!(gate.holding());
+        gate.flush(&mut parser);
         assert_eq!(parser.screen().contents(), "abcdefgh");
+        assert!(!gate.holding());
+    }
+
+    #[test]
+    fn output_without_markers_is_held_until_a_pause() {
+        let mut parser = vt100::Parser::new(2, 10, 0);
+        let mut gate = FrameGate::default();
+        assert_eq!(gate_contents(&mut gate, &mut parser, b"half"), "");
+        assert_eq!(gate_contents(&mut gate, &mut parser, b" rest"), "");
+        gate.flush(&mut parser);
+        assert_eq!(parser.screen().contents(), "half rest");
+    }
+
+    #[test]
+    fn a_frame_missing_its_end_is_shown_after_a_pause() {
+        let mut parser = vt100::Parser::new(2, 10, 0);
+        let mut gate = FrameGate::default();
+        assert_eq!(gate_contents(&mut gate, &mut parser, b"\x1b[?2026hab"), "");
+        gate.flush(&mut parser);
+        assert_eq!(parser.screen().contents(), "ab");
+        // Later frames with both markers are shown at once again.
+        assert_eq!(
+            gate_contents(&mut gate, &mut parser, b"\x1b[?2026hcd\x1b[?2026l"),
+            "abcd"
+        );
+    }
+
+    /// Runs `feed_output` on a fresh screen and sends it `chunks` back to back.
+    /// Returns the sender too, so the stream stays open: closing it would flush.
+    fn stream(chunks: &[&[u8]]) -> (Arc<Shared>, mpsc::Sender<Vec<u8>>, Instant) {
+        let shared = Arc::new(Shared {
+            parser: Mutex::new(vt100::Parser::new(ROWS, COLS, 0)),
+            changed: Condvar::new(),
+        });
+        let (tx, rx) = mpsc::channel();
+        let feeder = Arc::clone(&shared);
+        thread::spawn(move || feed_output(&rx, &feeder, |_| {}));
+        for chunk in chunks {
+            tx.send(chunk.to_vec()).unwrap();
+        }
+        (shared, tx, Instant::now())
+    }
+
+    #[test]
+    fn wait_shows_a_marker_less_stream_once_it_goes_quiet() {
+        let (shared, _tx, sent) = stream(&[b"top\r\n", b"middle\r\n", b"bottom"]);
+        wait_for_contents(&shared, "top", Duration::from_secs(5)).unwrap();
+        assert!(sent.elapsed() >= QUIET, "shown before the output paused");
+        let contents = shared.parser.lock().unwrap().screen().contents();
+        assert!(
+            contents.contains("bottom"),
+            "half a frame shown: {contents:?}"
+        );
+    }
+
+    #[test]
+    fn wait_shows_a_stream_with_split_or_missing_markers() {
+        let (shared, _tx, _) = stream(&[b"\x1b[?20", b"26hx", b"y\x1b[?2026", b"lz"]);
+        wait_for_contents(&shared, "xy", Duration::from_secs(5)).unwrap();
+        wait_for_contents(&shared, "xyz", Duration::from_secs(5)).unwrap();
+
+        let (shared, _tx, _) = stream(&[b"\x1b[?2026hno", b" end"]);
+        wait_for_contents(&shared, "no end", Duration::from_secs(5)).unwrap();
     }
 
     #[test]
