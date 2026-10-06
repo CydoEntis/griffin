@@ -64,6 +64,11 @@ pub struct Buffer {
     /// The path `highlighter` was picked for, so a rename or save-as to another
     /// file type picks again.
     pub highlight_for: Option<PathBuf>,
+    /// Bumped by every change to the text, so language servers can tell what
+    /// they haven't heard about yet without comparing texts.
+    pub revision: u64,
+    /// Bumped by every successful save, for the same reason.
+    pub saves: u64,
 }
 
 impl Buffer {
@@ -108,6 +113,8 @@ impl Buffer {
             history: History::default(),
             highlighter: None,
             highlight_for: None,
+            revision: 0,
+            saves: 0,
         }
     }
 
@@ -119,6 +126,7 @@ impl Buffer {
         };
         save_atomic(path, &self.disk_text())?;
         self.dirty = false;
+        self.saves += 1;
         Ok(())
     }
 
@@ -137,6 +145,9 @@ impl Buffer {
     pub fn recover(&mut self, text: &str) {
         *self = Self {
             dirty: true,
+            // The text changed under anything following the old one.
+            revision: self.revision + 1,
+            saves: self.saves,
             ..Self::from_text(text, self.path.take())
         };
     }

@@ -18,6 +18,18 @@ pub struct Config {
     pub theme_overrides: BTreeMap<String, toml::Value>,
     pub editor: EditorConfig,
     pub keys: KeysConfig,
+    /// `[lsp.<lang>]`: the language server for each language id.
+    pub lsp: BTreeMap<String, LspServer>,
+}
+
+/// One `[lsp.<lang>]` table. Every field is optional so a table that only sets
+/// options for a later feature still loads.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct LspServer {
+    /// The program to start, found on PATH or given as a path.
+    pub command: Option<String>,
+    pub args: Vec<String>,
 }
 
 /// `[editor]`.
@@ -244,6 +256,50 @@ mod tests {
         );
         assert!(loaded.error.is_none(), "{:?}", loaded.error);
         assert_eq!(loaded.config.keys.len(), 1);
+    }
+
+    #[test]
+    fn lsp_tables_select_a_command_and_args_per_language() {
+        let loaded = parse(
+            r#"
+            [lsp.python]
+            command = "pyright-langserver"
+            args = ["--stdio"]
+            format_on_save = false
+            [lsp.rust]
+            command = 'C:\tools\rust-analyzer.exe'
+            "#,
+        );
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        let lsp = &loaded.config.lsp;
+        assert_eq!(
+            lsp["python"],
+            LspServer {
+                command: Some("pyright-langserver".into()),
+                args: vec!["--stdio".into()],
+            }
+        );
+        assert_eq!(
+            lsp["rust"].command.as_deref(),
+            Some(r"C:\tools\rust-analyzer.exe")
+        );
+        assert!(lsp["rust"].args.is_empty());
+        assert!(parse("").config.lsp.is_empty());
+    }
+
+    #[test]
+    fn an_lsp_table_without_a_command_loads_without_one() {
+        let loaded = parse("[lsp.go]\nargs = [\"serve\"]\n");
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert_eq!(loaded.config.lsp["go"].command, None);
+        assert_eq!(loaded.config.lsp["go"].args, ["serve"]);
+    }
+
+    #[test]
+    fn lsp_args_must_be_a_list_of_strings() {
+        let loaded = parse("[lsp.go]\ncommand = \"gopls\"\nargs = \"serve\"\n");
+        assert!(loaded.error.is_some());
+        assert!(loaded.config.lsp.is_empty());
     }
 
     #[test]

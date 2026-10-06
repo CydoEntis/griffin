@@ -48,6 +48,7 @@ impl Buffer {
         }
         self.rope.remove(change.at..change.at + removed_len);
         self.rope.insert(change.at, &change.inserted);
+        self.revision += 1;
         self.cursor = change.at + change.inserted.chars().count();
         self.goal_col = None;
         // Positions after the change have shifted, so an old anchor means nothing.

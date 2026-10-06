@@ -5,6 +5,7 @@ mod clipboard;
 mod config;
 mod highlight;
 mod keymap;
+mod lsp;
 mod run;
 mod save;
 mod search;
@@ -33,6 +34,7 @@ use crate::app::App;
 use crate::backup::Backups;
 use crate::config::EditorConfig;
 use crate::keymap::Keymap;
+use crate::lsp::Lsp;
 use crate::theme::Theme;
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
@@ -50,7 +52,7 @@ async fn main() -> Result<()> {
     let path = Cli::parse().path;
 
     // Loaded before the terminal switches screens; a bad config never stops startup.
-    let (keymap, editor, theme, config_error) = load_config();
+    let (keymap, editor, theme, lsp, config_error) = load_config();
 
     install_panic_hook(|| {
         // Best effort: the process is already panicking, so a failed restore can
@@ -69,6 +71,7 @@ async fn main() -> Result<()> {
     let backups = Backups::new(backup::data_dir(std::env::var_os("GRIFFIN_DATA_DIR")));
     let result = App::new(keymap, editor, path, config_error)
         .with_theme(theme)
+        .with_lsp(lsp)
         .with_backups(backups)
         .run(&mut terminal)
         .await;
@@ -77,16 +80,17 @@ async fn main() -> Result<()> {
     restored
 }
 
-/// Reads `config.toml` and builds the keymap and theme from it, falling back to the
+/// Reads `config.toml` and builds the keymap, theme and language servers from it, falling back to the
 /// defaults (and saying why in the status line) when the file is malformed or names
 /// a bad key, theme or colour.
-fn load_config() -> (Keymap, EditorConfig, Theme, Option<String>) {
+fn load_config() -> (Keymap, EditorConfig, Theme, Lsp, Option<String>) {
     let loaded = config::load();
     if let Some(err) = loaded.error {
         return (
             Keymap::default(),
             EditorConfig::default(),
             Theme::default(),
+            Lsp::default(),
             Some(format!("config error: {err}")),
         );
     }
@@ -98,7 +102,7 @@ fn load_config() -> (Keymap, EditorConfig, Theme, Option<String>) {
     };
     let errors: Vec<String> = keys_error.into_iter().chain(theme_error).collect();
     let message = (!errors.is_empty()).then(|| errors.join(" · "));
-    (keymap, config.editor, theme, message)
+    (keymap, config.editor, theme, Lsp::new(config.lsp), message)
 }
 
 fn setup_terminal() -> Result<Tui> {

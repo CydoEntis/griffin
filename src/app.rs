@@ -29,6 +29,7 @@ use crate::config::{self, EditorConfig, RunEntry};
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
+use crate::lsp::{Lsp, LspEvent};
 use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
@@ -76,6 +77,8 @@ pub enum AppEvent {
         run: u64,
         code: Option<i32>,
     },
+    /// A language server sent a message or exited.
+    Lsp(LspEvent),
 }
 
 /// A question that takes over the keyboard until it's answered.
@@ -697,6 +700,8 @@ pub struct App {
     /// The app channel, for background backup writes to report back on. `None`
     /// outside the event loop, where writes run inline.
     events: Option<mpsc::UnboundedSender<AppEvent>>,
+    /// Language servers and the buffers they follow.
+    lsp: Lsp,
     should_quit: bool,
 }
 
@@ -743,6 +748,12 @@ impl App {
         self
     }
 
+    /// Starts language servers from `[lsp.<lang>]` as files of each language open.
+    pub fn with_lsp(mut self, lsp: Lsp) -> Self {
+        self.lsp = lsp;
+        self
+    }
+
     /// Turns crash backups on, and offers to recover the opened file's backup if
     /// it has a newer one.
     pub fn with_backups(mut self, backups: Backups) -> Self {
@@ -773,10 +784,12 @@ impl App {
         let (tx, mut rx) = mpsc::unbounded_channel();
         self.edits = Some(backup::spawn_timer(tx.clone()));
         self.events = Some(tx.clone());
+        self.lsp.connect(tx.clone());
         let input = tokio::spawn(read_input(tx));
 
         let result = self.event_loop(terminal, &mut rx).await;
         input.abort();
+        self.lsp.finish().await;
         result
     }
 
@@ -785,6 +798,7 @@ impl App {
         terminal: &mut Tui,
         rx: &mut mpsc::UnboundedReceiver<AppEvent>,
     ) -> Result<()> {
+        self.sync_lsp();
         self.draw(terminal)?;
         while !self.should_quit {
             let Some(event) = rx.recv().await else {
@@ -796,6 +810,7 @@ impl App {
                 self.screen = Rect::new(0, 0, width, height);
             }
             self.handle_event(event);
+            self.sync_lsp();
             self.draw(terminal)?;
         }
         Ok(())
@@ -809,6 +824,21 @@ impl App {
         self.screen = terminal.draw(|frame| self.render(frame))?.area;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         Ok(())
+    }
+
+    /// Tells language servers about whatever the last event did to the open
+    /// buffers: files opened, edited, saved or closed. Never waits on a server.
+    fn sync_lsp(&mut self) {
+        let root = absolute(self.tree.root());
+        let docs: Vec<(u64, &Buffer)> = self
+            .tabs
+            .docs
+            .iter()
+            .map(|doc| (doc.id, &doc.buffer))
+            .collect();
+        if let Some(message) = self.lsp.sync(&root, &docs).pop() {
+            self.message = Some(message);
+        }
     }
 
     /// Brings every buffer's syntax tree up to date. Rendering only reads the
@@ -900,6 +930,11 @@ impl App {
                     && view.status == RunStatus::Running
                 {
                     view.status = RunStatus::Exited(code);
+                }
+            }
+            AppEvent::Lsp(event) => {
+                if let Some(message) = self.lsp.handle(event) {
+                    self.message = Some(message);
                 }
             }
         }
