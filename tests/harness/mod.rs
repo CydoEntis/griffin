@@ -344,6 +344,39 @@ impl Griffin {
         }
     }
 
+    /// The text of the cells on `row` whose foreground is the indexed colour
+    /// `index` (0-15 are the ANSI colours, so 6 is cyan), in order.
+    pub fn fg_text(&self, row: u16, index: u8) -> String {
+        fg_cells(&self.parser(), row, index)
+    }
+
+    /// Waits until the cells on `row` drawn in colour `index` read exactly `text`.
+    /// Panics with the screen on timeout.
+    pub fn wait_for_fg(&self, row: u16, index: u8, text: &str, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut parser = self.parser();
+        loop {
+            let colored = fg_cells(&parser, row, index);
+            if colored == text {
+                return;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                panic!(
+                    "timed out after {timeout:?} waiting for row {row} to show {text:?}                      in colour {index}; it shows {colored:?}
+{}",
+                    dump(&screen_lines(&parser))
+                );
+            }
+            parser = self
+                .shared
+                .changed
+                .wait_timeout(parser, deadline - now)
+                .expect("screen lock poisoned")
+                .0;
+        }
+    }
+
     /// Waits until `check` holds for the screen lines (as `screen` returns them), so
     /// a test can wait for a whole layout rather than one string. Panics with `what`
     /// and the screen on timeout.
@@ -516,6 +549,15 @@ fn reversed_cells(parser: &vt100::Parser, row: u16) -> String {
             "" => " ".to_string(),
             text => text.to_string(),
         })
+        .collect()
+}
+
+fn fg_cells(parser: &vt100::Parser, row: u16, index: u8) -> String {
+    let screen = parser.screen();
+    (0..COLS)
+        .filter_map(|col| screen.cell(row, col))
+        .filter(|cell| cell.fgcolor() == vt100::Color::Idx(index) && !cell.is_wide_continuation())
+        .map(|cell| cell.contents().to_string())
         .collect()
 }
 

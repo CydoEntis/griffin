@@ -24,12 +24,14 @@ use crate::config::EditorConfig;
 use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
+use crate::ui::picker::{Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
 use crate::ui::status::render_status;
 use crate::ui::tabs::{TabLabel, render_tabs, tab_at};
 use crate::ui::tree::{TREE_WIDTH, render_divider, render_tree};
 use crate::view::{View, render_buffer};
 use crate::workspace::ops::{self, Trash};
+use crate::workspace::walk::list_files;
 use crate::workspace::{Launch, Tree};
 
 /// Everything the event loop reacts to. Background work (LSP, run output, timers)
@@ -41,6 +43,9 @@ pub enum AppEvent {
     BackupDue,
     /// How a backup write went.
     BackupWritten(io::Result<()>),
+    /// The background walk for the go-to-file picker finished: every file in the
+    /// project, relative to the root.
+    FilesListed(Vec<String>),
 }
 
 /// A question that takes over the keyboard until it's answered.
@@ -77,6 +82,8 @@ enum BarOp {
     Rename(PathBuf),
     /// A path, relative to the project root, to save the active buffer to.
     SaveAs(AfterSave),
+    /// A line number to move the cursor to.
+    GoToLine,
 }
 
 /// The prompt bar while it asks for a name.
@@ -578,6 +585,8 @@ pub struct App {
     focus: Focus,
     /// The prompt bar, while it's asking for a name; it takes every key.
     name_prompt: Option<NamePrompt>,
+    /// The go-to-file picker, while it's open; it takes every key.
+    picker: Option<Picker>,
     /// The entry the trash prompt will move once answered.
     pending_trash: Option<PathBuf>,
     /// Tabs whose changes the user chose to discard while quitting, so the quit
@@ -704,6 +713,12 @@ impl App {
         match event {
             AppEvent::Input(Event::Key(key)) => self.handle_key(key),
             AppEvent::Input(Event::Paste(text)) if self.prompt.is_none() => {
+                if let Some(picker) = &mut self.picker {
+                    if let Some(picked) = picker.paste(&text) {
+                        self.finish_picker(picked);
+                    }
+                    return;
+                }
                 if let Some(name_prompt) = &mut self.name_prompt {
                     if let Some(outcome) = name_prompt.bar.paste(&text) {
                         self.finish_name_prompt(outcome);
@@ -716,7 +731,7 @@ impl App {
             }
             // The mouse bypasses the keymap too: only keys are remappable.
             AppEvent::Input(Event::Mouse(mouse))
-                if self.prompt.is_none() && self.name_prompt.is_none() =>
+                if self.prompt.is_none() && self.name_prompt.is_none() && self.picker.is_none() =>
             {
                 self.handle_mouse(mouse, Instant::now());
             }
@@ -725,21 +740,37 @@ impl App {
             AppEvent::Input(_) => {}
             AppEvent::BackupDue => self.back_up(),
             AppEvent::BackupWritten(result) => self.backup_written(result),
+            // A list for a picker that has since closed is dropped; the next
+            // Ctrl+P walks again.
+            AppEvent::FilesListed(files) => {
+                if let Some(picker) = &mut self.picker {
+                    picker.set_files(files);
+                }
+            }
         }
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
         // Tree letters are only actions when nothing else is reading keys as text.
-        let scope =
-            if self.focus == Focus::Tree && self.prompt.is_none() && self.name_prompt.is_none() {
-                Scope::Tree
-            } else {
-                Scope::Global
-            };
+        let scope = if self.focus == Focus::Tree
+            && self.prompt.is_none()
+            && self.name_prompt.is_none()
+            && self.picker.is_none()
+        {
+            Scope::Tree
+        } else {
+            Scope::Global
+        };
         let input = self.keymap.resolve_in(&key, scope);
         if let Some(prompt) = self.prompt {
             if let Some(answer) = self.confirm(prompt).answer(input) {
                 self.answer_prompt(prompt, answer);
+            }
+            return;
+        }
+        if let Some(picker) = &mut self.picker {
+            if let Some(picked) = picker.handle(input) {
+                self.finish_picker(picked);
             }
             return;
         }
@@ -788,7 +819,9 @@ impl App {
             | Action::NewFile
             | Action::SaveAs
             | Action::ToggleSplit
-            | Action::CycleFocus => {
+            | Action::CycleFocus
+            | Action::GoToFile
+            | Action::GoToLine => {
                 self.handle_action(action);
             }
             _ => {}
@@ -1056,6 +1089,10 @@ impl App {
             Action::SaveAs => self.start_save_as(AfterSave::Nothing),
             Action::ToggleSplit => self.toggle_split(),
             Action::CycleFocus => self.cycle_focus(),
+            Action::GoToFile => self.open_picker(),
+            Action::GoToLine => {
+                self.open_name_prompt(BarOp::GoToLine, PromptBar::new("Go to line", ""));
+            }
             // Bound only in tree scope, so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
@@ -1156,6 +1193,12 @@ impl App {
             self.after_save(after, saved);
             return;
         }
+        if op == BarOp::GoToLine {
+            if outcome == Outcome::Submit {
+                self.go_to_line(bar.text());
+            }
+            return;
+        }
         if outcome == Outcome::Cancel {
             return;
         }
@@ -1165,7 +1208,7 @@ impl App {
             BarOp::NewFolder(dir) => ops::create_folder(dir, name),
             BarOp::Rename(path) => ops::rename(path, name),
             // Handled above.
-            BarOp::SaveAs(_) => return,
+            BarOp::SaveAs(_) | BarOp::GoToLine => return,
         };
         let path = match result {
             Ok(path) => path,
@@ -1186,7 +1229,48 @@ impl App {
                 self.message = Some(format!("renamed to {name}"));
                 self.follow_rename(&old, &path);
             }
-            BarOp::SaveAs(_) => {}
+            BarOp::SaveAs(_) | BarOp::GoToLine => {}
+        }
+    }
+
+    /// Moves the cursor to the line `text` names, counting from 1; past the end
+    /// means the last line.
+    fn go_to_line(&mut self, text: &str) {
+        match text.trim().parse::<usize>() {
+            Ok(line) => {
+                self.focus = Focus::Editor;
+                self.buffer_mut().go_to_line(line);
+                self.follow_cursor();
+            }
+            Err(_) => self.message = Some(format!("not a line number: {}", text.trim())),
+        }
+    }
+
+    /// Ctrl+P: opens the picker and lists the project's files on a background
+    /// thread, so a large project never stalls typing (ADR-0001). Outside the
+    /// event loop (unit tests) the walk runs inline.
+    fn open_picker(&mut self) {
+        let mut picker = Picker::new();
+        let root = self.tree.root().to_path_buf();
+        match &self.events {
+            Some(events) => {
+                let events = events.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = events.send(AppEvent::FilesListed(list_files(&root)));
+                });
+            }
+            None => picker.set_files(list_files(&root)),
+        }
+        self.picker = Some(picker);
+    }
+
+    /// Closes the picker and, on Enter, opens the chosen file in a tab.
+    fn finish_picker(&mut self, picked: Picked) {
+        self.picker = None;
+        if let Picked::Open(relative) = picked {
+            let mut path = self.tree.root().to_path_buf();
+            path.extend(relative.split('/'));
+            self.open(&path);
         }
     }
 
@@ -1666,6 +1750,10 @@ impl App {
         );
         if let (Some(name_prompt), Some(area)) = (&self.name_prompt, panes.bar) {
             let at = name_prompt.bar.render(frame, area);
+            frame.set_cursor_position(at);
+        }
+        if let Some(picker) = &self.picker {
+            let at = picker.render(frame, frame.area());
             frame.set_cursor_position(at);
         }
         if let Some(prompt) = self.prompt {
@@ -2384,6 +2472,26 @@ world",
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn the_picker_takes_keys_from_the_tree_and_opens_its_pick() -> Result<()> {
+        let (dir, mut app) = project()?;
+        std::fs::create_dir(dir.path().join("sub"))?;
+        std::fs::write(dir.path().join("sub").join("deep.txt"), "deep")?;
+        press(&mut app, &["ctrl+p"]);
+        // Tree letters such as `d` are query text while the picker is open.
+        press(&mut app, &["d", "e", "e", "p"]);
+        let picker = app.picker.as_ref().expect("picker is open");
+        assert_eq!(picker.selected(), Some("sub/deep.txt"));
+        press(&mut app, &["enter"]);
+        assert!(app.picker.is_none());
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.buffer().rope.to_string(), "deep");
+        // A walk that finishes after the picker closed changes nothing.
+        app.handle_event(AppEvent::FilesListed(vec!["a.txt".into()]));
+        assert!(app.picker.is_none());
+        Ok(())
     }
 
     #[test]

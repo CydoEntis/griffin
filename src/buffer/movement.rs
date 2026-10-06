@@ -116,6 +116,14 @@ impl Buffer {
         (line, self.cursor - self.rope.line_to_char(line))
     }
 
+    /// Puts the cursor at the start of `line` (counting from 1, as people do), or
+    /// the last line when the buffer is shorter; nothing stays selected.
+    pub fn go_to_line(&mut self, line: usize) {
+        let last = self.rope.len_lines().saturating_sub(1);
+        let index = line.saturating_sub(1).min(last);
+        self.place_cursor(self.rope.line_to_char(index));
+    }
+
     /// Moves the cursor. `page_height` is how many lines PageUp/PageDown move;
     /// `tab_width` makes Up/Down keep the on-screen column across tabs.
     pub fn move_cursor(&mut self, motion: Motion, page_height: usize, tab_width: usize) {
@@ -413,5 +421,23 @@ mod tests {
         let line = rope.line(0);
         let cols: Vec<usize> = (0..=6).map(|c| display_col(line, c, TAB)).collect();
         assert_eq!(cols, [0, 1, 4, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn go_to_line_counts_from_one_and_clamps() {
+        let mut b = at(
+            "one
+two
+three",
+            5,
+        );
+        b.anchor = Some(1);
+        b.go_to_line(3);
+        assert_eq!(b.cursor_line_col(), (2, 0));
+        assert_eq!(b.anchor, None);
+        b.go_to_line(99);
+        assert_eq!(b.cursor_line_col(), (2, 0));
+        b.go_to_line(0);
+        assert_eq!(b.cursor_line_col(), (0, 0));
     }
 }

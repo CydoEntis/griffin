@@ -1,9 +1,11 @@
-//! Reading one folder's entries the way the tree shows them.
+//! Reading the project from disk: one folder's entries the way the tree shows
+//! them, and every file under the root for the go-to-file picker.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 
 /// One file or folder directly inside a listed folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +46,66 @@ fn compare(a: &Entry, b: &Entry) -> Ordering {
         .cmp(&a.is_dir)
         .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         .then_with(|| a.name.cmp(&b.name))
+}
+
+/// Every file under `root`, as paths relative to it with `/` between parts, sorted.
+/// The same rules as `list_dir` hide entries. The walk runs on several threads, as
+/// a large project must list in well under a second.
+pub fn list_files(root: &Path) -> Vec<String> {
+    let found: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    WalkBuilder::new(root)
+        .hidden(false)
+        .require_git(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build_parallel()
+        .run(|| {
+            let found = &found;
+            let mut batch = Batch {
+                files: Vec::new(),
+                found,
+            };
+            Box::new(move |entry| {
+                if let Ok(entry) = entry
+                    && entry.file_type().is_some_and(|kind| !kind.is_dir())
+                    && let Ok(relative) = entry.path().strip_prefix(root)
+                {
+                    batch.files.push(relative_name(relative));
+                }
+                WalkState::Continue
+            })
+        });
+    let mut files = found
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    files.sort_unstable();
+    files
+}
+
+/// One walker thread's finds, handed over when the thread finishes so threads
+/// don't fight over the lock once per file.
+struct Batch<'a> {
+    files: Vec<String>,
+    found: &'a Mutex<Vec<String>>,
+}
+
+impl Drop for Batch<'_> {
+    fn drop(&mut self) {
+        // A poisoned lock means another walker thread panicked; its files are lost
+        // either way, so keep this thread's.
+        let mut found = self
+            .found
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        found.append(&mut self.files);
+    }
+}
+
+fn relative_name(relative: &Path) -> String {
+    let parts: Vec<_> = relative
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect();
+    parts.join("/")
 }
 
 #[cfg(test)]
@@ -93,6 +155,58 @@ mod tests {
         );
         // The root's rules still apply one folder down.
         assert_eq!(names(&list_dir(&dir.path().join("src"))), ["main.rs"]);
+        Ok(())
+    }
+
+    #[test]
+    fn list_files_walks_the_whole_tree_relative_to_the_root() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::write(
+            dir.path().join(".gitignore"),
+            "*.log
+build/
+",
+        )?;
+        fs::write(dir.path().join("debug.log"), "")?;
+        fs::create_dir_all(dir.path().join("build"))?;
+        fs::write(dir.path().join("build").join("out.txt"), "")?;
+        fs::create_dir_all(dir.path().join(".git"))?;
+        fs::write(dir.path().join(".git").join("HEAD"), "")?;
+        fs::create_dir_all(dir.path().join("src").join("util"))?;
+        fs::write(dir.path().join("src").join("main.rs"), "")?;
+        fs::write(dir.path().join("src").join("util").join("helpers.rs"), "")?;
+        fs::write(dir.path().join("README.md"), "")?;
+
+        assert_eq!(
+            list_files(dir.path()),
+            [
+                ".gitignore",
+                "README.md",
+                "src/main.rs",
+                "src/util/helpers.rs"
+            ]
+        );
+        Ok(())
+    }
+
+    /// R18: a 50k-file project lists in under a second. Slow to set up, so run it
+    /// with `cargo test --release -- --ignored`.
+    #[test]
+    #[ignore = "bench: creates 50,000 files"]
+    fn list_files_lists_fifty_thousand_files_in_under_a_second() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        for folder in 0..500 {
+            let folder = dir.path().join(format!("pkg{folder:03}"));
+            fs::create_dir(&folder)?;
+            for file in 0..100 {
+                fs::write(folder.join(format!("file{file:03}.rs")), "")?;
+            }
+        }
+        let start = std::time::Instant::now();
+        let files = list_files(dir.path());
+        let took = start.elapsed();
+        assert_eq!(files.len(), 50_000);
+        assert!(took < std::time::Duration::from_secs(1), "took {took:?}");
         Ok(())
     }
 }
