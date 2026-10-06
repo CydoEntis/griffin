@@ -16,8 +16,8 @@ use tokio::time::timeout;
 
 use crate::Tui;
 use crate::backup::{self, Backups};
-use crate::buffer::Buffer;
 use crate::buffer::movement::Motion;
+use crate::buffer::{Buffer, Caret};
 use crate::clipboard::Clipboard;
 use crate::config::EditorConfig;
 #[cfg(windows)]
@@ -153,18 +153,17 @@ struct Click {
     row: u16,
 }
 
-/// One open buffer and the part of it the editor shows.
+/// One open buffer, shared by every split showing it.
 #[derive(Debug)]
-struct Tab {
+struct Doc {
     /// Unique for the run; names an untitled buffer's crash backup.
     id: u64,
     buffer: Buffer,
-    view: View,
     /// Edited since its last backup was started.
     backup_due: bool,
 }
 
-impl Tab {
+impl Doc {
     fn label(&self) -> TabLabel {
         TabLabel {
             name: self
@@ -182,12 +181,56 @@ impl Tab {
     }
 }
 
-/// The open tabs, never empty: closing the last one leaves an untitled tab.
+/// A tab in one split: the buffer it shows and that split's own view of it.
+#[derive(Debug, Clone, Copy)]
+struct Tab {
+    doc: u64,
+    view: View,
+    /// This tab's cursor and selection. The buffer holds the live copy while this
+    /// is the focused split's active tab; otherwise this one counts, so two splits
+    /// on one buffer each keep their place.
+    caret: Caret,
+}
+
+/// One editor split: its tabs and which one shows.
+#[derive(Debug, Default)]
+struct Split {
+    /// Never empty once `Tabs` is built; a buffer appears at most once.
+    tabs: Vec<Tab>,
+    /// Index into `tabs`; always in bounds.
+    active: usize,
+}
+
+impl Split {
+    fn active(&self) -> &Tab {
+        &self.tabs[self.active]
+    }
+
+    fn position(&self, doc: u64) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.doc == doc)
+    }
+
+    /// Removes tab `index`; the one to its right (or, at the end, its left) takes
+    /// its place as active if it was. May leave the split empty.
+    fn remove(&mut self, index: usize) {
+        self.tabs.remove(index);
+        if index < self.active || (self.active >= self.tabs.len() && self.active > 0) {
+            self.active -= 1;
+        }
+    }
+}
+
+/// The open buffers and the one or two splits showing them. Every buffer has a
+/// tab in at least one split; closing its last tab closes it. No split is empty:
+/// closing a split's last tab leaves an untitled one.
 #[derive(Debug)]
 struct Tabs {
-    list: Vec<Tab>,
-    /// Index into `list`; always in bounds.
-    active: usize,
+    /// In the order they were opened, which is the order quitting asks in.
+    docs: Vec<Doc>,
+    /// The left split, then the right one while split; never empty.
+    splits: Vec<Split>,
+    /// The split keys and tab actions go to; index into `splits`.
+    focused: usize,
     next_id: u64,
 }
 
@@ -200,56 +243,314 @@ impl Default for Tabs {
 impl Tabs {
     fn new(buffer: Buffer) -> Self {
         let mut tabs = Tabs {
-            list: Vec::new(),
-            active: 0,
+            docs: Vec::new(),
+            splits: vec![Split::default()],
+            focused: 0,
             next_id: 0,
         };
         tabs.push(buffer);
         tabs
     }
 
-    /// Adds `buffer` as the last tab and makes it active.
-    fn push(&mut self, buffer: Buffer) {
-        self.list.push(Tab {
-            id: self.next_id,
+    fn add_doc(&mut self, buffer: Buffer) -> u64 {
+        let id = self.next_id;
+        self.docs.push(Doc {
+            id,
             buffer,
-            view: View::default(),
             backup_due: false,
         });
         self.next_id += 1;
-        self.active = self.list.len() - 1;
+        id
     }
 
-    fn active(&self) -> &Tab {
-        &self.list[self.active]
+    /// Opens `buffer` in a new tab at the end of the focused split and makes it
+    /// active.
+    fn push(&mut self, buffer: Buffer) {
+        let id = self.add_doc(buffer);
+        self.show(id);
     }
 
-    fn active_mut(&mut self) -> &mut Tab {
-        &mut self.list[self.active]
+    /// Makes `doc` the focused split's active tab, giving it a tab there first if
+    /// that split doesn't show it yet.
+    fn show(&mut self, doc: u64) {
+        let index = match self.split().position(doc) {
+            Some(index) => index,
+            None => {
+                self.stash();
+                let caret = self.doc(doc).buffer.caret();
+                let split = &mut self.splits[self.focused];
+                split.tabs.push(Tab {
+                    doc,
+                    view: View::default(),
+                    caret,
+                });
+                split.tabs.len() - 1
+            }
+        };
+        self.activate(self.focused, index);
     }
 
-    /// The tab holding `path`, however the path was spelled.
-    fn find(&self, path: &Path) -> Option<usize> {
-        let wanted = absolute(path);
-        self.list
-            .iter()
-            .position(|tab| tab.buffer.path.as_deref().map(absolute).as_ref() == Some(&wanted))
+    /// Focuses tab `index` of split `split`, handing the live cursor over.
+    fn activate(&mut self, split: usize, index: usize) {
+        self.stash();
+        self.focused = split;
+        self.splits[split].active = index;
+        self.restore();
     }
 
-    /// Removes tab `index`; the one to its right (or, at the end, its left) takes
-    /// its place as active if it was.
-    fn remove(&mut self, index: usize) -> Tab {
-        let tab = self.list.remove(index);
-        if self.list.is_empty() {
-            self.push(Buffer::empty());
-        } else if index < self.active || self.active >= self.list.len() {
-            self.active -= 1;
+    /// Copies the live cursor into the focused tab, before focus leaves it.
+    fn stash(&mut self) {
+        let split = &mut self.splits[self.focused];
+        if let Some(tab) = split.tabs.get_mut(split.active)
+            && let Some(doc) = self.docs.iter().find(|doc| doc.id == tab.doc)
+        {
+            tab.caret = doc.buffer.caret();
         }
-        tab
     }
 
-    fn labels(&self) -> Vec<TabLabel> {
-        self.list.iter().map(Tab::label).collect()
+    /// Hands the focused tab's cursor to its buffer, as focus arrives.
+    fn restore(&mut self) {
+        let split = &self.splits[self.focused];
+        if let Some(tab) = split.tabs.get(split.active)
+            && let Some(doc) = self.docs.iter_mut().find(|doc| doc.id == tab.doc)
+        {
+            doc.buffer.set_caret(tab.caret);
+        }
+    }
+
+    fn doc(&self, id: u64) -> &Doc {
+        // Every tab's buffer stays open until its last tab closes, and callers
+        // only pass ids taken from a tab.
+        self.docs
+            .iter()
+            .find(|doc| doc.id == id)
+            .expect("a tab's buffer is open")
+    }
+
+    fn split(&self) -> &Split {
+        &self.splits[self.focused]
+    }
+
+    fn active_tab(&self) -> &Tab {
+        self.split().active()
+    }
+
+    fn active_tab_mut(&mut self) -> &mut Tab {
+        let split = &mut self.splits[self.focused];
+        &mut split.tabs[split.active]
+    }
+
+    /// The buffer keys edit: the focused split's active tab's.
+    fn active(&self) -> &Doc {
+        self.doc(self.active_tab().doc)
+    }
+
+    fn active_mut(&mut self) -> &mut Doc {
+        let id = self.active_tab().doc;
+        // As in `doc`: the active tab's buffer is open.
+        self.docs
+            .iter_mut()
+            .find(|doc| doc.id == id)
+            .expect("the active tab's buffer is open")
+    }
+
+    /// Whether a split other than the focused one shows `doc`.
+    fn shown_elsewhere(&self, doc: u64) -> bool {
+        self.splits
+            .iter()
+            .enumerate()
+            .any(|(index, split)| index != self.focused && split.position(doc).is_some())
+    }
+
+    /// The open buffer holding `path`, however the path was spelled.
+    fn find(&self, path: &Path) -> Option<u64> {
+        let wanted = absolute(path);
+        self.docs
+            .iter()
+            .find(|doc| doc.buffer.path.as_deref().map(absolute).as_ref() == Some(&wanted))
+            .map(|doc| doc.id)
+    }
+
+    /// Focuses a tab showing `doc`, preferring the focused split.
+    fn reveal(&mut self, doc: u64) {
+        let found = std::iter::once(self.focused)
+            .chain(0..self.splits.len())
+            .find_map(|split| Some((split, self.splits[split].position(doc)?)));
+        if let Some((split, index)) = found {
+            self.activate(split, index);
+        }
+    }
+
+    /// Closes the focused split's active tab, and its buffer when no other split
+    /// shows it, returning the buffer then.
+    fn close_active(&mut self) -> Option<Doc> {
+        let split = &mut self.splits[self.focused];
+        let doc = split.active().doc;
+        split.remove(split.active);
+        let closed = self.close_unshown(doc);
+        self.fill_empty();
+        self.restore();
+        closed
+    }
+
+    /// Closes every buffer `close` picks, and all their tabs.
+    fn close_where(&mut self, close: impl Fn(&Doc) -> bool) -> Vec<Doc> {
+        self.stash();
+        let (closed, kept): (Vec<Doc>, Vec<Doc>) =
+            std::mem::take(&mut self.docs).into_iter().partition(close);
+        self.docs = kept;
+        for split in &mut self.splits {
+            let mut index = 0;
+            while index < split.tabs.len() {
+                if closed.iter().any(|doc| doc.id == split.tabs[index].doc) {
+                    split.remove(index);
+                } else {
+                    index += 1;
+                }
+            }
+        }
+        self.fill_empty();
+        self.restore();
+        closed
+    }
+
+    /// Takes `doc` out of `docs` if no tab shows it any more.
+    fn close_unshown(&mut self, doc: u64) -> Option<Doc> {
+        if self
+            .splits
+            .iter()
+            .any(|split| split.position(doc).is_some())
+        {
+            return None;
+        }
+        let index = self.docs.iter().position(|open| open.id == doc)?;
+        Some(self.docs.remove(index))
+    }
+
+    /// Gives every split left without tabs a fresh untitled one.
+    fn fill_empty(&mut self) {
+        for index in 0..self.splits.len() {
+            if self.splits[index].tabs.is_empty() {
+                let doc = self.add_doc(Buffer::empty());
+                self.splits[index] = Split {
+                    tabs: vec![Tab {
+                        doc,
+                        view: View::default(),
+                        caret: Caret::default(),
+                    }],
+                    active: 0,
+                };
+            }
+        }
+    }
+
+    /// Opens a right split showing the focused tab, and focuses it; or closes the
+    /// right split. Tabs only the right split had move to the left one, so closing
+    /// it never closes a buffer.
+    fn toggle_split(&mut self) {
+        self.stash();
+        if self.splits.len() > 1 {
+            let right = self.splits.remove(1);
+            let left = &mut self.splits[0];
+            for tab in right.tabs {
+                if left.position(tab.doc).is_none() {
+                    left.tabs.push(tab);
+                }
+            }
+            self.focused = 0;
+        } else {
+            let tab = *self.active_tab();
+            self.splits.push(Split {
+                tabs: vec![tab],
+                active: 0,
+            });
+            self.focused = 1;
+        }
+        self.restore();
+    }
+
+    /// What split `split`'s tab bar shows.
+    fn labels(&self, split: usize) -> Vec<TabLabel> {
+        self.splits[split]
+            .tabs
+            .iter()
+            .map(|tab| self.doc(tab.doc).label())
+            .collect()
+    }
+
+    /// The buffer split `split`'s active tab shows, with that tab's cursor: the
+    /// buffer itself in the focused split, a copy with the kept cursor elsewhere.
+    fn shown(&self, split: usize) -> Shown<'_> {
+        let tab = self.splits[split].active();
+        let buffer = &self.doc(tab.doc).buffer;
+        if split == self.focused {
+            Shown::Live(buffer)
+        } else {
+            Shown::Copy(buffer.with_caret(tab.caret))
+        }
+    }
+
+    /// Scrolls each split's active view to its cursor; `areas` are the splits'
+    /// editor panes, in order.
+    fn follow(&mut self, areas: &[Rect], tab_width: usize) {
+        for (index, &area) in areas.iter().enumerate().take(self.splits.len()) {
+            let shown = self.shown(index);
+            let view = shown.follow_from(self.splits[index].active().view, area, tab_width);
+            let split = &mut self.splits[index];
+            split.tabs[split.active].view = view;
+        }
+    }
+
+    /// Moves the kept cursors of `doc`'s other tabs that sit past `at` by `delta`
+    /// chars, after text changed there through the live one, so a split on the
+    /// same buffer stays on the text it was on.
+    fn shift_others(&mut self, doc: u64, at: usize, delta: isize) {
+        let shift = |pos: usize| {
+            if pos > at {
+                pos.saturating_add_signed(delta).max(at)
+            } else {
+                pos
+            }
+        };
+        for (index, split) in self.splits.iter_mut().enumerate() {
+            for (tab_index, tab) in split.tabs.iter_mut().enumerate() {
+                let live = index == self.focused && tab_index == split.active;
+                if tab.doc == doc && !live {
+                    tab.caret.cursor = shift(tab.caret.cursor);
+                    tab.caret.anchor = tab.caret.anchor.map(shift);
+                }
+            }
+        }
+    }
+
+    /// Scrolls split `split`'s active view by `lines` without moving any cursor.
+    fn scroll(&mut self, split: usize, area: Rect, lines: isize) {
+        let split = &mut self.splits[split];
+        let tab = &mut split.tabs[split.active];
+        if let Some(doc) = self.docs.iter().find(|doc| doc.id == tab.doc) {
+            tab.view.scroll_by(&doc.buffer, area, lines);
+        }
+    }
+}
+
+/// A split's buffer as `Tabs::shown` hands it out for drawing and scrolling.
+enum Shown<'a> {
+    Live(&'a Buffer),
+    Copy(Buffer),
+}
+
+impl Shown<'_> {
+    fn buffer(&self) -> &Buffer {
+        match self {
+            Shown::Live(buffer) => buffer,
+            Shown::Copy(buffer) => buffer,
+        }
+    }
+
+    /// `view` scrolled to this buffer's cursor in `area`.
+    fn follow_from(&self, mut view: View, area: Rect, tab_width: usize) -> View {
+        view.follow(self.buffer(), area, tab_width);
+        view
     }
 }
 
@@ -364,7 +665,7 @@ impl App {
 
     #[cfg(test)]
     fn view(&self) -> &View {
-        &self.tabs.active().view
+        &self.tabs.active_tab().view
     }
 
     pub async fn run(&mut self, terminal: &mut Tui) -> Result<()> {
@@ -485,7 +786,9 @@ impl App {
             | Action::GoToTab(_)
             | Action::CloseTab
             | Action::NewFile
-            | Action::SaveAs => {
+            | Action::SaveAs
+            | Action::ToggleSplit
+            | Action::CycleFocus => {
                 self.handle_action(action);
             }
             _ => {}
@@ -510,18 +813,22 @@ impl App {
     /// Shows `path` in the editor: switches to its tab when it's already open,
     /// otherwise opens it in a new one. An untouched untitled tab is replaced rather
     /// than left behind.
+    /// Both happen in the focused split; a file open only in the other split gets
+    /// a tab here too, on the same buffer.
     fn open(&mut self, path: &Path) {
-        if let Some(index) = self.tabs.find(path) {
-            self.switch_tab(index);
+        if let Some(doc) = self.tabs.find(path) {
+            self.tabs.show(doc);
+            self.reset_mouse();
             self.focus = Focus::Editor;
+            self.follow_cursor();
             return;
         }
         match Buffer::open(path) {
             Ok(buffer) => {
-                if self.tabs.active().is_pristine() {
-                    let tab = self.tabs.active_mut();
-                    tab.buffer = buffer;
-                    tab.view = View::default();
+                let active = self.tabs.active();
+                if active.is_pristine() && !self.tabs.shown_elsewhere(active.id) {
+                    self.tabs.active_mut().buffer = buffer;
+                    self.tabs.active_tab_mut().view = View::default();
                 } else {
                     self.tabs.push(buffer);
                 }
@@ -537,24 +844,27 @@ impl App {
         }
     }
 
+    /// Switches the focused split to its tab `index`, if it has one.
     fn switch_tab(&mut self, index: usize) {
-        if index < self.tabs.list.len() && index != self.tabs.active {
-            self.tabs.active = index;
-            self.reset_mouse();
-            // The pane may have changed size while this tab was hidden.
-            self.follow_cursor();
+        let split = self.tabs.split();
+        if index < split.tabs.len() && index != split.active {
+            self.switch_to(self.tabs.focused, index);
         }
     }
 
-    /// Steps `delta` tabs along, wrapping at either end.
+    /// Focuses tab `index` of split `split`.
+    fn switch_to(&mut self, split: usize, index: usize) {
+        self.tabs.activate(split, index);
+        self.reset_mouse();
+        // The pane may have changed size while this tab was hidden.
+        self.follow_cursor();
+    }
+
+    /// Steps `delta` tabs along the focused split, wrapping at either end.
     fn cycle_tab(&mut self, delta: isize) {
-        let len = self.tabs.list.len();
-        let index = self
-            .tabs
-            .active
-            .checked_add_signed(delta)
-            .unwrap_or(len - 1)
-            % len;
+        let split = self.tabs.split();
+        let len = split.tabs.len();
+        let index = split.active.checked_add_signed(delta).unwrap_or(len - 1) % len;
         self.switch_tab(index);
     }
 
@@ -565,9 +875,11 @@ impl App {
     }
 
     /// Ctrl+W or a middle click: closes the active tab, asking first when that
-    /// would throw away unsaved changes.
+    /// would throw away unsaved changes. A buffer the other split still shows
+    /// loses nothing, so that close doesn't ask.
     fn request_close(&mut self) {
-        if self.buffer().dirty {
+        let doc = self.tabs.active();
+        if doc.buffer.dirty && !self.tabs.shown_elsewhere(doc.id) {
             self.prompt = Some(Prompt::UnsavedClose);
         } else {
             self.close_active();
@@ -575,10 +887,11 @@ impl App {
     }
 
     /// Closes the active tab without asking; its edits, if any, were saved or
-    /// discarded, so its backup goes too.
+    /// discarded, so its backup goes too, unless the other split still shows it.
     fn close_active(&mut self) {
-        self.delete_backup();
-        self.tabs.remove(self.tabs.active);
+        if let Some(doc) = self.tabs.close_active() {
+            let _ = self.backups.delete(doc.buffer.path.as_deref(), doc.id);
+        }
         self.reset_mouse();
         self.follow_cursor();
     }
@@ -589,12 +902,15 @@ impl App {
     fn continue_quit(&mut self) {
         let next = self
             .tabs
-            .list
+            .docs
             .iter()
-            .position(|tab| tab.buffer.dirty && !self.quit_discarded.contains(&tab.id));
+            .find(|doc| doc.buffer.dirty && !self.quit_discarded.contains(&doc.id))
+            .map(|doc| doc.id);
         match next {
-            Some(index) => {
-                self.switch_tab(index);
+            Some(doc) => {
+                self.tabs.reveal(doc);
+                self.reset_mouse();
+                self.follow_cursor();
                 self.prompt = Some(Prompt::UnsavedQuit);
             }
             None => self.quit(),
@@ -623,9 +939,42 @@ impl App {
         }
     }
 
+    /// F6: focus moves tree, left split, right split and round again, skipping
+    /// the tree while it's hidden.
+    fn cycle_focus(&mut self) {
+        let mut stops: Vec<Option<usize>> = Vec::new();
+        if self.tree_visible {
+            stops.push(None);
+        }
+        stops.extend((0..self.tabs.splits.len()).map(Some));
+        let here = match self.focus {
+            Focus::Tree => None,
+            Focus::Editor => Some(self.tabs.focused),
+        };
+        let at = stops.iter().position(|&stop| stop == here).unwrap_or(0);
+        match stops[(at + 1) % stops.len()] {
+            None => self.focus = Focus::Tree,
+            Some(split) => {
+                self.focus = Focus::Editor;
+                if split != self.tabs.focused {
+                    self.switch_to(split, self.tabs.splits[split].active);
+                }
+            }
+        }
+    }
+
+    /// Alt+V: opens the right split on the focused tab, or closes it.
+    fn toggle_split(&mut self) {
+        self.tabs.toggle_split();
+        self.focus = Focus::Editor;
+        self.reset_mouse();
+        // Every split just changed width.
+        self.follow_cursor();
+    }
+
     /// Rows one PageUp/PageDown moves in the tree.
     fn tree_page(&self) -> isize {
-        isize::try_from(self.panes().editor.height).unwrap_or(isize::MAX)
+        isize::try_from(self.editor_area().height).unwrap_or(isize::MAX)
     }
 
     fn follow_tree(&mut self) {
@@ -650,7 +999,7 @@ impl App {
             // Nothing to cancel outside a prompt.
             Action::Cancel => {}
             Action::Move(motion) => {
-                let page = usize::from(self.panes().editor.height);
+                let page = usize::from(self.editor_area().height);
                 let tab_width = self.editor.tab_width;
                 self.buffer_mut().move_cursor(motion, page, tab_width);
                 self.follow_cursor();
@@ -669,7 +1018,7 @@ impl App {
                 buffer.redo();
             }),
             Action::Select(motion) => {
-                let page = usize::from(self.panes().editor.height);
+                let page = usize::from(self.editor_area().height);
                 let tab_width = self.editor.tab_width;
                 self.buffer_mut().select(motion, page, tab_width);
                 self.follow_cursor();
@@ -705,6 +1054,8 @@ impl App {
                 self.follow_cursor();
             }
             Action::SaveAs => self.start_save_as(AfterSave::Nothing),
+            Action::ToggleSplit => self.toggle_split(),
+            Action::CycleFocus => self.cycle_focus(),
             // Bound only in tree scope, so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
@@ -905,8 +1256,8 @@ impl App {
     /// renamed, moving crash backups along.
     fn follow_rename(&mut self, old: &Path, new: &Path) {
         let mut moved_any = false;
-        for tab in &mut self.tabs.list {
-            let Some(moved) = tab
+        for doc in &mut self.tabs.docs {
+            let Some(moved) = doc
                 .buffer
                 .path
                 .as_deref()
@@ -915,9 +1266,9 @@ impl App {
                 continue;
             };
             // Backups are keyed by path, so the old one would never be found again.
-            let _ = self.backups.delete(tab.buffer.path.as_deref(), tab.id);
-            tab.buffer.path = Some(moved);
-            tab.backup_due = true;
+            let _ = self.backups.delete(doc.buffer.path.as_deref(), doc.id);
+            doc.buffer.path = Some(moved);
+            doc.backup_due = true;
             moved_any = true;
         }
         if moved_any {
@@ -936,14 +1287,14 @@ impl App {
             self.message = Some(format!("cannot move {name} to trash: {err}"));
             return;
         }
-        while let Some(index) = self.tabs.list.iter().position(|tab| {
-            tab.buffer
+        let closed = self.tabs.close_where(|doc| {
+            doc.buffer
                 .path
                 .as_deref()
                 .is_some_and(|open| open.starts_with(&path))
-        }) {
-            let tab = self.tabs.remove(index);
-            let _ = self.backups.delete(tab.buffer.path.as_deref(), tab.id);
+        });
+        for doc in closed {
+            let _ = self.backups.delete(doc.buffer.path.as_deref(), doc.id);
         }
         self.reset_mouse();
         self.follow_cursor();
@@ -952,35 +1303,42 @@ impl App {
         self.follow_tree();
     }
 
-    /// Click, drag, double-click and wheel in the editor pane, clicks on the tab
-    /// bar. `now` is when the event arrived, passed in so double-click timing is
-    /// testable.
+    /// Click, drag, double-click and wheel in the editor panes, clicks on the tab
+    /// bars. A press in a split focuses it. `now` is when the event arrived, passed
+    /// in so double-click timing is testable.
     fn handle_mouse(&mut self, mouse: MouseEvent, now: Instant) {
         let panes = self.panes();
-        let area = panes.editor;
-        let (col, row) = (mouse.column, mouse.row);
+        let at = Position::new(mouse.column, mouse.row);
         if let Some(tree) = panes.tree
-            && tree.contains(Position::new(col, row))
+            && tree.contains(at)
         {
             self.handle_tree_mouse(mouse, tree);
             return;
         }
-        if panes.tabs.contains(Position::new(col, row)) {
-            self.handle_tab_mouse(mouse, panes.tabs);
+        if let Some(split) = panes.splits.iter().position(|s| s.tabs.contains(at)) {
+            self.handle_tab_mouse(mouse, split, panes.splits[split].tabs);
             return;
         }
-        let inside = area.contains(Position::new(col, row));
+        let hovered = panes.splits.iter().position(|s| s.editor.contains(at));
+        let (col, row) = (mouse.column, mouse.row);
         let tab_width = self.editor.tab_width;
+        // A drag or release belongs to the split the press landed in, wherever the
+        // pointer has wandered since.
         let pos = |app: &Self| {
-            let tab = app.tabs.active();
-            tab.view
-                .screen_to_char(&tab.buffer, area, col, row, tab_width)
+            let area = panes.splits[app.tabs.focused].editor;
+            app.tabs
+                .active_tab()
+                .view
+                .screen_to_char(app.buffer(), area, col, row, tab_width)
         };
-        match mouse.kind {
+        match (mouse.kind, hovered) {
             // Ctrl+click is left for go to definition (#32).
-            MouseEventKind::Down(MouseButton::Left)
-                if inside && !mouse.modifiers.contains(KeyModifiers::CONTROL) =>
+            (MouseEventKind::Down(MouseButton::Left), Some(split))
+                if !mouse.modifiers.contains(KeyModifiers::CONTROL) =>
             {
+                if split != self.tabs.focused {
+                    self.switch_to(split, self.tabs.splits[split].active);
+                }
                 self.focus = Focus::Editor;
                 let pos = pos(self);
                 let double = self.last_click.is_some_and(|last| {
@@ -998,15 +1356,15 @@ impl App {
                 }
                 self.follow_cursor();
             }
-            MouseEventKind::Down(_) => self.drag_from = None,
-            MouseEventKind::Drag(MouseButton::Left) => {
+            (MouseEventKind::Down(_), _) => self.drag_from = None,
+            (MouseEventKind::Drag(MouseButton::Left), _) => {
                 if let Some(from) = self.drag_from {
                     let pos = pos(self);
                     self.buffer_mut().select_to(from, pos);
                     self.follow_cursor();
                 }
             }
-            MouseEventKind::Up(MouseButton::Left) => {
+            (MouseEventKind::Up(MouseButton::Left), _) => {
                 // A release somewhere new without a drag event in between still
                 // ends the selection there.
                 if let Some(from) = self.drag_from.take() {
@@ -1017,33 +1375,36 @@ impl App {
                     }
                 }
             }
-            MouseEventKind::ScrollUp if inside => {
-                let tab = self.tabs.active_mut();
-                tab.view.scroll_by(&tab.buffer, area, -WHEEL_LINES);
+            // The wheel scrolls whichever split it's over, without focusing it.
+            (MouseEventKind::ScrollUp, Some(split)) => {
+                self.tabs
+                    .scroll(split, panes.splits[split].editor, -WHEEL_LINES);
             }
-            MouseEventKind::ScrollDown if inside => {
-                let tab = self.tabs.active_mut();
-                tab.view.scroll_by(&tab.buffer, area, WHEEL_LINES);
+            (MouseEventKind::ScrollDown, Some(split)) => {
+                self.tabs
+                    .scroll(split, panes.splits[split].editor, WHEEL_LINES);
             }
             _ => {}
         }
     }
 
-    /// A left click selects the tab under it; a middle click closes it, asking
-    /// first (about that tab, now active) when it has unsaved changes.
-    fn handle_tab_mouse(&mut self, mouse: MouseEvent, area: Rect) {
+    /// A left click selects the tab under it, focusing its split; a middle click
+    /// closes it, asking first (about that tab, now active) when it has unsaved
+    /// changes.
+    fn handle_tab_mouse(&mut self, mouse: MouseEvent, split: usize, area: Rect) {
         self.reset_mouse();
-        let labels = self.tabs.labels();
-        let Some(index) = tab_at(&labels, self.tabs.active, area, mouse.column) else {
+        let labels = self.tabs.labels(split);
+        let active = self.tabs.splits[split].active;
+        let Some(index) = tab_at(&labels, active, area, mouse.column) else {
             return;
         };
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                self.switch_tab(index);
+                self.switch_to(split, index);
                 self.focus = Focus::Editor;
             }
             MouseEventKind::Down(MouseButton::Middle) => {
-                self.switch_tab(index);
+                self.switch_to(split, index);
                 self.request_close();
             }
             _ => {}
@@ -1135,8 +1496,8 @@ impl App {
     /// Ends the session cleanly: every tab was saved or its changes discarded, so
     /// no backup is needed.
     fn quit(&mut self) {
-        for tab in &self.tabs.list {
-            let _ = self.backups.delete(tab.buffer.path.as_deref(), tab.id);
+        for doc in &self.tabs.docs {
+            let _ = self.backups.delete(doc.buffer.path.as_deref(), doc.id);
         }
         self.should_quit = true;
     }
@@ -1146,14 +1507,14 @@ impl App {
     /// the text (ADR-0001).
     fn back_up(&mut self) {
         let mut jobs = Vec::new();
-        for tab in &mut self.tabs.list {
-            if !std::mem::take(&mut tab.backup_due) || !tab.buffer.dirty {
+        for doc in &mut self.tabs.docs {
+            if !std::mem::take(&mut doc.backup_due) || !doc.buffer.dirty {
                 continue;
             }
             jobs.extend(self.backups.job(
-                tab.buffer.path.as_deref(),
-                tab.id,
-                tab.buffer.disk_text(),
+                doc.buffer.path.as_deref(),
+                doc.id,
+                doc.buffer.disk_text(),
             ));
         }
         for job in jobs {
@@ -1185,8 +1546,8 @@ impl App {
     fn delete_backup(&mut self) {
         // Best effort: a leftover backup is only offered again if it is newer than
         // the file and differs from it, so failing here loses nothing.
-        let tab = self.tabs.active();
-        let _ = self.backups.delete(tab.buffer.path.as_deref(), tab.id);
+        let doc = self.tabs.active();
+        let _ = self.backups.delete(doc.buffer.path.as_deref(), doc.id);
     }
 
     /// Saves the active buffer and says how it went in the status line. Returns
@@ -1207,9 +1568,22 @@ impl App {
     }
 
     fn edit(&mut self, edit: impl FnOnce(&mut Buffer)) {
-        let tab = self.tabs.active_mut();
-        edit(&mut tab.buffer);
-        tab.backup_due = true;
+        let doc = self.tabs.active_mut();
+        let before = doc
+            .buffer
+            .selection()
+            .map_or(doc.buffer.cursor, |s| s.start);
+        let len = doc.buffer.rope.len_chars();
+        edit(&mut doc.buffer);
+        doc.backup_due = true;
+        // Edits happen at or before the cursor, wherever it ends up; undo moves it
+        // to the change, so this lands close enough for the other split's place.
+        let at = before.min(doc.buffer.cursor);
+        let delta = doc.buffer.rope.len_chars().cast_signed() - len.cast_signed();
+        let id = doc.id;
+        if delta != 0 {
+            self.tabs.shift_others(id, at, delta);
+        }
         self.follow_cursor();
         if let Some(edits) = &self.edits {
             // The timer only stops with the loop, after which nothing edits.
@@ -1217,28 +1591,61 @@ impl App {
         }
     }
 
+    /// Keeps every split's cursor in view; the other split may show the buffer
+    /// that just changed.
     fn follow_cursor(&mut self) {
-        let (area, tab_width) = (self.panes().editor, self.editor.tab_width);
-        let tab = self.tabs.active_mut();
-        tab.view.follow(&tab.buffer, area, tab_width);
+        let areas: Vec<Rect> = self.panes().splits.iter().map(|s| s.editor).collect();
+        self.tabs.follow(&areas, self.editor.tab_width);
     }
 
     fn panes(&self) -> Panes {
-        Panes::new(self.screen, self.tree_visible, self.name_prompt.is_some())
+        Panes::new(
+            self.screen,
+            self.tree_visible,
+            self.name_prompt.is_some(),
+            self.tabs.splits.len(),
+        )
+    }
+
+    /// The focused split's editor pane.
+    fn editor_area(&self) -> Rect {
+        self.panes().splits[self.tabs.focused].editor
     }
 
     /// Draws the whole screen. Pure: reads `self`, never changes it.
     pub fn render(&self, frame: &mut Frame) {
-        let panes = Panes::new(frame.area(), self.tree_visible, self.name_prompt.is_some());
-        render_tabs(&self.tabs.labels(), self.tabs.active, panes.tabs, frame);
-        let tab = self.tabs.active();
-        render_buffer(
-            &tab.buffer,
-            &tab.view,
-            self.editor.tab_width,
-            panes.editor,
-            frame,
+        let panes = Panes::new(
+            frame.area(),
+            self.tree_visible,
+            self.name_prompt.is_some(),
+            self.tabs.splits.len(),
         );
+        let focused = self.tabs.focused;
+        // The focused split draws last, so the terminal cursor ends up in it.
+        let order = (0..panes.splits.len())
+            .filter(|&split| split != focused)
+            .chain(std::iter::once(focused));
+        for split in order {
+            let area = panes.splits[split];
+            let tabs = &self.tabs.splits[split];
+            render_tabs(
+                &self.tabs.labels(split),
+                tabs.active,
+                split == focused,
+                area.tabs,
+                frame,
+            );
+            render_buffer(
+                self.tabs.shown(split).buffer(),
+                &tabs.active().view,
+                self.editor.tab_width,
+                area.editor,
+                frame,
+            );
+        }
+        if let Some(divider) = panes.split_divider {
+            render_divider(divider, frame);
+        }
         if let (Some(tree), Some(divider)) = (panes.tree, panes.divider) {
             let focused = self.focus == Focus::Tree;
             let selected = render_tree(&self.tree, focused, tree, frame);
@@ -1248,13 +1655,14 @@ impl App {
                 frame.set_cursor_position(at);
             }
         }
+        let buffer = self.buffer();
         render_status(
             frame,
             panes.status,
-            &tab.buffer.name(),
-            tab.buffer.dirty,
+            &buffer.name(),
+            buffer.dirty,
             self.message.as_deref(),
-            tab.buffer.cursor_line_col(),
+            buffer.cursor_line_col(),
         );
         if let (Some(name_prompt), Some(area)) = (&self.name_prompt, panes.bar) {
             let at = name_prompt.bar.render(frame, area);
@@ -1274,21 +1682,31 @@ fn file_name(path: &Path) -> String {
     )
 }
 
-/// Where each part of the screen goes: the tree (when shown) from row 1 down, a
-/// `│` divider, then the tab bar on row 0 above the editor; below them the prompt
-/// bar (while open) and a one-row status line.
+/// One editor split's place on screen: its tab bar row and the editor below it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SplitArea {
+    tabs: Rect,
+    editor: Rect,
+}
+
+/// Where each part of the screen goes: the tree (when shown) from row 1 down, a
+/// `│` divider, then the editor splits, each with its tab bar on row 0 and a `│`
+/// between the two; below them the prompt bar (while open) and a one-row status
+/// line.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Panes {
     tree: Option<Rect>,
     divider: Option<Rect>,
-    tabs: Rect,
-    editor: Rect,
+    /// One per split, left to right.
+    splits: Vec<SplitArea>,
+    /// Between the two splits, while there are two.
+    split_divider: Option<Rect>,
     bar: Option<Rect>,
     status: Rect,
 }
 
 impl Panes {
-    fn new(screen: Rect, tree_visible: bool, bar_open: bool) -> Self {
+    fn new(screen: Rect, tree_visible: bool, bar_open: bool, splits: usize) -> Self {
         let [main, bar, status] = Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(u16::from(bar_open)),
@@ -1310,13 +1728,30 @@ impl Panes {
         } else {
             (None, None, main)
         };
-        let [tabs, editor] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(right);
+        let (columns, split_divider) = if splits > 1 {
+            let [left, divider, right] = Layout::horizontal([
+                Constraint::Fill(1),
+                Constraint::Length(1),
+                Constraint::Fill(1),
+            ])
+            .areas(right);
+            (vec![left, right], Some(divider))
+        } else {
+            (vec![right], None)
+        };
+        let splits = columns
+            .into_iter()
+            .map(|column| {
+                let [tabs, editor] =
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(column);
+                SplitArea { tabs, editor }
+            })
+            .collect();
         Panes {
             tree,
             divider,
-            tabs,
-            editor,
+            splits,
+            split_divider,
             bar,
             status,
         }
@@ -1939,7 +2374,7 @@ world",
 
     fn tab_names(app: &App) -> Vec<String> {
         app.tabs
-            .labels()
+            .labels(app.tabs.focused)
             .into_iter()
             .map(|label| {
                 if label.dirty {
@@ -1964,8 +2399,8 @@ world",
         assert_eq!(app.buffer().rope.to_string(), "b");
         // Opening a.txt again switches back to its tab, edits intact.
         press(&mut app, &["ctrl+e", "up", "enter"]);
-        assert_eq!(app.tabs.list.len(), 2);
-        assert_eq!(app.tabs.active, 0);
+        assert_eq!(app.tabs.split().tabs.len(), 2);
+        assert_eq!(app.tabs.split().active, 0);
         assert_eq!(app.buffer().rope.to_string(), "xa");
         Ok(())
     }
@@ -1974,7 +2409,7 @@ world",
     fn tab_keys_move_between_tabs_and_wrap() {
         let mut app = app_with("one", &FakeClipboard::default());
         press(&mut app, &["ctrl+n", "2", "ctrl+n", "3"]);
-        assert_eq!(app.tabs.active, 2);
+        assert_eq!(app.tabs.split().active, 2);
         press(&mut app, &["alt+."]);
         assert_eq!(app.buffer().rope.to_string(), "one");
         press(&mut app, &["alt+,"]);
@@ -1983,7 +2418,7 @@ world",
         assert_eq!(app.buffer().rope.to_string(), "2");
         // No tab 9: nothing happens.
         press(&mut app, &["alt+9"]);
-        assert_eq!(app.tabs.active, 1);
+        assert_eq!(app.tabs.split().active, 1);
     }
 
     #[test]
@@ -1992,11 +2427,11 @@ world",
         press(&mut app, &["ctrl+n", "x", "ctrl+n", "alt+2", "ctrl+w"]);
         assert_eq!(app.prompt, Some(Prompt::UnsavedClose));
         press(&mut app, &["c"]);
-        assert_eq!(app.tabs.list.len(), 3);
+        assert_eq!(app.tabs.split().tabs.len(), 3);
         press(&mut app, &["ctrl+w", "d"]);
-        assert_eq!(app.tabs.list.len(), 2);
+        assert_eq!(app.tabs.split().tabs.len(), 2);
         // The tab to the right took over.
-        assert_eq!(app.tabs.active, 1);
+        assert_eq!(app.tabs.split().active, 1);
         press(&mut app, &["ctrl+w", "ctrl+w"]);
         // Closing the last tab leaves a fresh untitled one.
         assert_eq!(tab_names(&app), ["untitled"]);
@@ -2010,15 +2445,15 @@ world",
         press(&mut app, &["ctrl+n", "ctrl+q"]);
         // The first dirty tab comes up first.
         assert_eq!(app.prompt, Some(Prompt::UnsavedQuit));
-        assert_eq!(app.tabs.active, 0);
+        assert_eq!(app.tabs.split().active, 0);
         press(&mut app, &["d"]);
         assert_eq!(app.prompt, Some(Prompt::UnsavedQuit));
-        assert_eq!(app.tabs.active, 1);
+        assert_eq!(app.tabs.split().active, 1);
         // Cancel stops the whole quit, and a new Ctrl+Q starts over.
         press(&mut app, &["c"]);
         assert!(!app.should_quit);
         press(&mut app, &["ctrl+q"]);
-        assert_eq!(app.tabs.active, 0);
+        assert_eq!(app.tabs.split().active, 0);
         press(&mut app, &["d", "s"]);
         assert!(app.should_quit);
         assert_eq!(std::fs::read_to_string(dir.path().join("a.txt"))?, "a");
@@ -2107,10 +2542,10 @@ world",
         press(&mut app, &["ctrl+n"]);
         // " untitled " is 10 cells wide; the second tab starts at column 10.
         app.handle_mouse(mouse(LEFT_DOWN, 2, 0), Instant::now());
-        assert_eq!(app.tabs.active, 0);
+        assert_eq!(app.tabs.split().active, 0);
         let middle = MouseEventKind::Down(MouseButton::Middle);
         app.handle_mouse(mouse(middle, 12, 0), Instant::now());
-        assert_eq!(app.tabs.list.len(), 1);
+        assert_eq!(app.tabs.split().tabs.len(), 1);
         assert_eq!(app.buffer().rope.to_string(), "one");
         press(&mut app, &["x"]);
         app.handle_mouse(mouse(middle, 2, 0), Instant::now());
@@ -2186,7 +2621,7 @@ world",
         // In the tree `a` opens the bar; inside the bar `a`, `r`, `d` are text.
         press(&mut app, &["a"]);
         assert!(app.name_prompt.is_some());
-        assert_eq!(app.panes().editor.height, 27);
+        assert_eq!(app.panes().splits[0].editor.height, 27);
         type_keys(&mut app, "dra.txt");
         press(&mut app, &["enter"]);
         assert_eq!(app.name_prompt, None);
@@ -2230,12 +2665,12 @@ world",
     #[test]
     fn the_tree_takes_31_columns_from_the_editor_while_shown() -> Result<()> {
         let (_dir, mut app) = project()?;
-        assert_eq!(app.panes().editor, Rect::new(31, 1, 69, 28));
-        assert_eq!(app.panes().tabs, Rect::new(31, 0, 69, 1));
+        assert_eq!(app.panes().splits[0].editor, Rect::new(31, 1, 69, 28));
+        assert_eq!(app.panes().splits[0].tabs, Rect::new(31, 0, 69, 1));
         assert_eq!(app.panes().tree, Some(Rect::new(0, 1, 30, 28)));
         assert_eq!(app.panes().divider, Some(Rect::new(30, 0, 1, 29)));
         press(&mut app, &["ctrl+b"]);
-        assert_eq!(app.panes().editor, Rect::new(0, 1, 100, 28));
+        assert_eq!(app.panes().splits[0].editor, Rect::new(0, 1, 100, 28));
         assert_eq!(app.panes().tree, None);
         assert_eq!(app.focus, Focus::Editor);
         // Ctrl+E brings a hidden tree back with focus.
@@ -2245,6 +2680,114 @@ world",
         press(&mut app, &["esc"]);
         assert_eq!(app.focus, Focus::Editor);
         Ok(())
+    }
+
+    #[test]
+    fn alt_v_splits_on_the_same_buffer_and_closing_keeps_every_buffer() {
+        let mut app = app_with("one", &FakeClipboard::default());
+        press(&mut app, &["alt+v"]);
+        assert_eq!(app.tabs.splits.len(), 2);
+        assert_eq!(app.tabs.focused, 1);
+        assert_eq!(
+            app.tabs.splits[0].active().doc,
+            app.tabs.splits[1].active().doc
+        );
+        // Roughly half each, with a one-column divider between.
+        let panes = app.panes();
+        assert_eq!(panes.splits[0].editor, Rect::new(0, 1, 50, 28));
+        assert_eq!(panes.splits[1].editor, Rect::new(51, 1, 49, 28));
+        assert_eq!(panes.split_divider, Some(Rect::new(50, 0, 1, 29)));
+
+        // New tabs go to the focused split only.
+        press(&mut app, &["ctrl+n", "x"]);
+        assert_eq!(tab_names(&app), ["untitled", "untitled ●"]);
+        assert_eq!(app.tabs.labels(0).len(), 1);
+        // Closing the split moves the tab only it had to the left one.
+        press(&mut app, &["alt+v"]);
+        assert_eq!(app.tabs.splits.len(), 1);
+        assert_eq!(app.tabs.focused, 0);
+        assert_eq!(tab_names(&app), ["untitled", "untitled ●"]);
+        assert_eq!(app.buffer().rope.to_string(), "one");
+    }
+
+    #[test]
+    fn each_split_keeps_its_own_cursor_on_a_shared_buffer() {
+        let mut app = app_with("hello", &FakeClipboard::default());
+        press(&mut app, &["alt+v", "end"]);
+        assert_eq!(app.buffer().cursor, 5);
+        // F6 to the left split, which still has its cursor at the start.
+        press(&mut app, &["f6"]);
+        assert_eq!(app.tabs.focused, 0);
+        assert_eq!(app.buffer().cursor, 0);
+        press(&mut app, &["x", "y"]);
+        // The right split's place moved along with the text before it.
+        press(&mut app, &["f6"]);
+        assert_eq!(app.tabs.focused, 1);
+        assert_eq!(app.buffer().cursor, 7);
+        press(&mut app, &["!"]);
+        assert_eq!(app.buffer().rope.to_string(), "xyhello!");
+        press(&mut app, &["f6"]);
+        assert_eq!(app.buffer().cursor, 2);
+    }
+
+    #[test]
+    fn f6_cycles_tree_left_right_skipping_what_is_hidden() -> Result<()> {
+        let (_dir, mut app) = project()?;
+        let at = |app: &App| match app.focus {
+            Focus::Tree => "tree",
+            Focus::Editor if app.tabs.focused == 0 => "left",
+            Focus::Editor => "right",
+        };
+        assert_eq!(at(&app), "tree");
+        press(&mut app, &["f6"]);
+        assert_eq!(at(&app), "left");
+        press(&mut app, &["f6"]);
+        assert_eq!(at(&app), "tree");
+        press(&mut app, &["alt+v"]);
+        assert_eq!(at(&app), "right");
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            press(&mut app, &["f6"]);
+            seen.push(at(&app));
+        }
+        assert_eq!(seen, ["tree", "left", "right"]);
+        press(&mut app, &["ctrl+b", "f6"]);
+        assert_eq!(at(&app), "left");
+        press(&mut app, &["f6"]);
+        assert_eq!(at(&app), "right");
+        Ok(())
+    }
+
+    #[test]
+    fn a_click_focuses_its_split_and_opening_goes_there() -> Result<()> {
+        let (_dir, mut app) = project()?;
+        press(&mut app, &["enter", "alt+v"]);
+        assert_eq!(app.tabs.focused, 1);
+        // The left split's editor starts at column 31.
+        click(&mut app, 40, 1, Instant::now());
+        assert_eq!(app.tabs.focused, 0);
+        // Opening b.txt from the tree puts it in the left split only.
+        press(&mut app, &["ctrl+e", "down", "enter"]);
+        assert_eq!(tab_names(&app), ["a.txt", "b.txt"]);
+        assert_eq!(app.tabs.labels(1).len(), 1);
+        // A click on the right split's tab bar focuses that split.
+        let right = app.panes().splits[1].tabs;
+        app.handle_mouse(mouse(LEFT_DOWN, right.x + 1, 0), Instant::now());
+        assert_eq!(app.tabs.focused, 1);
+        assert_eq!(app.buffer().rope.to_string(), "a");
+        Ok(())
+    }
+
+    #[test]
+    fn closing_a_tab_the_other_split_shows_keeps_the_buffer() {
+        let mut app = app_with("", &FakeClipboard::default());
+        press(&mut app, &["x", "alt+v", "ctrl+w"]);
+        // Still open on the left, so nothing asked and nothing lost.
+        assert_eq!(app.prompt, None);
+        assert_eq!(tab_names(&app), ["untitled"]);
+        press(&mut app, &["f6"]);
+        assert_eq!(tab_names(&app), ["untitled ●"]);
+        assert_eq!(app.buffer().rope.to_string(), "x");
     }
 
     #[test]

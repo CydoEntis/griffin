@@ -63,15 +63,25 @@ pub fn tab_at(labels: &[TabLabel], active: usize, area: Rect, col: u16) -> Optio
 }
 
 /// Draws the bar into `area`. The active tab is reversed, standing in for
-/// `tab_active_bg`/`tab_active_fg` until themes exist (#17).
-pub fn render_tabs(labels: &[TabLabel], active: usize, area: Rect, frame: &mut Frame) {
+/// `tab_active_bg`/`tab_active_fg` until themes exist (#17); in the split that
+/// doesn't have focus it is only underlined, so the reversed tab always names
+/// where keys go.
+pub fn render_tabs(
+    labels: &[TabLabel],
+    active: usize,
+    focused: bool,
+    area: Rect,
+    frame: &mut Frame,
+) {
     let out = frame.buffer_mut();
     for (index, place) in layout(labels, active, area.width).into_iter().enumerate() {
         let Some((x, w)) = place else {
             continue;
         };
-        let style = if index == active {
+        let style = if index == active && focused {
             Style::new().reversed()
+        } else if index == active {
+            Style::new().underlined()
         } else {
             Style::new()
         };
@@ -128,7 +138,7 @@ mod tests {
     fn renders_names_with_the_active_tab_reversed() -> anyhow::Result<()> {
         let labels = [label("a.txt", false), label("b.txt", true)];
         let mut terminal = Terminal::new(TestBackend::new(20, 1))?;
-        terminal.draw(|frame| render_tabs(&labels, 1, Rect::new(0, 0, 20, 1), frame))?;
+        terminal.draw(|frame| render_tabs(&labels, 1, true, Rect::new(0, 0, 20, 1), frame))?;
         let buffer = terminal.backend().buffer();
         let row: String = (0..20).map(|x| buffer[(x, 0)].symbol()).collect();
         assert_eq!(row.trim_end(), " a.txt  b.txt ●");
@@ -141,6 +151,18 @@ mod tests {
             .map(|x| buffer[(x, 0)].symbol())
             .collect();
         assert_eq!(reversed, " b.txt ● ");
+
+        // Unfocused, nothing is reversed and the active tab is underlined instead.
+        terminal.draw(|frame| render_tabs(&labels, 1, false, Rect::new(0, 0, 20, 1), frame))?;
+        let buffer = terminal.backend().buffer();
+        let marked = |modifier| -> String {
+            (0..20)
+                .filter(|&x| buffer[(x, 0)].modifier.contains(modifier))
+                .map(|x| buffer[(x, 0)].symbol())
+                .collect()
+        };
+        assert_eq!(marked(ratatui::style::Modifier::REVERSED), "");
+        assert_eq!(marked(ratatui::style::Modifier::UNDERLINED), " b.txt ● ");
         Ok(())
     }
 }

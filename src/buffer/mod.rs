@@ -32,6 +32,15 @@ impl LineEnding {
     }
 }
 
+/// Where a cursor and selection sit in a buffer, apart from the buffer: each split
+/// showing a buffer keeps its own while another split has the buffer's live one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Caret {
+    pub cursor: usize,
+    pub goal_col: Option<usize>,
+    pub anchor: Option<usize>,
+}
+
 /// One open file (or an untitled scratch buffer).
 #[derive(Debug, Default)]
 pub struct Buffer {
@@ -122,6 +131,36 @@ impl Buffer {
             dirty: true,
             ..Self::from_text(text, self.path.take())
         };
+    }
+
+    /// The cursor and selection, to keep while another split takes over.
+    pub fn caret(&self) -> Caret {
+        Caret {
+            cursor: self.cursor,
+            goal_col: self.goal_col,
+            anchor: self.anchor,
+        }
+    }
+
+    /// Puts back a kept cursor and selection. Edits made through another split may
+    /// have shortened the text since, so both ends are clamped to it.
+    pub fn set_caret(&mut self, caret: Caret) {
+        let len = self.rope.len_chars();
+        self.cursor = caret.cursor.min(len);
+        self.goal_col = caret.goal_col;
+        self.anchor = caret.anchor.map(|anchor| anchor.min(len));
+    }
+
+    /// A copy of the text with `caret` as its cursor, for drawing a split that
+    /// doesn't hold the live cursor. Cloning a rope shares its nodes, so this is
+    /// cheap; the copy has no path or history and is never edited.
+    pub fn with_caret(&self, caret: Caret) -> Buffer {
+        let mut copy = Buffer {
+            rope: self.rope.clone(),
+            ..Buffer::empty()
+        };
+        copy.set_caret(caret);
+        copy
     }
 
     /// What the status line calls this buffer.
@@ -259,6 +298,32 @@ mod tests {
         assert!(buf.dirty);
         assert_eq!(buf.path, path);
         Ok(())
+    }
+
+    #[test]
+    fn a_kept_caret_comes_back_clamped_to_the_text() {
+        let mut buf = Buffer {
+            rope: Rope::from_str("hello"),
+            ..Buffer::empty()
+        };
+        buf.set_caret(Caret {
+            cursor: 4,
+            goal_col: Some(4),
+            anchor: Some(1),
+        });
+        let kept = buf.caret();
+        assert_eq!(buf.selection(), Some(1..4));
+        buf.place_cursor(0);
+        buf.rope = Rope::from_str("hi");
+        buf.set_caret(kept);
+        assert_eq!((buf.cursor, buf.anchor), (2, Some(1)));
+        let copy = Buffer {
+            rope: Rope::from_str("hello"),
+            ..Buffer::empty()
+        }
+        .with_caret(kept);
+        assert_eq!(copy.selection(), Some(1..4));
+        assert_eq!(copy.cursor_line_col(), (0, 4));
     }
 
     #[test]
