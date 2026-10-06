@@ -17,6 +17,20 @@ pub struct Query {
 /// Every non-overlapping match of `query` in `rope`, in order, as char ranges. An
 /// empty pattern finds nothing; an invalid regex is an error saying why.
 pub fn find_all(rope: &Rope, query: &Query) -> Result<Vec<Range<usize>>, String> {
+    Ok(replacements(rope, query, "")?
+        .into_iter()
+        .map(|(range, _)| range)
+        .collect())
+}
+
+/// Every match of `query` in `rope`, as `find_all` finds them, each with the text
+/// that replaces it: `template` as is in plain mode, and in regex mode with `$1`,
+/// `${name}` and `$$` expanded from that match's groups.
+pub fn replacements(
+    rope: &Rope,
+    query: &Query,
+    template: &str,
+) -> Result<Vec<(Range<usize>, String)>, String> {
     if query.pattern.is_empty() {
         return Ok(Vec::new());
     }
@@ -38,10 +52,24 @@ pub fn find_all(rope: &Rope, query: &Query) -> Result<Vec<Range<usize>>, String>
     // The regex crate needs contiguous text; a snapshot of the rope is that.
     let text = rope.to_string();
     Ok(re
-        .find_iter(&text)
-        // An empty match (`a*`, `^`) has nothing to highlight or select.
-        .filter(|m| !m.is_empty())
-        .map(|m| rope.byte_to_char(m.start())..rope.byte_to_char(m.end()))
+        .captures_iter(&text)
+        .filter_map(|caps| {
+            // Group 0 is always the whole match.
+            let whole = caps.get(0)?;
+            // An empty match (`a*`, `^`) has nothing to highlight or select.
+            if whole.is_empty() {
+                return None;
+            }
+            let range = rope.byte_to_char(whole.start())..rope.byte_to_char(whole.end());
+            let with = if query.regex {
+                let mut out = String::new();
+                caps.expand(template, &mut out);
+                out
+            } else {
+                template.to_string()
+            };
+            Some((range, with))
+        })
         .collect())
 }
 
@@ -111,6 +139,31 @@ mod tests {
         assert_eq!(err, "invalid regex");
         // Plain mode takes the same text literally.
         assert_eq!(find("a(b", &query("(", false, false)), [1..2]);
+    }
+
+    fn replace(text: &str, q: &Query, template: &str) -> Vec<(Range<usize>, String)> {
+        replacements(&Rope::from_str(text), q, template).expect("valid query")
+    }
+
+    #[test]
+    fn regex_replacements_expand_groups() {
+        let q = query(r"(\w+)=(\d+)", false, true);
+        assert_eq!(
+            replace("a=1 bb=22", &q, "$2:$1"),
+            [(0..3, "1:a".to_string()), (4..9, "22:bb".to_string())]
+        );
+        // Braces end a group name early; `$$` is a literal dollar.
+        assert_eq!(replace("x=7", &q, "${1}_$$"), [(0..3, "x_$".to_string())]);
+        let named = query(r"(?P<key>\w+)=", false, true);
+        assert_eq!(replace("k=", &named, "<$key>"), [(0..2, "<k>".to_string())]);
+    }
+
+    #[test]
+    fn plain_replacements_take_dollars_literally() {
+        assert_eq!(
+            replace("foo Foo", &query("foo", false, false), "$1"),
+            [(0..3, "$1".to_string()), (4..7, "$1".to_string())]
+        );
     }
 
     #[test]

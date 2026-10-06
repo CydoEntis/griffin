@@ -70,6 +70,10 @@ pub enum Action {
     FindCase,
     /// Find bar only: toggles regex matching.
     FindRegex,
+    /// Opens the find bar with its Replace field.
+    Replace,
+    /// Find bar only: replaces every match and reports how many.
+    ReplaceAll,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -150,6 +154,8 @@ impl Action {
         Action::FindPrev,
         Action::FindCase,
         Action::FindRegex,
+        Action::Replace,
+        Action::ReplaceAll,
     ];
 
     pub fn scope(self) -> Scope {
@@ -158,9 +164,11 @@ impl Action {
             | Action::TreeNewFolder
             | Action::TreeRename
             | Action::TreeDelete => Scope::Tree,
-            Action::FindNext | Action::FindPrev | Action::FindCase | Action::FindRegex => {
-                Scope::Find
-            }
+            Action::FindNext
+            | Action::FindPrev
+            | Action::FindCase
+            | Action::FindRegex
+            | Action::ReplaceAll => Scope::Find,
             _ => Scope::Global,
         }
     }
@@ -241,6 +249,8 @@ impl Action {
             Action::FindPrev => "find_prev",
             Action::FindCase => "find_case",
             Action::FindRegex => "find_regex",
+            Action::Replace => "replace",
+            Action::ReplaceAll => "replace_all",
         }
     }
 
@@ -251,7 +261,7 @@ impl Action {
 
 /// The spec's "Default keymap" table plus R4's movement, R6's editing, R10's
 /// selection, R14's tree keys, R16's tab keys, R17's split keys, R18's picker
-/// keys and R20's find bar keys, one line per binding.
+/// keys, R20's find bar keys and R21's Replace All, one line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -319,6 +329,8 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::FindPrev, "shift+enter"),
     (Action::FindCase, "alt+c"),
     (Action::FindRegex, "alt+r"),
+    (Action::Replace, "ctrl+r"),
+    (Action::ReplaceAll, "alt+a"),
 ];
 
 /// What a key event means to the editor.
@@ -1130,6 +1142,23 @@ mod tests {
             Input::Action(Action::FindCase)
         );
         assert_eq!(map.resolve_in(&alt('c'), Scope::Find), Input::Ignored);
+    }
+
+    #[test]
+    fn replace_opens_globally_and_replace_all_only_counts_in_the_find_bar() {
+        let map = Keymap::default();
+        let alt_a = ev(KeyCode::Char('a'), KeyModifiers::ALT);
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+            Input::Action(Action::Replace)
+        );
+        assert_eq!(
+            map.resolve_in(&alt_a, Scope::Find),
+            Input::Action(Action::ReplaceAll)
+        );
+        assert_eq!(map.resolve(&alt_a), Input::Ignored);
+        let map = Keymap::new(&keys(&[("replace_all", one("alt+shift+a"))])).unwrap();
+        assert_eq!(map.resolve_in(&alt_a, Scope::Find), Input::Ignored);
     }
 
     #[test]

@@ -1,6 +1,8 @@
 //! Text edits. Every change to the rope goes through `Buffer::apply`, which records
 //! each `Change` for undo in one place.
 
+use std::ops::Range;
+
 use super::Buffer;
 use super::history::EditKind;
 use super::movement::display_col;
@@ -121,6 +123,23 @@ impl Buffer {
             removed: self.rope.char(self.cursor).to_string(),
             inserted: String::new(),
         });
+    }
+
+    /// Replaces each range with its text as one undo step (find and replace). The
+    /// ranges are in the current text, sorted and not overlapping; the last is
+    /// applied first so the earlier ones still point at their text. The cursor
+    /// ends after the first replacement.
+    pub fn replace_ranges(&mut self, edits: &[(Range<usize>, String)]) {
+        self.begin_group();
+        for (range, inserted) in edits.iter().rev() {
+            let removed = self.rope.slice(range.clone()).to_string();
+            self.apply(Change {
+                at: range.start,
+                removed,
+                inserted: inserted.clone(),
+            });
+        }
+        self.end_group();
     }
 
     /// Spaces up to the next tab stop, or a literal tab, replacing any selection.
@@ -286,6 +305,43 @@ mod tests {
         let mut b = buf("ab|");
         b.tab(4, false);
         assert_eq!(show(&b), "ab\t|");
+    }
+
+    #[test]
+    fn replace_ranges_is_one_undo_step() {
+        let mut b = buf("foo |bar foo
+foo");
+        b.type_text("x");
+        b.seal_undo_group();
+        b.replace_ranges(&[
+            (0..3, "quux".to_string()),
+            (9..12, "q".to_string()),
+            (13..16, String::new()),
+        ]);
+        assert_eq!(
+            show(&b),
+            "quux| xbar q
+"
+        );
+        assert!(b.undo());
+        assert_eq!(
+            show(&b),
+            "foo x|bar foo
+foo"
+        );
+        assert!(b.undo());
+        assert_eq!(
+            show(&b),
+            "foo |bar foo
+foo"
+        );
+        assert!(b.redo());
+        assert!(b.redo());
+        assert_eq!(
+            b.rope.to_string(),
+            "quux xbar q
+"
+        );
     }
 
     #[test]
