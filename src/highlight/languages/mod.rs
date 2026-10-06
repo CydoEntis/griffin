@@ -2,9 +2,14 @@
 //! extension. A new language is one file here plus one line in `LANGUAGES`.
 //!
 //! Versions known to load together (checked when Rust was added, #22):
-//! `tree-sitter = "0.27"` with `tree-sitter-rust = "0.24"` (0.24.2 ships grammar
-//! ABI 15, which 0.27 loads). Query iteration needs `streaming-iterator = "0.1"`.
-//! Grammars are compiled in (ADR-0001); none load at runtime.
+//! `tree-sitter = "0.27"`, `tree-sitter-highlight = "0.27"` and
+//! `tree-sitter-rust = "0.24"` (0.24.2 ships grammar ABI 15, which 0.27 loads).
+//! Query iteration needs `streaming-iterator = "0.1"`. Grammars are compiled in
+//! (ADR-0001); none load at runtime.
+//!
+//! Each language's queries are built into a `tree_sitter_highlight`
+//! `HighlightConfiguration`, which lays out the injections, locals and highlights
+//! queries as one query the way tree-sitter's highlighter expects.
 
 mod rust;
 
@@ -12,6 +17,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use tree_sitter::Query;
+use tree_sitter_highlight::HighlightConfiguration;
 
 use super::Role;
 
@@ -25,26 +31,35 @@ pub struct Language {
     /// wins, so a language puts its own patterns before the grammar's to take
     /// precedence.
     pub highlights: &'static [&'static str],
-    /// Kept with the language so embedded-language support can use it; the Rust
-    /// grammar's only injections are macro bodies, which stay uncoloured for now.
-    #[allow(dead_code)] // read by the query test until injections are drawn
+    /// Built into the language's configuration so embedded-language support can
+    /// use it; the Rust grammar's only injections are macro bodies, which stay
+    /// uncoloured for now.
     pub injections: &'static str,
-    /// A capture whose name ends in `.unclosed` runs to the end of its line: the
-    /// grammar leaves a quote with no closing partner as an error token, and this
-    /// is how the rest of the line still reads as a string while it's typed.
-    ///
     /// Capture names this language maps to a role differently from the default
     /// (the capture's first dotted segment read as a role name).
     pub roles: &'static [(&'static str, Role)],
     pub(super) compiled: OnceLock<Option<Compiled>>,
 }
 
-/// A language's query, compiled once, with each capture's role by capture index.
+/// A language's queries, compiled once, with each capture's role by capture index.
 pub(super) struct Compiled {
-    pub query: Query,
+    /// The injections and highlights queries joined into one, in `config.query`.
+    pub config: HighlightConfiguration,
+    /// Patterns before this index come from the injections query and colour
+    /// nothing themselves.
+    pub highlights_start: usize,
     pub roles: Vec<Option<Role>>,
-    /// Which captures are `.unclosed`, by capture index.
+    /// Which captures are `.unclosed`, by capture index. Such a capture runs to the
+    /// end of its line: the grammar leaves a quote with no closing partner as an
+    /// error token, and this is how the rest of the line still reads as a string
+    /// while it's typed.
     pub unclosed: Vec<bool>,
+}
+
+impl Compiled {
+    pub fn query(&self) -> &Query {
+        &self.config.query
+    }
 }
 
 /// Every highlighted language.
@@ -66,8 +81,19 @@ impl Language {
     pub(super) fn compiled(&self) -> Option<&Compiled> {
         self.compiled
             .get_or_init(|| {
-                let source = self.highlights.concat();
-                let query = Query::new(&(self.grammar)(), &source).ok()?;
+                let config = HighlightConfiguration::new(
+                    (self.grammar)(),
+                    self.name,
+                    &self.highlights.concat(),
+                    self.injections,
+                    "",
+                )
+                .ok()?;
+                let query = &config.query;
+                // The injections query comes first in the joined source.
+                let highlights_start = (0..query.pattern_count())
+                    .take_while(|&i| query.start_byte_for_pattern(i) < self.injections.len())
+                    .count();
                 let roles = query
                     .capture_names()
                     .iter()
@@ -79,7 +105,8 @@ impl Language {
                     .map(|name| name.ends_with(".unclosed"))
                     .collect();
                 Some(Compiled {
-                    query,
+                    config,
+                    highlights_start,
                     roles,
                     unclosed,
                 })

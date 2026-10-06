@@ -1,7 +1,7 @@
 mod harness;
 
-// The engine depends only on `ropey` and `tree-sitter`, so the role tests compile
-// it straight from the source instead of going through the binary.
+// The engine depends only on `ropey` and the tree-sitter crates, so the role tests
+// compile it straight from the source instead of going through the binary.
 #[allow(dead_code)]
 #[path = "../src/highlight/mod.rs"]
 mod highlight;
@@ -161,8 +161,10 @@ fn bench_typing_10k_lines() {
     let mut highlighter = Highlighter::for_path(Path::new("big.rs")).expect("rust");
     highlighter.parse(&rope);
 
-    // Type in the middle of the file and redraw a 30-line screen there, which is
-    // what a keystroke costs: the tree edit, the reparse and the visible spans.
+    // Type in the middle of the file and colour a 30-line screen there: the tree
+    // edit, the reparse and the visible spans. `app::tests::
+    // bench_typing_10k_lines_full_frame` times the same keystroke through `App`
+    // and a whole drawn frame, which this test can't reach from outside the crate.
     let line = 5_000;
     let mut worst = Duration::ZERO;
     for i in 0..20 {

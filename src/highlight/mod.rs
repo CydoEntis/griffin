@@ -3,8 +3,12 @@
 //! `InputEdit`s so the next parse reuses the old tree, and the renderer asks only
 //! for the roles in the bytes it draws.
 //!
-//! Depends on nothing else in the crate (only `ropey` and `tree-sitter`), so the
-//! highlight tests can compile it on its own.
+//! Queries are compiled by `tree-sitter-highlight` (see `languages`), but run
+//! here on the buffer's own tree: its `Highlighter` parses from scratch on every
+//! call and can't take an edited tree, which incremental reparsing needs.
+//!
+//! Depends on nothing else in the crate (only `ropey` and the tree-sitter crates),
+//! so the highlight tests can compile it on its own.
 
 pub mod languages;
 
@@ -159,8 +163,11 @@ impl Highlighter {
         cursor.set_byte_range(bytes.clone());
         // (painted last, range, pattern, role)
         let mut found: Vec<(bool, Range<usize>, usize, Role)> = Vec::new();
-        let mut captures = cursor.captures(&compiled.query, tree.root_node(), text);
+        let mut captures = cursor.captures(compiled.query(), tree.root_node(), text);
         while let Some((m, index)) = captures.next() {
+            if m.pattern_index < compiled.highlights_start {
+                continue;
+            }
             let capture = m.captures()[*index];
             let i = capture.index as usize;
             let Some(Some(role)) = compiled.roles.get(i) else {
