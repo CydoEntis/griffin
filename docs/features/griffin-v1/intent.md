@@ -43,4 +43,4 @@ panel, all by keyboard or mouse, without ever losing an edit.
 
 ## Tickets
 
-<filled in after filing>
+#1–#10 (Edit), #11–#17 (Workspace), #18–#21 (Search), #22–#26 (Highlight), #27–#29 (Run), #30–#36 (LSP). Order and blockers: [the plan](../../PLANNING.md#phases).
