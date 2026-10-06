@@ -29,10 +29,15 @@ fn wait_for_row(griffin: &Griffin, row: u16, number: usize, text: &str) {
 /// An untitled buffer, with the starting cell of its text.
 fn start_empty(config: &str) -> (Griffin, u16) {
     let griffin = Griffin::spawn_with_config(config, &[]);
-    griffin.wait_for_text("untitled", START);
-    wait_for_position(&griffin, 1, 1);
-    let (x, y) = griffin.cursor();
-    assert_eq!(y, 0);
+    griffin.wait_for_text("Ln 1, Col 1", START);
+    griffin.wait_for_text("1 │", WAIT);
+    // Text starts one cell after the gutter's divider. The terminal cursor moves
+    // there only after the frame is drawn, so wait for it rather than read it.
+    let divider = griffin
+        .text_col(0, "│")
+        .unwrap_or_else(|| panic!("no gutter: {:#?}", griffin.screen()));
+    let x = divider + 2;
+    griffin.wait_for_cursor(x, 0, WAIT);
     (griffin, x)
 }
 
