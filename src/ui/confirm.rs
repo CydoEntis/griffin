@@ -12,6 +12,7 @@ use ratatui::widgets::{Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::keymap::{Action, Input};
+use crate::theme::Theme;
 
 /// One answer: pressing `key` (either case) picks it; `label` starts with that
 /// letter.
@@ -94,8 +95,8 @@ impl Confirm {
     }
 
     /// Draws the card centred in `area`: one line of text with a blank row and two
-    /// spaces of padding around it.
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    /// spaces of padding around it, on `card`.
+    pub fn render(&self, theme: &Theme, frame: &mut Frame, area: Rect) {
         let text = self.text();
         let width = u16::try_from(text.width() + 4)
             .unwrap_or(u16::MAX)
@@ -109,7 +110,10 @@ impl Confirm {
         };
         let lines = vec![Line::raw(""), Line::raw(format!("  {text}")), Line::raw("")];
         frame.render_widget(Clear, card);
-        frame.render_widget(Paragraph::new(lines).style(Style::new().reversed()), card);
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::new().bg(theme.card).fg(theme.strong)),
+            card,
+        );
     }
 }
 
@@ -197,7 +201,7 @@ mod tests {
     #[test]
     fn card_is_centred() -> anyhow::Result<()> {
         let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
-        terminal.draw(|frame| CARD.render(frame, frame.area()))?;
+        terminal.draw(|frame| CARD.render(&Theme::default(), frame, frame.area()))?;
         let buffer = terminal.backend().buffer();
         let row = |y: u16| -> String { (0..100).map(|x| buffer[(x, y)].symbol()).collect() };
         let text = CARD.text();

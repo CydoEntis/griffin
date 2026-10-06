@@ -3,11 +3,15 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
+use crate::theme::Theme;
+
 /// Draws the one-row status line at the bottom of the screen, in the spec's order:
 /// message, the buffer's name (with `●` while it has unsaved changes), then the
-/// cursor as 0-based (line, char column), shown 1-based.
+/// cursor as 0-based (line, char column), shown 1-based. Chrome, so on
+/// `sidebar_bg`.
 pub fn render_status(
     frame: &mut Frame,
+    theme: &Theme,
     area: Rect,
     name: &str,
     dirty: bool,
@@ -24,6 +28,6 @@ pub fn render_status(
         Some(message) => format!("griffin  {message}  {name}  {position}"),
         None => format!("griffin  {name}  {position}"),
     };
-    let status = Paragraph::new(text).style(Style::new().reversed());
+    let status = Paragraph::new(text).style(Style::new().bg(theme.sidebar_bg).fg(theme.text));
     frame.render_widget(status, area);
 }

@@ -11,6 +11,11 @@ use serde::Deserialize;
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// One of `theme::NAMES`; `None` means hydra. Checked by `theme::load`.
+    pub theme: Option<String>,
+    /// Role name to colour. Values stay raw TOML so a bad one is reported by
+    /// `theme::load` and costs only the theme, not the whole config.
+    pub theme_overrides: BTreeMap<String, toml::Value>,
     pub editor: EditorConfig,
     pub keys: KeysConfig,
 }
@@ -184,6 +189,27 @@ mod tests {
         );
         assert!(loaded.error.is_none(), "{:?}", loaded.error);
         assert_eq!(loaded.config.keys.len(), 1);
+    }
+
+    #[test]
+    fn theme_and_overrides_are_read() {
+        let loaded = parse(
+            r##"
+            theme = "nord"
+            [theme_overrides]
+            sidebar_bg = "#123456"
+            keyword = 141
+            "##,
+        );
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        let config = loaded.config;
+        assert_eq!(config.theme.as_deref(), Some("nord"));
+        assert_eq!(
+            config.theme_overrides["sidebar_bg"].as_str(),
+            Some("#123456")
+        );
+        assert_eq!(config.theme_overrides["keyword"].as_integer(), Some(141));
+        assert_eq!(parse("").config.theme, None);
     }
 
     #[test]

@@ -5,6 +5,7 @@ mod clipboard;
 mod config;
 mod keymap;
 mod save;
+mod theme;
 mod ui;
 mod view;
 mod workspace;
@@ -29,6 +30,7 @@ use crate::app::App;
 use crate::backup::Backups;
 use crate::config::EditorConfig;
 use crate::keymap::Keymap;
+use crate::theme::Theme;
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
@@ -45,7 +47,7 @@ async fn main() -> Result<()> {
     let path = Cli::parse().path;
 
     // Loaded before the terminal switches screens; a bad config never stops startup.
-    let (keymap, editor, config_error) = load_config();
+    let (keymap, editor, theme, config_error) = load_config();
 
     install_panic_hook(|| {
         // Best effort: the process is already panicking, so a failed restore can
@@ -63,6 +65,7 @@ async fn main() -> Result<()> {
 
     let backups = Backups::new(backup::data_dir(std::env::var_os("GRIFFIN_DATA_DIR")));
     let result = App::new(keymap, editor, path, config_error)
+        .with_theme(theme)
         .with_backups(backups)
         .run(&mut terminal)
         .await;
@@ -71,26 +74,28 @@ async fn main() -> Result<()> {
     restored
 }
 
-/// Reads `config.toml` and builds the keymap from it, falling back to the defaults
-/// (and saying why in the status line) when the file is malformed or names a bad key.
-fn load_config() -> (Keymap, EditorConfig, Option<String>) {
+/// Reads `config.toml` and builds the keymap and theme from it, falling back to the
+/// defaults (and saying why in the status line) when the file is malformed or names
+/// a bad key, theme or colour.
+fn load_config() -> (Keymap, EditorConfig, Theme, Option<String>) {
     let loaded = config::load();
     if let Some(err) = loaded.error {
         return (
             Keymap::default(),
             EditorConfig::default(),
+            Theme::default(),
             Some(format!("config error: {err}")),
         );
     }
-    let editor = loaded.config.editor;
-    match Keymap::new(&loaded.config.keys) {
-        Ok(keymap) => (keymap, editor, None),
-        Err(err) => (
-            Keymap::default(),
-            editor,
-            Some(format!("config error: {err}")),
-        ),
-    }
+    let config = loaded.config;
+    let (theme, theme_error) = theme::load(config.theme.as_deref(), &config.theme_overrides);
+    let (keymap, keys_error) = match Keymap::new(&config.keys) {
+        Ok(keymap) => (keymap, None),
+        Err(err) => (Keymap::default(), Some(format!("config error: {err}"))),
+    };
+    let errors: Vec<String> = keys_error.into_iter().chain(theme_error).collect();
+    let message = (!errors.is_empty()).then(|| errors.join(" · "));
+    (keymap, config.editor, theme, message)
 }
 
 fn setup_terminal() -> Result<Tui> {

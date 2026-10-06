@@ -4,22 +4,26 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
+use crate::theme::Theme;
 use crate::workspace::Tree;
 
 /// Columns the tree takes, not counting the divider.
 pub const TREE_WIDTH: u16 = 30;
 
 /// Draws the visible rows of `tree` into `area`: two spaces of indent per level, a
-/// `▸`/`▾` marker on folders, the name cut at the edge. The selected row is
-/// reversed across the whole width, dimmed while the editor has focus. Returns
-/// where the selected row is drawn, for the terminal cursor.
+/// `▸`/`▾` marker on folders, the name cut at the edge, on `sidebar_bg`. The
+/// selected row is filled with `hov` across the whole width, dimmed while the
+/// editor has focus. Returns where the selected row is drawn, for the terminal
+/// cursor.
 pub fn render_tree(
+    theme: &Theme,
     tree: &Tree,
     focused: bool,
     area: Rect,
     frame: &mut Frame,
 ) -> Option<(u16, u16)> {
     let out = frame.buffer_mut();
+    out.set_style(area, Style::new().bg(theme.sidebar_bg).fg(theme.text));
     let width = usize::from(area.width);
     let mut selected_at = None;
     for line in 0..area.height {
@@ -36,8 +40,8 @@ pub fn render_tree(
         let y = area.y + line;
         let style = if index == tree.selected() {
             selected_at = Some((area.x, y));
-            let reversed = Style::new().reversed();
-            if focused { reversed } else { reversed.dim() }
+            let filled = Theme::highlight(theme.hov, theme.strong);
+            if focused { filled } else { filled.dim() }
         } else {
             Style::new()
         };
@@ -47,11 +51,11 @@ pub fn render_tree(
     selected_at
 }
 
-/// A vertical `│` down `area`.
-pub fn render_divider(area: Rect, frame: &mut Frame) {
+/// A vertical `│` down `area`, in the theme's `line` colour.
+pub fn render_divider(theme: &Theme, area: Rect, frame: &mut Frame) {
     let out = frame.buffer_mut();
     for y in area.top()..area.bottom() {
-        out.set_string(area.x, y, "│", Style::new().dim());
+        out.set_string(area.x, y, "│", Style::new().fg(theme.line));
     }
 }
 
@@ -75,7 +79,15 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(20, 4))?;
         let mut at = None;
-        terminal.draw(|frame| at = render_tree(&tree, true, Rect::new(0, 0, 12, 4), frame))?;
+        terminal.draw(|frame| {
+            at = render_tree(
+                &Theme::default(),
+                &tree,
+                true,
+                Rect::new(0, 0, 12, 4),
+                frame,
+            )
+        })?;
         let buffer = terminal.backend().buffer();
         let row = |y: u16| -> String { (0..12).map(|x| buffer[(x, y)].symbol()).collect() };
         assert_eq!(row(0), "▾ src       ");

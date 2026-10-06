@@ -344,26 +344,63 @@ impl Griffin {
         }
     }
 
-    /// The text of the cells on `row` whose foreground is the indexed colour
-    /// `index` (0-15 are the ANSI colours, so 6 is cyan), in order.
-    pub fn fg_text(&self, row: u16, index: u8) -> String {
-        fg_cells(&self.parser(), row, index)
+    /// The text of the cells on `row` whose foreground is `color`, in order.
+    pub fn fg_text(&self, row: u16, color: vt100::Color) -> String {
+        fg_cells(&self.parser(), row, color)
     }
 
-    /// Waits until the cells on `row` drawn in colour `index` read exactly `text`.
-    /// Panics with the screen on timeout.
-    pub fn wait_for_fg(&self, row: u16, index: u8, text: &str, timeout: Duration) {
+    /// The background colour of the cell at (`col`, `row`).
+    pub fn bg_at(&self, col: u16, row: u16) -> vt100::Color {
+        self.parser()
+            .screen()
+            .cell(row, col)
+            .map_or(vt100::Color::Default, |cell| cell.bgcolor())
+    }
+
+    /// Waits until the cell at (`col`, `row`) has background `color`. Panics with
+    /// the screen on timeout.
+    pub fn wait_for_bg(&self, col: u16, row: u16, color: vt100::Color, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         let mut parser = self.parser();
         loop {
-            let colored = fg_cells(&parser, row, index);
+            let bg = parser
+                .screen()
+                .cell(row, col)
+                .map_or(vt100::Color::Default, |cell| cell.bgcolor());
+            if bg == color {
+                return;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                panic!(
+                    "timed out after {timeout:?} waiting for ({col}, {row}) to have                      background {color:?}; it has {bg:?}
+{}",
+                    dump(&screen_lines(&parser))
+                );
+            }
+            parser = self
+                .shared
+                .changed
+                .wait_timeout(parser, deadline - now)
+                .expect("screen lock poisoned")
+                .0;
+        }
+    }
+
+    /// Waits until the cells on `row` drawn in `color` read exactly `text`.
+    /// Panics with the screen on timeout.
+    pub fn wait_for_fg(&self, row: u16, color: vt100::Color, text: &str, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut parser = self.parser();
+        loop {
+            let colored = fg_cells(&parser, row, color);
             if colored == text {
                 return;
             }
             let now = Instant::now();
             if now >= deadline {
                 panic!(
-                    "timed out after {timeout:?} waiting for row {row} to show {text:?}                      in colour {index}; it shows {colored:?}
+                    "timed out after {timeout:?} waiting for row {row} to show {text:?}                      in colour {color:?}; it shows {colored:?}
 {}",
                     dump(&screen_lines(&parser))
                 );
@@ -487,6 +524,10 @@ fn pump_output(mut reader: Box<dyn Read + Send>, shared: &Shared, writer: &Share
     let mut buf = [0u8; 8192];
     // The query can straddle two reads; keep enough of the previous chunk to see it.
     let mut carry: Vec<u8> = Vec::new();
+    // Output not yet shown: the rest of a synchronized frame, or a tail that may
+    // be the start of one.
+    let mut pending: Vec<u8> = Vec::new();
+    let mut in_sync = false;
     loop {
         let n = match reader.read(&mut buf) {
             Ok(0) | Err(_) => return,
@@ -509,11 +550,12 @@ fn pump_output(mut reader: Box<dyn Read + Send>, shared: &Shared, writer: &Share
         let keep = window.len().min(CURSOR_QUERY.len() - 1);
         carry = window[window.len() - keep..].to_vec();
 
+        pending.extend_from_slice(chunk);
         let cursor = {
             let Ok(mut parser) = shared.parser.lock() else {
                 return;
             };
-            parser.process(chunk);
+            feed_frames(&mut parser, &mut pending, &mut in_sync);
             parser.screen().cursor_position()
         };
         shared.changed.notify_all();
@@ -524,6 +566,41 @@ fn pump_output(mut reader: Box<dyn Read + Send>, shared: &Shared, writer: &Share
                 let _ = w.write_all(reply.as_bytes());
                 let _ = w.flush();
             }
+        }
+    }
+}
+
+/// Begin and end synchronized update (DEC mode 2026), which griffin wraps around
+/// each frame.
+const SYNC_BEGIN: &[u8] = b"[?2026h";
+const SYNC_END: &[u8] = b"[?2026l";
+
+/// Feeds `pending` to the parser a whole frame at a time, as a terminal honouring
+/// synchronized updates shows it, so a test never reads a half-drawn screen. Bytes
+/// inside an unfinished frame, or that may begin a marker, stay in `pending`.
+fn feed_frames(parser: &mut vt100::Parser, pending: &mut Vec<u8>, in_sync: &mut bool) {
+    loop {
+        if *in_sync {
+            let Some(end) = find(pending, SYNC_END) else {
+                return;
+            };
+            parser.process(&pending[..end]);
+            pending.drain(..end + SYNC_END.len());
+            *in_sync = false;
+        } else if let Some(begin) = find(pending, SYNC_BEGIN) {
+            parser.process(&pending[..begin]);
+            pending.drain(..begin + SYNC_BEGIN.len());
+            *in_sync = true;
+        } else {
+            // Hold back a tail that could be the first bytes of a begin marker.
+            let keep = (1..SYNC_BEGIN.len())
+                .rev()
+                .find(|&n| pending.ends_with(&SYNC_BEGIN[..n]))
+                .unwrap_or(0);
+            let shown = pending.len() - keep;
+            parser.process(&pending[..shown]);
+            pending.drain(..shown);
+            return;
         }
     }
 }
@@ -552,11 +629,11 @@ fn reversed_cells(parser: &vt100::Parser, row: u16) -> String {
         .collect()
 }
 
-fn fg_cells(parser: &vt100::Parser, row: u16, index: u8) -> String {
+fn fg_cells(parser: &vt100::Parser, row: u16, color: vt100::Color) -> String {
     let screen = parser.screen();
     (0..COLS)
         .filter_map(|col| screen.cell(row, col))
-        .filter(|cell| cell.fgcolor() == vt100::Color::Idx(index) && !cell.is_wide_continuation())
+        .filter(|cell| cell.fgcolor() == color && !cell.is_wide_continuation())
         .map(|cell| cell.contents().to_string())
         .collect()
 }
@@ -816,6 +893,25 @@ mod tests {
         assert_eq!(keys("shift+enter"), b"\x1b[13;2u");
         assert_eq!(keys("alt+/"), b"\x1b/");
         assert_eq!(keys("ctrl++"), b"\x1b[43;5u");
+    }
+
+    #[test]
+    fn frames_are_shown_whole() {
+        let mut parser = vt100::Parser::new(2, 10, 0);
+        let mut pending = Vec::new();
+        let mut in_sync = false;
+        let mut feed = |bytes: &[u8], parser: &mut vt100::Parser| {
+            pending.extend_from_slice(bytes);
+            feed_frames(parser, &mut pending, &mut in_sync);
+        };
+        feed(b"ab[?20", &mut parser);
+        assert_eq!(parser.screen().contents(), "ab");
+        feed(b"26hcd", &mut parser);
+        assert_eq!(parser.screen().contents(), "ab");
+        feed(b"ef[?2026", &mut parser);
+        assert_eq!(parser.screen().contents(), "ab");
+        feed(b"lgh", &mut parser);
+        assert_eq!(parser.screen().contents(), "abcdefgh");
     }
 
     #[test]
