@@ -52,6 +52,10 @@ pub enum Action {
     NewFile,
     /// Prompts for a path and saves the active buffer there.
     SaveAs,
+    /// Opens a second editor split on the right, or closes it.
+    ToggleSplit,
+    /// Moves focus to the next of tree, left split and right split.
+    CycleFocus,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -121,6 +125,8 @@ impl Action {
         Action::CloseTab,
         Action::NewFile,
         Action::SaveAs,
+        Action::ToggleSplit,
+        Action::CycleFocus,
     ];
 
     pub fn scope(self) -> Scope {
@@ -200,6 +206,8 @@ impl Action {
             Action::CloseTab => "close_tab",
             Action::NewFile => "new_file",
             Action::SaveAs => "save_as",
+            Action::ToggleSplit => "toggle_split",
+            Action::CycleFocus => "cycle_focus",
         }
     }
 
@@ -209,7 +217,8 @@ impl Action {
 }
 
 /// The spec's "Default keymap" table plus R4's movement, R6's editing, R10's
-/// selection, R14's tree keys and R16's tab keys, one line per binding.
+/// selection, R14's tree keys, R16's tab keys and R17's split keys, one line per
+/// binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -268,6 +277,8 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::CloseTab, "ctrl+w"),
     (Action::NewFile, "ctrl+n"),
     (Action::SaveAs, "alt+s"),
+    (Action::ToggleSplit, "alt+v"),
+    (Action::CycleFocus, "f6"),
 ];
 
 /// What a key event means to the editor.
@@ -989,6 +1000,30 @@ mod tests {
         let map = Keymap::new(&keys(&[("tab_3", one("ctrl+3"))])).unwrap();
         assert_eq!(map.resolve(&ctrl('3')), Input::Action(Action::GoToTab(3)));
         assert_eq!(map.resolve(&alt('3')), Input::Ignored);
+    }
+
+    #[test]
+    fn split_keys_resolve_to_their_actions_by_default() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('v'), KeyModifiers::ALT)),
+            Input::Action(Action::ToggleSplit)
+        );
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(6), KeyModifiers::NONE)),
+            Input::Action(Action::CycleFocus)
+        );
+        // Both work from the tree too, and can be remapped by name.
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::F(6), KeyModifiers::NONE), Scope::Tree),
+            Input::Action(Action::CycleFocus)
+        );
+        let map = Keymap::new(&keys(&[("cycle_focus", one("f7"))])).unwrap();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(7), KeyModifiers::NONE)),
+            Input::Action(Action::CycleFocus)
+        );
+        assert_eq!(Action::from_name("toggle_split"), Some(Action::ToggleSplit));
     }
 
     #[test]
