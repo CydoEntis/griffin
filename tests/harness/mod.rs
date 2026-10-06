@@ -133,7 +133,7 @@ impl Griffin {
         let feeder_shared = Arc::clone(&shared);
         let reply_writer = Arc::clone(&writer);
         thread::spawn(move || {
-            feed_output(&chunks, &feeder_shared, |reply| {
+            feed_output(&chunks, &feeder_shared, FrameGate::for_pty(), |reply| {
                 if let Ok(mut w) = reply_writer.lock() {
                     let _ = w.write_all(reply);
                     let _ = w.flush();
@@ -530,17 +530,20 @@ fn read_output(mut reader: Box<dyn Read + Send>, chunks: &mpsc::Sender<Vec<u8>>)
     }
 }
 
-/// How long output must pause before held bytes are shown anyway. ConPTY on the
-/// Windows runners can drop or split the synchronized-update markers, so a pause
-/// is the only sign left that a frame is finished.
+/// How long output must pause before held bytes are shown anyway, when the
+/// synchronized-update markers are missing or can't be trusted to mark a frame.
 const QUIET: Duration = Duration::from_millis(50);
 
 /// Feeds output chunks into the screen a whole frame at a time until the sender
 /// goes away. Answers cursor-position queries through `reply`: portable-pty opens
 /// ConPTY with "inherit cursor", and ConPTY holds back all output until a terminal
 /// replies to its opening `ESC [ 6 n`.
-fn feed_output(chunks: &Receiver<Vec<u8>>, shared: &Shared, mut reply: impl FnMut(&[u8])) {
-    let mut gate = FrameGate::default();
+fn feed_output(
+    chunks: &Receiver<Vec<u8>>,
+    shared: &Shared,
+    mut gate: FrameGate,
+    mut reply: impl FnMut(&[u8]),
+) {
     // The query can straddle two reads; keep enough of the previous chunk to see it.
     let mut carry: Vec<u8> = Vec::new();
     loop {
@@ -633,11 +636,31 @@ const SYNC_END: &[u8] = b"\x1b[?2026l";
 struct FrameGate {
     pending: Vec<u8>,
     in_sync: bool,
+    /// Off, every byte waits for a pause and the markers only get stripped.
+    trust_markers: bool,
 }
 
 impl FrameGate {
+    fn new(trust_markers: bool) -> Self {
+        Self {
+            trust_markers,
+            ..Self::default()
+        }
+    }
+
+    /// ConPTY passes the markers through as soon as it parses them but repaints
+    /// the screen on its own timer, so on Windows a marked frame can arrive with
+    /// only part of its cells (CI run 37509421685 showed the tab bar without the
+    /// status line). There only a pause marks the end of a frame.
+    fn for_pty() -> Self {
+        Self::new(!cfg!(windows))
+    }
+
     fn feed(&mut self, parser: &mut vt100::Parser, bytes: &[u8]) {
         self.pending.extend_from_slice(bytes);
+        if !self.trust_markers {
+            return;
+        }
         // Rescanning from the start is safe: whatever is held never contains a
         // finished frame, and a marker split across reads is whole once its last
         // bytes arrive.
@@ -1013,7 +1036,7 @@ mod tests {
     #[test]
     fn frames_are_shown_whole() {
         let mut parser = vt100::Parser::new(2, 10, 0);
-        let mut gate = FrameGate::default();
+        let mut gate = FrameGate::new(true);
         // Markers split across reads still mark the frame.
         assert_eq!(gate_contents(&mut gate, &mut parser, b"ab\x1b[?20"), "");
         assert_eq!(gate_contents(&mut gate, &mut parser, b"26hcd"), "");
@@ -1029,7 +1052,7 @@ mod tests {
     #[test]
     fn output_without_markers_is_held_until_a_pause() {
         let mut parser = vt100::Parser::new(2, 10, 0);
-        let mut gate = FrameGate::default();
+        let mut gate = FrameGate::new(true);
         assert_eq!(gate_contents(&mut gate, &mut parser, b"half"), "");
         assert_eq!(gate_contents(&mut gate, &mut parser, b" rest"), "");
         gate.flush(&mut parser);
@@ -1039,7 +1062,7 @@ mod tests {
     #[test]
     fn a_frame_missing_its_end_is_shown_after_a_pause() {
         let mut parser = vt100::Parser::new(2, 10, 0);
-        let mut gate = FrameGate::default();
+        let mut gate = FrameGate::new(true);
         assert_eq!(gate_contents(&mut gate, &mut parser, b"\x1b[?2026hab"), "");
         gate.flush(&mut parser);
         assert_eq!(parser.screen().contents(), "ab");
@@ -1048,6 +1071,19 @@ mod tests {
             gate_contents(&mut gate, &mut parser, b"\x1b[?2026hcd\x1b[?2026l"),
             "abcd"
         );
+    }
+
+    #[test]
+    fn untrusted_markers_wait_for_a_pause() {
+        let mut parser = vt100::Parser::new(2, 10, 0);
+        let mut gate = FrameGate::new(false);
+        assert_eq!(
+            gate_contents(&mut gate, &mut parser, b"[?2026hab[?2026l"),
+            ""
+        );
+        assert_eq!(gate_contents(&mut gate, &mut parser, b"cd"), "");
+        gate.flush(&mut parser);
+        assert_eq!(parser.screen().contents(), "abcd");
     }
 
     /// Runs `feed_output` on a fresh screen and sends it `chunks` back to back.
@@ -1059,7 +1095,7 @@ mod tests {
         });
         let (tx, rx) = mpsc::channel();
         let feeder = Arc::clone(&shared);
-        thread::spawn(move || feed_output(&rx, &feeder, |_| {}));
+        thread::spawn(move || feed_output(&rx, &feeder, FrameGate::new(true), |_| {}));
         for chunk in chunks {
             tx.send(chunk.to_vec()).unwrap();
         }
