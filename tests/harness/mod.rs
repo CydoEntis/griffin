@@ -276,6 +276,39 @@ impl Griffin {
         }
     }
 
+    /// The text of the reverse-video cells on `row`, in order. A blank reversed
+    /// cell counts as a space.
+    pub fn reversed_text(&self, row: u16) -> String {
+        reversed_cells(&self.parser(), row)
+    }
+
+    /// Waits until the reverse-video cells on `row` read exactly `text`. Panics with
+    /// the screen on timeout.
+    pub fn wait_for_reversed(&self, row: u16, text: &str, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut parser = self.parser();
+        loop {
+            let reversed = reversed_cells(&parser, row);
+            if reversed == text {
+                return;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                panic!(
+                    "timed out after {timeout:?} waiting for row {row} to show {text:?} \
+                     reversed; it shows {reversed:?}\n{}",
+                    dump(&screen_lines(&parser))
+                );
+            }
+            parser = self
+                .shared
+                .changed
+                .wait_timeout(parser, deadline - now)
+                .expect("screen lock poisoned")
+                .0;
+        }
+    }
+
     /// Checks griffin is still running after `grace`. Proving a key did nothing
     /// needs some window to wait in; this returns early if griffin exits.
     pub fn assert_running_for(&mut self, grace: Duration) {
@@ -388,6 +421,18 @@ fn screen_lines(parser: &vt100::Parser) -> Vec<String> {
         .screen()
         .rows(0, COLS)
         .map(|row| row.trim_end().to_string())
+        .collect()
+}
+
+fn reversed_cells(parser: &vt100::Parser, row: u16) -> String {
+    let screen = parser.screen();
+    (0..COLS)
+        .filter_map(|col| screen.cell(row, col))
+        .filter(|cell| cell.inverse() && !cell.is_wide_continuation())
+        .map(|cell| match cell.contents() {
+            "" => " ".to_string(),
+            text => text.to_string(),
+        })
         .collect()
 }
 

@@ -1,5 +1,6 @@
 mod app;
 mod buffer;
+mod clipboard;
 mod config;
 mod keymap;
 mod save;

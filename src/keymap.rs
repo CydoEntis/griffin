@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::buffer::movement::Motion;
 use crate::config::KeysConfig;
@@ -24,6 +24,12 @@ pub enum Action {
     Tab,
     Undo,
     Redo,
+    /// Shift+movement: moves the cursor and extends the selection.
+    Select(Motion),
+    SelectAll,
+    Copy,
+    Cut,
+    Paste,
 }
 
 impl Action {
@@ -49,6 +55,22 @@ impl Action {
         Action::Tab,
         Action::Undo,
         Action::Redo,
+        Action::Select(Motion::Left),
+        Action::Select(Motion::Right),
+        Action::Select(Motion::Up),
+        Action::Select(Motion::Down),
+        Action::Select(Motion::LineStart),
+        Action::Select(Motion::LineEnd),
+        Action::Select(Motion::PageUp),
+        Action::Select(Motion::PageDown),
+        Action::Select(Motion::WordLeft),
+        Action::Select(Motion::WordRight),
+        Action::Select(Motion::DocStart),
+        Action::Select(Motion::DocEnd),
+        Action::SelectAll,
+        Action::Copy,
+        Action::Cut,
+        Action::Paste,
     ];
 
     /// The name used on the left of `[keys]`.
@@ -77,6 +99,24 @@ impl Action {
             Action::Tab => "tab",
             Action::Undo => "undo",
             Action::Redo => "redo",
+            Action::Select(motion) => match motion {
+                Motion::Left => "select_left",
+                Motion::Right => "select_right",
+                Motion::Up => "select_up",
+                Motion::Down => "select_down",
+                Motion::LineStart => "select_line_start",
+                Motion::LineEnd => "select_line_end",
+                Motion::PageUp => "select_page_up",
+                Motion::PageDown => "select_page_down",
+                Motion::WordLeft => "select_word_left",
+                Motion::WordRight => "select_word_right",
+                Motion::DocStart => "select_doc_start",
+                Motion::DocEnd => "select_doc_end",
+            },
+            Action::SelectAll => "select_all",
+            Action::Copy => "copy",
+            Action::Cut => "cut",
+            Action::Paste => "paste",
         }
     }
 
@@ -85,8 +125,8 @@ impl Action {
     }
 }
 
-/// The spec's "Default keymap" table plus R4's movement and R6's editing keys, one
-/// line per binding.
+/// The spec's "Default keymap" table plus R4's movement, R6's editing and R10's
+/// selection keys, one line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -109,6 +149,22 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Tab, "tab"),
     (Action::Undo, "ctrl+z"),
     (Action::Redo, "ctrl+y"),
+    (Action::Select(Motion::Left), "shift+left"),
+    (Action::Select(Motion::Right), "shift+right"),
+    (Action::Select(Motion::Up), "shift+up"),
+    (Action::Select(Motion::Down), "shift+down"),
+    (Action::Select(Motion::LineStart), "shift+home"),
+    (Action::Select(Motion::LineEnd), "shift+end"),
+    (Action::Select(Motion::PageUp), "shift+pageup"),
+    (Action::Select(Motion::PageDown), "shift+pagedown"),
+    (Action::Select(Motion::WordLeft), "ctrl+shift+left"),
+    (Action::Select(Motion::WordRight), "ctrl+shift+right"),
+    (Action::Select(Motion::DocStart), "ctrl+shift+home"),
+    (Action::Select(Motion::DocEnd), "ctrl+shift+end"),
+    (Action::SelectAll, "ctrl+a"),
+    (Action::Copy, "ctrl+c"),
+    (Action::Cut, "ctrl+x"),
+    (Action::Paste, "ctrl+v"),
 ];
 
 /// What a key event means to the editor.
@@ -205,6 +261,44 @@ impl Keymap {
             _ => Input::Ignored,
         }
     }
+}
+
+/// The text of a burst of key events that arrived together, when they look like a
+/// paste rather than typing: crossterm can't report bracketed paste on Windows, so
+/// a paste there (Windows Terminal's own Ctrl+V included) arrives as a run of key
+/// presses instead. A burst counts as pasted when every press is plain text, Enter
+/// or Tab and it holds a line break or tab; nobody types a newline in the same
+/// instant as the text before it, while a burst of plain letters is left as typing
+/// so fast typists keep their undo steps.
+#[cfg_attr(
+    not(any(windows, test)),
+    expect(dead_code, reason = "only Windows needs to recover pastes from keys")
+)]
+pub fn burst_as_paste(events: &[Event]) -> Option<String> {
+    let mut text = String::new();
+    let mut presses = 0;
+    for event in events {
+        let Event::Key(key) = event else {
+            return None;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return None;
+        }
+        match key.code {
+            KeyCode::Char(c) if !c.is_control() => text.push(c),
+            KeyCode::Enter => text.push('\n'),
+            KeyCode::Tab => text.push('\t'),
+            _ => return None,
+        }
+        presses += 1;
+    }
+    (presses >= 2 && text.contains(['\n', '\t'])).then_some(text)
 }
 
 /// Terminals report Shift+letter as the uppercase letter (sometimes with SHIFT,
@@ -412,6 +506,7 @@ mod tests {
         assert_eq!(bound, all);
         for &motion in Motion::ALL {
             assert!(Action::ALL.contains(&Action::Move(motion)), "{motion:?}");
+            assert!(Action::ALL.contains(&Action::Select(motion)), "{motion:?}");
         }
     }
 
@@ -564,7 +659,7 @@ mod tests {
             Input::Text('é')
         );
         assert_eq!(
-            map.resolve(&ev(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+            map.resolve(&ev(KeyCode::Char('o'), KeyModifiers::CONTROL)),
             Input::Ignored
         );
         assert_eq!(
@@ -605,6 +700,81 @@ mod tests {
         assert_eq!(
             map.resolve(&ev(KeyCode::Char('y'), KeyModifiers::CONTROL)),
             Input::Action(Action::Redo)
+        );
+    }
+
+    #[test]
+    fn shift_movement_selects_and_clipboard_keys_resolve() {
+        let map = Keymap::default();
+        let shift = KeyModifiers::SHIFT;
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        let expected = [
+            (KeyCode::Left, shift, Motion::Left),
+            (KeyCode::Right, shift, Motion::Right),
+            (KeyCode::Up, shift, Motion::Up),
+            (KeyCode::Down, shift, Motion::Down),
+            (KeyCode::Home, shift, Motion::LineStart),
+            (KeyCode::End, shift, Motion::LineEnd),
+            (KeyCode::PageUp, shift, Motion::PageUp),
+            (KeyCode::PageDown, shift, Motion::PageDown),
+            (KeyCode::Left, ctrl_shift, Motion::WordLeft),
+            (KeyCode::Right, ctrl_shift, Motion::WordRight),
+            (KeyCode::Home, ctrl_shift, Motion::DocStart),
+            (KeyCode::End, ctrl_shift, Motion::DocEnd),
+        ];
+        assert_eq!(expected.len(), Motion::ALL.len());
+        for (code, mods, motion) in expected {
+            assert_eq!(
+                map.resolve(&ev(code, mods)),
+                Input::Action(Action::Select(motion)),
+                "{mods:?} {code:?}"
+            );
+        }
+        let ctrl = KeyModifiers::CONTROL;
+        for (c, action) in [
+            ('a', Action::SelectAll),
+            ('c', Action::Copy),
+            ('x', Action::Cut),
+            ('v', Action::Paste),
+        ] {
+            assert_eq!(
+                map.resolve(&ev(KeyCode::Char(c), ctrl)),
+                Input::Action(action),
+                "ctrl+{c}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_burst_with_a_line_break_is_a_paste() {
+        let key = |code| Event::Key(ev(code, KeyModifiers::NONE));
+        let mut release = ev(KeyCode::Char('a'), KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        let pasted = [
+            key(KeyCode::Char('a')),
+            Event::Key(release),
+            key(KeyCode::Enter),
+            key(KeyCode::Tab),
+            Event::Key(ev(KeyCode::Char('B'), KeyModifiers::SHIFT)),
+        ];
+        assert_eq!(burst_as_paste(&pasted).as_deref(), Some("a\n\tB"));
+
+        // Plain letters stay typing, and so does a lone Enter.
+        let typed = [key(KeyCode::Char('a')), key(KeyCode::Char('b'))];
+        assert_eq!(burst_as_paste(&typed), None);
+        assert_eq!(burst_as_paste(&[key(KeyCode::Enter)]), None);
+        // A shortcut or a non-text key in the burst means it wasn't a paste.
+        let shortcut = [
+            key(KeyCode::Char('a')),
+            key(KeyCode::Enter),
+            Event::Key(ev(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+        ];
+        assert_eq!(burst_as_paste(&shortcut), None);
+        let arrow = [key(KeyCode::Enter), key(KeyCode::Left)];
+        assert_eq!(burst_as_paste(&arrow), None);
+        assert_eq!(
+            burst_as_paste(&[key(KeyCode::Enter), Event::FocusLost]),
+            None
         );
     }
 

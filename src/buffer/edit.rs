@@ -43,12 +43,19 @@ impl Buffer {
         self.rope.insert(change.at, &change.inserted);
         self.cursor = change.at + change.inserted.chars().count();
         self.goal_col = None;
+        // Positions after the change have shifted, so an old anchor means nothing.
+        self.anchor = None;
         self.dirty = true;
     }
 
-    /// Typed text at the cursor; a run of it undoes as one step.
+    /// Typed text at the cursor, replacing any selection; a run of it undoes as
+    /// one step, together with the selection it replaced.
     pub fn type_text(&mut self, text: &str) {
-        self.insert_as(text, EditKind::Typing);
+        let replacing = self.selection().is_some();
+        self.replacing_selection(|b| b.insert_as(text, EditKind::Typing));
+        if replacing && !text.is_empty() {
+            self.history.continue_typing();
+        }
     }
 
     /// Inserts `text` at the cursor.
@@ -70,8 +77,12 @@ impl Buffer {
 
     /// Splits the line at the cursor; the new line starts with the current line's
     /// leading whitespace (only what lies before the cursor, so Enter inside the
-    /// indent doesn't grow it).
+    /// indent doesn't grow it). Replaces any selection.
     pub fn newline(&mut self) {
+        self.replacing_selection(Self::newline_at_cursor);
+    }
+
+    fn newline_at_cursor(&mut self) {
         let line = self.rope.char_to_line(self.cursor);
         let start = self.rope.line_to_char(line);
         let indent: String = self
@@ -84,9 +95,10 @@ impl Buffer {
     }
 
     /// Deletes the char before the cursor; at column 0 that is the previous line
-    /// break, joining the lines. Nothing at the start of the document.
+    /// break, joining the lines. Nothing at the start of the document. With a
+    /// selection, deletes just the selection.
     pub fn backspace(&mut self) {
-        if self.cursor == 0 {
+        if self.delete_selection() || self.cursor == 0 {
             return;
         }
         let at = self.cursor - 1;
@@ -98,9 +110,10 @@ impl Buffer {
     }
 
     /// Deletes the char after the cursor; at line end that is the line break,
-    /// joining the lines. Nothing at the end of the document.
+    /// joining the lines. Nothing at the end of the document. With a selection,
+    /// deletes just the selection.
     pub fn delete(&mut self) {
-        if self.cursor >= self.rope.len_chars() {
+        if self.delete_selection() || self.cursor >= self.rope.len_chars() {
             return;
         }
         self.apply(Change {
@@ -110,8 +123,12 @@ impl Buffer {
         });
     }
 
-    /// Spaces up to the next tab stop, or a literal tab.
+    /// Spaces up to the next tab stop, or a literal tab, replacing any selection.
     pub fn tab(&mut self, tab_width: usize, insert_spaces: bool) {
+        self.replacing_selection(|b| b.tab_at_cursor(tab_width, insert_spaces));
+    }
+
+    fn tab_at_cursor(&mut self, tab_width: usize, insert_spaces: bool) {
         if !insert_spaces {
             return self.insert("\t");
         }
