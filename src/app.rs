@@ -7,6 +7,8 @@ use anyhow::Result;
 use crossterm::event::{
     Event, EventStream, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use crossterm::execute;
+use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use futures_util::StreamExt;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -702,7 +704,7 @@ impl App {
         terminal: &mut Tui,
         rx: &mut mpsc::UnboundedReceiver<AppEvent>,
     ) -> Result<()> {
-        self.screen = terminal.draw(|frame| self.render(frame))?.area;
+        self.draw(terminal)?;
         while !self.should_quit {
             let Some(event) = rx.recv().await else {
                 // The input task ended (stdin closed or errored); nothing more can
@@ -713,8 +715,17 @@ impl App {
                 self.screen = Rect::new(0, 0, width, height);
             }
             self.handle_event(event);
-            self.screen = terminal.draw(|frame| self.render(frame))?.area;
+            self.draw(terminal)?;
         }
+        Ok(())
+    }
+
+    /// Draws one frame as a synchronized update, so a terminal shows it whole: a
+    /// themed frame repaints every cell, and drawn piecemeal it tears.
+    fn draw(&mut self, terminal: &mut Tui) -> Result<()> {
+        execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+        self.screen = terminal.draw(|frame| self.render(frame))?.area;
+        execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         Ok(())
     }
 

@@ -104,7 +104,10 @@ fn arrows_move_the_selection_and_enter_opens_it_in_a_tab() {
     griffin.send_keys("enter");
     griffin.wait_for_text_gone("Go to file:", WAIT);
     griffin.wait_for_text("1 │ # Project fixture", WAIT);
-    assert!(status_line(&griffin).contains("README.md"));
+    // The status line is drawn after the editor, so it may lag a moment behind.
+    griffin.wait_for_screen("README.md in the status line", WAIT, |screen| {
+        screen[usize::from(ROWS) - 1].contains("README.md")
+    });
 
     // A filtered pick opens beside it in a second tab.
     open_picker(&mut griffin);
