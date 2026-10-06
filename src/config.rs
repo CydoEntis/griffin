@@ -30,6 +30,9 @@ pub struct LspServer {
     /// The program to start, found on PATH or given as a path.
     pub command: Option<String>,
     pub args: Vec<String>,
+    /// Ctrl+S formats the buffer through this server before writing it. Off
+    /// unless asked for, since a formatter rewrites the user's text.
+    pub format_on_save: bool,
 }
 
 /// `[editor]`.
@@ -277,6 +280,7 @@ mod tests {
             LspServer {
                 command: Some("pyright-langserver".into()),
                 args: vec!["--stdio".into()],
+                format_on_save: false,
             }
         );
         assert_eq!(
@@ -284,6 +288,9 @@ mod tests {
             Some(r"C:\tools\rust-analyzer.exe")
         );
         assert!(lsp["rust"].args.is_empty());
+        assert!(!lsp["rust"].format_on_save, "off by default");
+        let on = parse("[lsp.rust]\nformat_on_save = true\n");
+        assert!(on.config.lsp["rust"].format_on_save);
         assert!(parse("").config.lsp.is_empty());
     }
 

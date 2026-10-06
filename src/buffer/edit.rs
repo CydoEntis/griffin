@@ -148,6 +148,31 @@ impl Buffer {
         self.end_group();
     }
 
+    /// `replace_ranges` for edits that rewrite text around the cursor rather than
+    /// at it (a formatter's): the cursor stays on the text it was on, moved by
+    /// the edits before it, or to the start of an edit that swallowed it. No
+    /// edits, no undo step.
+    pub fn apply_edits(&mut self, edits: &[(Range<usize>, String)]) {
+        if edits.is_empty() {
+            return;
+        }
+        let cursor = self.cursor;
+        let mut kept = cursor.cast_signed();
+        for (range, inserted) in edits {
+            let grown = inserted.chars().count().cast_signed() - range.len().cast_signed();
+            if range.end <= cursor && !(range.is_empty() && range.start == cursor) {
+                kept += grown;
+            } else if range.start < cursor {
+                kept += range.start.cast_signed() - cursor.cast_signed();
+                break;
+            } else {
+                break;
+            }
+        }
+        self.replace_ranges(edits);
+        self.cursor = kept.max(0).cast_unsigned().min(self.rope.len_chars());
+    }
+
     /// Spaces up to the next tab stop, or a literal tab, replacing any selection.
     pub fn tab(&mut self, tab_width: usize, insert_spaces: bool) {
         self.replacing_selection(|b| b.tab_at_cursor(tab_width, insert_spaces));
@@ -311,6 +336,35 @@ mod tests {
         let mut b = buf("ab|");
         b.tab(4, false);
         assert_eq!(show(&b), "ab\t|");
+    }
+
+    #[test]
+    fn apply_edits_keeps_the_cursor_on_its_text_and_undoes_in_one_step() {
+        let mut b = buf("fn  a( ){\n x|=1;}\n");
+        b.apply_edits(&[
+            (2..4, " ".into()),
+            (5..8, "() ".into()),
+            (10..11, "    ".into()),
+            (12..13, " = ".into()),
+        ]);
+        assert_eq!(show(&b), "fn a() {\n    x| = 1;}\n");
+        assert!(b.undo());
+        assert_eq!(b.rope.to_string(), "fn  a( ){\n x=1;}\n");
+        assert!(!b.undo(), "one undo step");
+
+        // A cursor inside a replaced range goes to its start; an insert right
+        // at the cursor goes after it.
+        let mut b = buf("ab|cd");
+        b.apply_edits(&[(1..3, "X".into())]);
+        assert_eq!(show(&b), "a|Xd");
+        let mut b = buf("ab|cd");
+        b.apply_edits(&[(2..2, "--".into())]);
+        assert_eq!(show(&b), "ab|--cd");
+
+        let mut b = buf("a|b");
+        b.apply_edits(&[]);
+        assert!(!b.dirty);
+        assert!(!b.undo());
     }
 
     #[test]

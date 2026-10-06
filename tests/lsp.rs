@@ -1085,3 +1085,127 @@ fn a_late_answer_after_the_cursor_left_the_word_is_dropped() {
         "{screen:#?}"
     );
 }
+
+/// `config.toml` with format on save for Rust, and the editor's indentation the
+/// request should carry.
+fn format_config(on: bool) -> String {
+    format!(
+        "[editor]\ntab_width = 2\ninsert_spaces = false\n{}format_on_save = {on}\n",
+        rust_server(fake())
+    )
+}
+
+fn format_requests(project: &Project) -> Vec<Value> {
+    project
+        .log()
+        .into_iter()
+        .map(|(_, message)| message)
+        .filter(|message| method(message) == "textDocument/formatting")
+        .collect()
+}
+
+#[test]
+fn ctrl_s_formats_through_the_server_then_saves() {
+    let range = |from: u32, to: u32| {
+        format!(
+            r#"{{"start": {{"line": 0, "character": {from}}}, "end": {{"line": 0, "character": {to}}}}}"#
+        )
+    };
+    let script = format!(
+        r#"{{"responses": {{"textDocument/formatting": [
+            {{"range": {}, "newText": " "}},
+            {{"range": {}, "newText": " "}}
+        ]}}}}"#,
+        range(2, 4),
+        range(7, 7)
+    );
+    let project = Project::new(Some(&script));
+    fs::write(project.dir.path().join("a.rs"), "fn  a(){}\n").expect("write a.rs");
+    let mut griffin = project.open(&format_config(true), "a.rs");
+    project.wait_for(&griffin, "textDocument/didOpen", "a.rs");
+
+    griffin.send_keys("ctrl+s");
+    project.wait_for(&griffin, "textDocument/didSave", "a.rs");
+    griffin.wait_for_text("fn a() {}", WAIT);
+    griffin.wait_for_text("saved a.rs", WAIT);
+    assert_eq!(project.read("a.rs"), "fn a() {}\n");
+    let status = status_line(&griffin);
+    assert!(!status.contains("unformatted"), "{status:?}");
+
+    let requests = format_requests(&project);
+    assert_eq!(requests.len(), 1, "{requests:#?}");
+    assert_eq!(
+        requests[0]["params"]["options"],
+        serde_json::json!({"tabSize": 2, "insertSpaces": false})
+    );
+    // The request went out before the save the server heard of.
+    let order: Vec<String> = project
+        .log()
+        .iter()
+        .map(|(_, m)| method(m).to_string())
+        .filter(|m| m == "textDocument/formatting" || m == "textDocument/didSave")
+        .collect();
+    assert_eq!(order, ["textDocument/formatting", "textDocument/didSave"]);
+
+    // Both edits undo as one step.
+    griffin.send_keys("ctrl+z");
+    griffin.wait_for_text("fn  a(){}", WAIT);
+    griffin.wait_for_text("a.rs ●", WAIT);
+}
+
+#[test]
+fn a_server_that_never_answers_saves_unformatted_after_two_seconds() {
+    let project = Project::new(Some(r#"{"silent": ["textDocument/formatting"]}"#));
+    let mut griffin = project.open(&format_config(true), "a.rs");
+    project.wait_for(&griffin, "textDocument/didOpen", "a.rs");
+    griffin.type_text("x");
+    griffin.wait_for_text("a.rs ●", WAIT);
+
+    griffin.send_keys("ctrl+s");
+    project.wait_for(&griffin, "textDocument/formatting", "a.rs");
+    griffin.wait_for_text("saved a.rs unformatted (no answer in 2 s)", WAIT);
+    assert_eq!(project.read("a.rs"), "xfn a() {}\n");
+    griffin.wait_for_text_gone("a.rs ●", WAIT);
+}
+
+#[test]
+fn a_formatting_error_saves_unformatted_and_says_so() {
+    let script = r#"{"errors": {"textDocument/formatting": {"code": -32603, "message": "boom"}}}"#;
+    let project = Project::new(Some(script));
+    let mut griffin = project.open(&format_config(true), "a.rs");
+    project.wait_for(&griffin, "textDocument/didOpen", "a.rs");
+    griffin.type_text("y");
+    griffin.wait_for_text("a.rs ●", WAIT);
+
+    griffin.send_keys("ctrl+s");
+    griffin.wait_for_text("saved a.rs unformatted (server error: boom)", WAIT);
+    assert_eq!(project.read("a.rs"), "yfn a() {}\n");
+}
+
+#[test]
+fn without_format_on_save_saving_sends_no_formatting_request() {
+    // The fake would format if asked, so silence proves it wasn't.
+    let script = r#"{"responses": {"textDocument/formatting": [{"range":
+        {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 2}},
+        "newText": "FN"}]}}"#;
+    let project = Project::new(Some(script));
+    // The default: no `format_on_save` key at all.
+    let mut griffin = project.open(&rust_server(fake()), "a.rs");
+    project.wait_for(&griffin, "textDocument/didOpen", "a.rs");
+    griffin.type_text("z");
+    griffin.wait_for_text("a.rs ●", WAIT);
+
+    griffin.send_keys("ctrl+s");
+    project.wait_for(&griffin, "textDocument/didSave", "a.rs");
+    griffin.wait_for_text("saved a.rs", WAIT);
+    assert_eq!(project.read("a.rs"), "zfn a() {}\n");
+    assert!(format_requests(&project).is_empty(), "{:#?}", project.log());
+
+    // Explicitly off behaves the same.
+    let project = Project::new(Some(script));
+    let mut griffin = project.open(&format_config(false), "a.rs");
+    project.wait_for(&griffin, "textDocument/didOpen", "a.rs");
+    griffin.send_keys("ctrl+s");
+    project.wait_for(&griffin, "textDocument/didSave", "a.rs");
+    assert!(format_requests(&project).is_empty(), "{:#?}", project.log());
+}

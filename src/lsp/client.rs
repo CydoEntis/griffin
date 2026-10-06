@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use lsp_types::{
     ClientCapabilities, ClientInfo, CompletionClientCapabilities, CompletionItemCapability,
     CompletionParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, GotoCapability, GotoDefinitionParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingClientCapabilities,
+    DocumentFormattingParams, FormattingOptions, GotoCapability, GotoDefinitionParams,
     HoverClientCapabilities, HoverParams, InitializeParams, MarkupKind, PartialResultParams,
     Position, TextDocumentClientCapabilities, TextDocumentContentChangeEvent,
     TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
@@ -49,6 +50,8 @@ pub struct Client {
     /// The characters that open completion when typed, from the server's
     /// `completionProvider`; empty until it's initialized, or when it has none.
     pub triggers: Vec<String>,
+    /// The server said it formats whole documents (`documentFormattingProvider`).
+    pub formats: bool,
 }
 
 /// An lsp-types value as JSON. These types serialize infallibly; `Null` stands in
@@ -82,6 +85,7 @@ impl Client {
             pending: HashMap::new(),
             shutting_down: false,
             triggers: Vec::new(),
+            formats: false,
         }
     }
 
@@ -120,6 +124,9 @@ impl Client {
                             ..Default::default()
                         }),
                         ..Default::default()
+                    }),
+                    formatting: Some(DocumentFormattingClientCapabilities {
+                        dynamic_registration: None,
                     }),
                     ..Default::default()
                 }),
@@ -238,6 +245,9 @@ impl Client {
                         .collect()
                 })
                 .unwrap_or_default();
+        // `true` or an options object both mean yes.
+        let provider = &response["result"]["capabilities"]["documentFormattingProvider"];
+        self.formats = provider.is_object() || provider.as_bool() == Some(true);
         self.notify("initialized", json!({}));
         None
     }
@@ -364,6 +374,21 @@ impl Client {
             context: None,
         };
         self.request("textDocument/completion", to_json(params))
+    }
+
+    /// Asks for edits that format the whole of `uri` with the editor's
+    /// indentation. Returns the request's id, which the reply will carry.
+    pub fn formatting(&mut self, uri: &Uri, tab_size: u32, insert_spaces: bool) -> i64 {
+        let params = DocumentFormattingParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            options: FormattingOptions {
+                tab_size,
+                insert_spaces,
+                ..FormattingOptions::default()
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+        self.request("textDocument/formatting", to_json(params))
     }
 
     pub fn did_close(&self, uri: &Uri) {
@@ -564,6 +589,29 @@ mod tests {
         // A server without a completion provider has no triggers.
         let (client, _) = ready(json!(2));
         assert!(client.triggers.is_empty());
+    }
+
+    #[test]
+    fn formatting_sends_the_indentation_and_reads_the_provider() {
+        let (mut client, mut rx) = started();
+        let init = drain(&mut rx);
+        assert!(init[0]["params"]["capabilities"]["textDocument"]["formatting"].is_object());
+        let reply = json!({"jsonrpc": "2.0", "id": init[0]["id"], "result": {"capabilities": {
+            "textDocumentSync": 2, "documentFormattingProvider": {}}}});
+        client.handle(reply);
+        assert!(client.formats);
+        drain(&mut rx);
+        let id = client.formatting(&uri(), 2, false);
+        let sent = drain(&mut rx);
+        assert_eq!(sent[0]["method"], "textDocument/formatting");
+        assert_eq!(sent[0]["id"], id);
+        assert_eq!(
+            sent[0]["params"]["options"],
+            json!({"tabSize": 2, "insertSpaces": false})
+        );
+        assert_eq!(sent[0]["params"]["textDocument"]["uri"], uri().as_str());
+        let (client, _) = ready(json!(2));
+        assert!(!client.formats);
     }
 
     #[test]
