@@ -10,8 +10,8 @@ const WAIT: Duration = Duration::from_secs(5);
 /// `.gitignore` hides `*.log` and `build/`.
 const PROJECT: &str = "tests/fixtures/project";
 const LONG: &str = "tests/fixtures/long.txt";
-/// The ANSI colour index of the picker's accent (cyan).
-const ACCENT: u8 = 6;
+/// The default theme's accent, hydra's lime `#c3f53c`.
+const ACCENT: vt100::Color = vt100::Color::Rgb(0xc3, 0xf5, 0x3c);
 
 /// At 100x30 the card is 60 wide and 20 tall, centred: its border starts at
 /// column 20 and row 5, the query is on row 6 and the list starts on row 7, one

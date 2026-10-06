@@ -8,6 +8,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::buffer::Buffer;
 use crate::buffer::movement::{char_col_at, char_width, display_col};
+use crate::theme::Theme;
 
 /// Which part of a buffer the editor pane shows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -90,11 +91,18 @@ fn text_width(buf: &Buffer, area: Rect) -> usize {
 /// Draws `buf` into `area`: a right-aligned line-number gutter, then each line cut
 /// at the right edge (Griffin never wraps), and puts the terminal cursor on the
 /// buffer cursor when it's in view. Pure: reads its inputs only.
-pub fn render_buffer(buf: &Buffer, view: &View, tab_width: usize, area: Rect, frame: &mut Frame) {
+pub fn render_buffer(
+    theme: &Theme,
+    buf: &Buffer,
+    view: &View,
+    tab_width: usize,
+    area: Rect,
+    frame: &mut Frame,
+) {
     let digits = buf.rope.len_lines().to_string().len();
     let gutter_width = gutter_width(buf);
     let text_width = text_width(buf, area);
-    let gutter_style = Style::new().dim();
+    let gutter_style = Style::new().fg(theme.muted);
     let selection = buf.selection();
 
     let out = frame.buffer_mut();
@@ -126,7 +134,7 @@ pub fn render_buffer(buf: &Buffer, view: &View, tab_width: usize, area: Rect, fr
                 // Below `text_width`, which fits in the area's u16 width.
                 let cell_x = x + (col - view.scroll_col) as u16;
                 if let Some(cell) = out.cell_mut((cell_x, y)) {
-                    cell.set_style(Style::new().reversed());
+                    cell.set_style(Theme::highlight(theme.selection_bg, theme.fg));
                 }
             }
         }
@@ -324,7 +332,16 @@ mod tests {
         // Cursor on `x`.
         let buf = buffer_at("ab\n\t日x", 5);
         let mut terminal = Terminal::new(TestBackend::new(20, 5))?;
-        terminal.draw(|frame| render_buffer(&buf, &View::default(), 4, frame.area(), frame))?;
+        terminal.draw(|frame| {
+            render_buffer(
+                &Theme::default(),
+                &buf,
+                &View::default(),
+                4,
+                frame.area(),
+                frame,
+            )
+        })?;
         // Gutter is 5 cells; the tab and `日` fill 6 more.
         terminal.backend_mut().assert_cursor_position((11, 1));
         Ok(())
@@ -359,7 +376,16 @@ mod tests {
             ..Buffer::empty()
         };
         let mut terminal = Terminal::new(TestBackend::new(20, 3))?;
-        terminal.draw(|frame| render_buffer(&buf, &View::default(), 4, frame.area(), frame))?;
+        terminal.draw(|frame| {
+            render_buffer(
+                &Theme::default(),
+                &buf,
+                &View::default(),
+                4,
+                frame.area(),
+                frame,
+            )
+        })?;
         let screen = terminal.backend().buffer();
         let reversed = |y: u16| -> String {
             (5..20)
@@ -443,7 +469,16 @@ mod tests {
             ..Buffer::empty()
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 12))?;
-        terminal.draw(|frame| render_buffer(&buf, &View::default(), 4, frame.area(), frame))?;
+        terminal.draw(|frame| {
+            render_buffer(
+                &Theme::default(),
+                &buf,
+                &View::default(),
+                4,
+                frame.area(),
+                frame,
+            )
+        })?;
         let screen = terminal.backend().buffer();
         let row = |y: u16| -> String { (0..40).map(|x| screen[(x, y)].symbol()).collect() };
         assert!(row(0).starts_with("  1 │ line 1"), "{}", row(0));

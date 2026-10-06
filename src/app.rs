@@ -10,6 +10,7 @@ use crossterm::event::{
 use futures_util::StreamExt;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
+use ratatui::style::Style;
 use tokio::sync::mpsc;
 #[cfg(windows)]
 use tokio::time::timeout;
@@ -23,6 +24,7 @@ use crate::config::EditorConfig;
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
+use crate::theme::Theme;
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
 use crate::ui::picker::{Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
@@ -571,6 +573,7 @@ fn absolute(path: &Path) -> PathBuf {
 pub struct App {
     keymap: Keymap,
     editor: EditorConfig,
+    theme: Theme,
     tabs: Tabs,
     /// The terminal's size as of the last draw; movement needs the editor pane's
     /// height for paging and both dimensions for scrolling.
@@ -649,6 +652,12 @@ impl App {
             },
             ..Self::default()
         }
+    }
+
+    /// Draws with `theme` instead of the default.
+    pub fn with_theme(mut self, theme: Theme) -> Self {
+        self.theme = theme;
+        self
     }
 
     /// Turns crash backups on, and offers to recover the opened file's backup if
@@ -1704,6 +1713,12 @@ impl App {
             self.name_prompt.is_some(),
             self.tabs.splits.len(),
         );
+        let theme = &self.theme;
+        // The editor ground; chrome paints its own `sidebar_bg` over it.
+        let screen = frame.area();
+        frame
+            .buffer_mut()
+            .set_style(screen, Style::new().bg(theme.bg).fg(theme.fg));
         let focused = self.tabs.focused;
         // The focused split draws last, so the terminal cursor ends up in it.
         let order = (0..panes.splits.len())
@@ -1713,6 +1728,7 @@ impl App {
             let area = panes.splits[split];
             let tabs = &self.tabs.splits[split];
             render_tabs(
+                theme,
                 &self.tabs.labels(split),
                 tabs.active,
                 split == focused,
@@ -1720,6 +1736,7 @@ impl App {
                 frame,
             );
             render_buffer(
+                theme,
                 self.tabs.shown(split).buffer(),
                 &tabs.active().view,
                 self.editor.tab_width,
@@ -1728,12 +1745,12 @@ impl App {
             );
         }
         if let Some(divider) = panes.split_divider {
-            render_divider(divider, frame);
+            render_divider(theme, divider, frame);
         }
         if let (Some(tree), Some(divider)) = (panes.tree, panes.divider) {
             let focused = self.focus == Focus::Tree;
-            let selected = render_tree(&self.tree, focused, tree, frame);
-            render_divider(divider, frame);
+            let selected = render_tree(theme, &self.tree, focused, tree, frame);
+            render_divider(theme, divider, frame);
             // The cursor marks the focused pane; `render_buffer` put it in the editor.
             if focused && let Some(at) = selected {
                 frame.set_cursor_position(at);
@@ -1742,6 +1759,7 @@ impl App {
         let buffer = self.buffer();
         render_status(
             frame,
+            theme,
             panes.status,
             &buffer.name(),
             buffer.dirty,
@@ -1749,15 +1767,15 @@ impl App {
             buffer.cursor_line_col(),
         );
         if let (Some(name_prompt), Some(area)) = (&self.name_prompt, panes.bar) {
-            let at = name_prompt.bar.render(frame, area);
+            let at = name_prompt.bar.render(theme, frame, area);
             frame.set_cursor_position(at);
         }
         if let Some(picker) = &self.picker {
-            let at = picker.render(frame, frame.area());
+            let at = picker.render(theme, frame, frame.area());
             frame.set_cursor_position(at);
         }
         if let Some(prompt) = self.prompt {
-            self.confirm(prompt).render(frame, frame.area());
+            self.confirm(prompt).render(theme, frame, frame.area());
         }
     }
 }

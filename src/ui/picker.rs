@@ -5,16 +5,14 @@ use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Matcher, Utf32Str};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Clear};
 use unicode_width::UnicodeWidthStr;
 
 use crate::buffer::movement::Motion;
 use crate::keymap::{Action, Input};
+use crate::theme::Theme;
 use crate::ui::prompt::{Outcome, PromptBar};
-
-/// Matched letters are drawn in this colour. Fixed until themes exist (R19).
-pub const ACCENT: Color = Color::Cyan;
 
 /// Widest and tallest the card gets, borders included.
 const MAX_WIDTH: u16 = 80;
@@ -166,19 +164,21 @@ impl Picker {
         }
     }
 
-    /// Draws the card centred in `area`: a border, the query line, then the
-    /// matches with their matched letters in `ACCENT` and the selected one
-    /// reversed. Returns where the cursor goes, in the query.
-    pub fn render(&self, frame: &mut Frame, area: Rect) -> (u16, u16) {
+    /// Draws the card centred in `area` on `card`: a border, the query line, then
+    /// the matches with their matched letters in `accent` and the selected one
+    /// filled with `hov`. Returns where the cursor goes, in the query.
+    pub fn render(&self, theme: &Theme, frame: &mut Frame, area: Rect) -> (u16, u16) {
         let card = Self::card(area);
         frame.render_widget(Clear, card);
-        let block = Block::bordered();
+        let block = Block::bordered()
+            .border_style(Style::new().fg(theme.border))
+            .style(Style::new().bg(theme.card).fg(theme.text));
         let inner = block.inner(card);
         frame.render_widget(block, card);
         if inner.height == 0 || inner.width == 0 {
             return (card.x, card.y);
         }
-        let cursor = self.query.render(frame, Rect { height: 1, ..inner });
+        let cursor = self.query.render(theme, frame, Rect { height: 1, ..inner });
 
         let list = Rect {
             y: inner.y + 1,
@@ -188,7 +188,13 @@ impl Picker {
         let width = usize::from(list.width);
         let out = frame.buffer_mut();
         let Some(files) = &self.files else {
-            out.set_stringn(list.x, list.y, " listing files…", width, Style::new().dim());
+            out.set_stringn(
+                list.x,
+                list.y,
+                " listing files…",
+                width,
+                Style::new().fg(theme.muted),
+            );
             return cursor;
         };
         if self.matches.is_empty() {
@@ -197,7 +203,7 @@ impl Picker {
                 list.y,
                 " no matching files",
                 width,
-                Style::new().dim(),
+                Style::new().fg(theme.muted),
             );
             return cursor;
         }
@@ -224,12 +230,20 @@ impl Picker {
             indices.dedup();
 
             let y = list.y + u16::try_from(line).unwrap_or(u16::MAX);
-            let base = if index == self.selected {
-                Style::new().reversed()
+            let selected = index == self.selected;
+            let base = if selected {
+                Theme::highlight(theme.hov, theme.strong)
             } else {
                 Style::new()
             };
-            // Padded so the selected row is reversed edge to edge.
+            // On the selected row a matched letter is a block of accent with
+            // `acc_ink` on it, since accent text wouldn't read on `hov`.
+            let hit_style = if selected {
+                Theme::highlight(theme.accent, theme.acc_ink)
+            } else {
+                Style::new().fg(theme.accent)
+            };
+            // Padded so the selected row is filled edge to edge.
             out.set_stringn(list.x, y, format!("{:width$}", ""), width, base);
             let mut x = list.x + 1;
             for (at, ch) in path.chars().enumerate() {
@@ -239,7 +253,7 @@ impl Picker {
                     break;
                 }
                 let hit = u32::try_from(at).is_ok_and(|at| indices.binary_search(&at).is_ok());
-                let style = if hit { base.fg(ACCENT) } else { base };
+                let style = if hit { hit_style } else { base };
                 out.set_string(x, y, &cell, style);
                 x += cells;
             }
@@ -334,9 +348,10 @@ mod tests {
     fn matched_letters_are_drawn_in_the_accent() -> anyhow::Result<()> {
         let mut p = picker(FILES);
         type_query(&mut p, "main");
+        let theme = Theme::default();
         let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
         terminal.draw(|frame| {
-            p.render(frame, frame.area());
+            p.render(&theme, frame, frame.area());
         })?;
         let buffer = terminal.backend().buffer();
         let card = Picker::card(Rect::new(0, 0, 100, 30));
@@ -346,7 +361,7 @@ mod tests {
             .collect();
         assert!(line.contains("src/main.rs"), "{line:?}");
         let accented: String = (card.x..card.right())
-            .filter(|&x| buffer[(x, row)].fg == ACCENT)
+            .filter(|&x| buffer[(x, row)].fg == theme.accent)
             .map(|x| buffer[(x, row)].symbol())
             .collect();
         assert_eq!(accented, "main");

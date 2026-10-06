@@ -8,6 +8,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::buffer::movement::Motion;
 use crate::keymap::{Action, Input};
+use crate::theme::Theme;
 
 /// What a key did to the bar, when it did more than edit the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,8 +100,9 @@ impl PromptBar {
             .map_or(self.text.len(), |(at, _)| at)
     }
 
-    /// Draws `label: text` across `area` and returns where the cursor goes.
-    pub fn render(&self, frame: &mut Frame, area: Rect) -> (u16, u16) {
+    /// Draws `label: text` across `area` on `card2` and returns where the cursor
+    /// goes.
+    pub fn render(&self, theme: &Theme, frame: &mut Frame, area: Rect) -> (u16, u16) {
         let head = format!("{}: ", self.label);
         let before: String = self.text.chars().take(self.cursor).collect();
         let line = format!("{head}{}", self.text);
@@ -110,7 +112,7 @@ impl PromptBar {
             area.y,
             format!("{line:<width$}"),
             width,
-            Style::new(),
+            Style::new().bg(theme.card2).fg(theme.strong),
         );
         let col = u16::try_from(head.width() + before.width())
             .unwrap_or(u16::MAX)
@@ -167,7 +169,7 @@ mod tests {
         let bar = PromptBar::new("New file", "notes.md");
         let mut terminal = Terminal::new(TestBackend::new(30, 2))?;
         let mut at = (0, 0);
-        terminal.draw(|frame| at = bar.render(frame, Rect::new(0, 1, 30, 1)))?;
+        terminal.draw(|frame| at = bar.render(&Theme::default(), frame, Rect::new(0, 1, 30, 1)))?;
         let buffer = terminal.backend().buffer();
         let row: String = (0..30).map(|x| buffer[(x, 1)].symbol()).collect();
         assert_eq!(row.trim_end(), "New file: notes.md");

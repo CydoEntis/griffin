@@ -344,26 +344,63 @@ impl Griffin {
         }
     }
 
-    /// The text of the cells on `row` whose foreground is the indexed colour
-    /// `index` (0-15 are the ANSI colours, so 6 is cyan), in order.
-    pub fn fg_text(&self, row: u16, index: u8) -> String {
-        fg_cells(&self.parser(), row, index)
+    /// The text of the cells on `row` whose foreground is `color`, in order.
+    pub fn fg_text(&self, row: u16, color: vt100::Color) -> String {
+        fg_cells(&self.parser(), row, color)
     }
 
-    /// Waits until the cells on `row` drawn in colour `index` read exactly `text`.
-    /// Panics with the screen on timeout.
-    pub fn wait_for_fg(&self, row: u16, index: u8, text: &str, timeout: Duration) {
+    /// The background colour of the cell at (`col`, `row`).
+    pub fn bg_at(&self, col: u16, row: u16) -> vt100::Color {
+        self.parser()
+            .screen()
+            .cell(row, col)
+            .map_or(vt100::Color::Default, |cell| cell.bgcolor())
+    }
+
+    /// Waits until the cell at (`col`, `row`) has background `color`. Panics with
+    /// the screen on timeout.
+    pub fn wait_for_bg(&self, col: u16, row: u16, color: vt100::Color, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         let mut parser = self.parser();
         loop {
-            let colored = fg_cells(&parser, row, index);
+            let bg = parser
+                .screen()
+                .cell(row, col)
+                .map_or(vt100::Color::Default, |cell| cell.bgcolor());
+            if bg == color {
+                return;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                panic!(
+                    "timed out after {timeout:?} waiting for ({col}, {row}) to have                      background {color:?}; it has {bg:?}
+{}",
+                    dump(&screen_lines(&parser))
+                );
+            }
+            parser = self
+                .shared
+                .changed
+                .wait_timeout(parser, deadline - now)
+                .expect("screen lock poisoned")
+                .0;
+        }
+    }
+
+    /// Waits until the cells on `row` drawn in `color` read exactly `text`.
+    /// Panics with the screen on timeout.
+    pub fn wait_for_fg(&self, row: u16, color: vt100::Color, text: &str, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut parser = self.parser();
+        loop {
+            let colored = fg_cells(&parser, row, color);
             if colored == text {
                 return;
             }
             let now = Instant::now();
             if now >= deadline {
                 panic!(
-                    "timed out after {timeout:?} waiting for row {row} to show {text:?}                      in colour {index}; it shows {colored:?}
+                    "timed out after {timeout:?} waiting for row {row} to show {text:?}                      in colour {color:?}; it shows {colored:?}
 {}",
                     dump(&screen_lines(&parser))
                 );
@@ -552,11 +589,11 @@ fn reversed_cells(parser: &vt100::Parser, row: u16) -> String {
         .collect()
 }
 
-fn fg_cells(parser: &vt100::Parser, row: u16, index: u8) -> String {
+fn fg_cells(parser: &vt100::Parser, row: u16, color: vt100::Color) -> String {
     let screen = parser.screen();
     (0..COLS)
         .filter_map(|col| screen.cell(row, col))
-        .filter(|cell| cell.fgcolor() == vt100::Color::Idx(index) && !cell.is_wide_continuation())
+        .filter(|cell| cell.fgcolor() == color && !cell.is_wide_continuation())
         .map(|cell| cell.contents().to_string())
         .collect()
 }
