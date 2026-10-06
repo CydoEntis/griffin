@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow, bail};
 use ropey::Rope;
 
+use crate::highlight::Highlighter;
 use crate::save::save_atomic;
 use history::History;
 
@@ -58,6 +59,11 @@ pub struct Buffer {
     /// by Shift+movement and select all, cleared by plain movement and any edit.
     pub anchor: Option<usize>,
     pub history: History,
+    /// Colours the text when its file type has a grammar; see `sync_highlight`.
+    pub highlighter: Option<Highlighter>,
+    /// The path `highlighter` was picked for, so a rename or save-as to another
+    /// file type picks again.
+    pub highlight_for: Option<PathBuf>,
 }
 
 impl Buffer {
@@ -100,6 +106,8 @@ impl Buffer {
             goal_col: None,
             anchor: None,
             history: History::default(),
+            highlighter: None,
+            highlight_for: None,
         }
     }
 
@@ -157,10 +165,25 @@ impl Buffer {
     pub fn with_caret(&self, caret: Caret) -> Buffer {
         let mut copy = Buffer {
             rope: self.rope.clone(),
+            highlighter: self.highlighter.clone(),
             ..Buffer::empty()
         };
         copy.set_caret(caret);
         copy
+    }
+
+    /// Picks the highlighter for the buffer's path if the path changed since the
+    /// last pick, then brings its tree up to date with the text. Called before
+    /// drawing, so rendering only reads the tree; a buffer that's never drawn
+    /// (project search opens files too) never pays for a parse.
+    pub fn sync_highlight(&mut self) {
+        if self.highlight_for != self.path {
+            self.highlighter = self.path.as_deref().and_then(Highlighter::for_path);
+            self.highlight_for.clone_from(&self.path);
+        }
+        if let Some(highlighter) = &mut self.highlighter {
+            highlighter.parse(&self.rope);
+        }
     }
 
     /// What the status line calls this buffer.

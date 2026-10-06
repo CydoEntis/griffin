@@ -533,7 +533,7 @@ impl Tabs {
         if split == self.focused {
             Shown::Live(buffer)
         } else {
-            Shown::Copy(buffer.with_caret(tab.caret))
+            Shown::Copy(Box::new(buffer.with_caret(tab.caret)))
         }
     }
 
@@ -583,7 +583,8 @@ impl Tabs {
 /// A split's buffer as `Tabs::shown` hands it out for drawing and scrolling.
 enum Shown<'a> {
     Live(&'a Buffer),
-    Copy(Buffer),
+    // Boxed: a buffer is far bigger than the reference beside it.
+    Copy(Box<Buffer>),
 }
 
 impl Shown<'_> {
@@ -771,10 +772,19 @@ impl App {
     /// Draws one frame as a synchronized update, so a terminal shows it whole: a
     /// themed frame repaints every cell, and drawn piecemeal it tears.
     fn draw(&mut self, terminal: &mut Tui) -> Result<()> {
+        self.sync_highlights();
         execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
         self.screen = terminal.draw(|frame| self.render(frame))?.area;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         Ok(())
+    }
+
+    /// Brings every buffer's syntax tree up to date. Rendering only reads the
+    /// trees, so this runs before each frame.
+    fn sync_highlights(&mut self) {
+        for doc in &mut self.tabs.docs {
+            doc.buffer.sync_highlight();
+        }
     }
 
     fn handle_event(&mut self, event: AppEvent) {
@@ -3357,6 +3367,70 @@ world",
         press(&mut app, &["f6"]);
         assert_eq!(tab_names(&app), ["untitled ●"]);
         assert_eq!(app.buffer().rope.to_string(), "x");
+    }
+
+    #[test]
+    #[ignore = "timing bench; run with cargo test -- --ignored"]
+    fn bench_typing_10k_lines_full_frame() -> Result<()> {
+        let sample = std::fs::read_to_string("tests/fixtures/highlight/sample.rs")?;
+        let mut text = String::new();
+        while text.lines().count() < 10_000 {
+            text.push_str(&sample);
+        }
+        let mut app = App {
+            tabs: Tabs::new(Buffer {
+                rope: ropey::Rope::from_str(&text),
+                path: Some("big.rs".into()),
+                ..Buffer::empty()
+            }),
+            screen: Rect::new(0, 0, 100, 30),
+            ..App::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+        let line = 5_000;
+        let at = app.buffer().rope.line_to_char(line) + 4;
+        app.buffer_mut().cursor = at;
+        let xs = |app: &App| {
+            app.buffer()
+                .rope
+                .line(line)
+                .chars()
+                .filter(|&c| c == 'x')
+                .count()
+        };
+        let before = xs(&app);
+        app.sync_highlights();
+        terminal.draw(|frame| app.render(frame))?;
+
+        // One typed char in the middle of the file, then the frame it costs: the
+        // key handling, the tree edit and reparse, and drawing the whole screen.
+        let mut worst = Duration::ZERO;
+        for i in 0..20 {
+            let start = Instant::now();
+            app.handle_event(key("x"));
+            app.sync_highlights();
+            terminal.draw(|frame| app.render(frame))?;
+            let took = start.elapsed();
+            worst = worst.max(took);
+
+            let screen = terminal.backend().buffer();
+            let keyword = app.theme.syntax.keyword.fg.unwrap_or_default();
+            let coloured = (0..30u16)
+                .flat_map(|y| (0..100u16).map(move |x| (x, y)))
+                .any(|(x, y)| screen[(x, y)].fg == keyword);
+            assert!(coloured, "keystroke {i} drew no keyword colour");
+        }
+        assert_eq!(
+            xs(&app),
+            before + 20,
+            "every keystroke typed on line {line}"
+        );
+        println!("worst keystroke with a full frame: {worst:?}");
+        assert!(
+            worst < Duration::from_millis(16),
+            "a keystroke took {worst:?}"
+        );
+        Ok(())
     }
 
     #[test]

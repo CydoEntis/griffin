@@ -3,6 +3,7 @@ mod backup;
 mod buffer;
 mod clipboard;
 mod config;
+mod highlight;
 mod keymap;
 mod save;
 mod search;

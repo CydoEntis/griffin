@@ -1,0 +1,2 @@
+fn plain text is never coloured
+"even with quotes" and // slashes
