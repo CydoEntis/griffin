@@ -27,6 +27,7 @@ const SAMPLE_HTML: &str = "tests/fixtures/highlight/sample.html";
 const SAMPLE_CSS: &str = "tests/fixtures/highlight/sample.css";
 const SAMPLE_GO: &str = "tests/fixtures/highlight/sample.go";
 const SAMPLE_PY: &str = "tests/fixtures/highlight/sample.py";
+const SAMPLE_SQL: &str = "tests/fixtures/highlight/sample.sql";
 
 /// hydra's syntax and text colours.
 const KEYWORD: Color = Color::Rgb(0xa5, 0x93, 0xff);
@@ -289,6 +290,52 @@ fn python_roles() {
 }
 
 #[test]
+fn sql_roles() {
+    let path = Path::new(SAMPLE_SQL);
+    let roles = highlight_roles(path);
+    let at = |line, col| role_at(path, &roles, line, col);
+    // `--` line comment and `/* */` block comment.
+    assert_eq!(at(1, 1), Some(Role::Comment));
+    assert_eq!(at(1, 20), Some(Role::Comment));
+    assert_eq!(at(14, 1), Some(Role::Comment));
+    assert_eq!(at(14, 30), Some(Role::Comment));
+    // `SELECT`, `FROM`, `WHERE`, first letter to last; `CREATE TABLE`.
+    assert_eq!(at(8, 1), Some(Role::Keyword));
+    assert_eq!(at(8, 6), Some(Role::Keyword));
+    assert_eq!(at(9, 1), Some(Role::Keyword));
+    assert_eq!(at(9, 4), Some(Role::Keyword));
+    assert_eq!(at(10, 1), Some(Role::Keyword));
+    assert_eq!(at(10, 5), Some(Role::Keyword));
+    assert_eq!(at(2, 1), Some(Role::Keyword));
+    assert_eq!(at(2, 8), Some(Role::Keyword));
+    // `'origin'` and `'skip'`, quote to quote.
+    assert_eq!(at(4, 33), Some(Role::String));
+    assert_eq!(at(4, 40), Some(Role::String));
+    assert_eq!(at(10, 28), Some(Role::String));
+    assert_eq!(at(10, 33), Some(Role::String));
+    // `10`, `2.5` and `42` are numbers, not strings.
+    assert_eq!(at(5, 15), Some(Role::Number));
+    assert_eq!(at(8, 19), Some(Role::Number));
+    assert_eq!(at(8, 21), Some(Role::Number));
+    assert_eq!(at(10, 12), Some(Role::Number));
+    // Line 12 doesn't parse. Its brackets and words aren't read as the start of
+    // a string or comment that swallows what follows, and the statement after
+    // it is still coloured.
+    for col in [1, 13, 21, 32, 33] {
+        let role = at(12, col);
+        assert!(
+            !matches!(role, Some(Role::String | Role::Comment)),
+            "line 12 col {col} is {role:?}"
+        );
+    }
+    assert_eq!(at(15, 1), Some(Role::Keyword));
+    assert_eq!(at(15, 8), Some(Role::Keyword));
+    assert_eq!(at(15, 31), Some(Role::Keyword));
+    assert_eq!(at(15, 39), Some(Role::String));
+    assert_eq!(at(15, 46), Some(Role::Number));
+}
+
+#[test]
 fn go_shows_keyword_colour_on_screen() {
     let griffin = Griffin::spawn(&[SAMPLE_GO]);
     griffin.wait_for_text("func distance", START);
@@ -300,6 +347,22 @@ fn go_shows_keyword_colour_on_screen() {
     assert_eq!(griffin.fg_at(col + 3, row), KEYWORD);
     // `distance` isn't a keyword.
     assert_ne!(griffin.fg_at(col + 5, row), KEYWORD);
+}
+
+#[test]
+fn sql_shows_keyword_colour_on_screen() {
+    let griffin = Griffin::spawn(&[SAMPLE_SQL]);
+    griffin.wait_for_text("SELECT label", START);
+    let row = 8;
+    let col = griffin
+        .text_col(row, "SELECT label")
+        .expect("line 8 is on row 8");
+    griffin.wait_for_fg_at(col, row, KEYWORD, WAIT);
+    assert_eq!(griffin.fg_at(col + 5, row), KEYWORD);
+    // `label` is a column, not a keyword.
+    assert_ne!(griffin.fg_at(col + 7, row), KEYWORD);
+    // The line that doesn't parse still shows its text.
+    griffin.wait_for_text("this is not ) valid sql at all (;", WAIT);
 }
 
 #[test]

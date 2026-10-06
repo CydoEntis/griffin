@@ -9,6 +9,7 @@
 //! `tree-sitter-javascript = "0.25"`. Added with HTML and CSS (#24):
 //! `tree-sitter-html = "0.23"` and `tree-sitter-css = "0.25"`. Added with Go and
 //! Python (#25): `tree-sitter-go = "0.25"` and `tree-sitter-python = "0.25"`.
+//! Added with SQL (#26): `tree-sitter-sequel = "0.3"` (grammar ABI 14).
 //! Grammars are compiled in (ADR-0001); none load at runtime.
 //!
 //! Each language's queries are built into a `tree_sitter_highlight`
@@ -21,6 +22,7 @@ mod html;
 mod javascript;
 mod python;
 mod rust;
+mod sql;
 mod typescript;
 
 use std::path::Path;
@@ -84,6 +86,7 @@ static LANGUAGES: &[&Language] = &[
     &css::CSS,
     &go::GO,
     &python::PYTHON,
+    &sql::SQL,
 ];
 
 /// The language for `path`'s extension, if Griffin highlights it.
@@ -216,6 +219,16 @@ mod tests {
         assert_eq!(name("go.sum"), None);
         assert_eq!(name("requirements.txt"), None);
         assert_eq!(name("a.pyc"), None);
+    }
+
+    #[test]
+    fn sql_extension_resolves() {
+        let name = |file: &str| for_path(Path::new(file)).map(|lang| lang.name);
+        for file in ["schema.sql", "A.SQL"] {
+            assert_eq!(name(file), Some("sql"), "{file}");
+        }
+        assert_eq!(name("data.sqlite"), None);
+        assert_eq!(name("app.db"), None);
     }
 
     #[test]
