@@ -6,6 +6,7 @@
 // Each test crate compiles its own copy of this module and uses only part of it.
 #![allow(dead_code)]
 
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -68,16 +69,28 @@ impl Griffin {
 
     /// Starts griffin with `dir` as its working directory and `toml` as its config.
     pub fn spawn_in_with_config(dir: &Path, toml: &str, args: &[&str]) -> Self {
-        Self::spawn_full(dir, toml, None, args)
+        Self::spawn_full(dir, toml, None, &[], args)
+    }
+
+    /// Starts griffin in `dir` with extra environment variables, e.g. a `PATH`
+    /// that holds a fixture's commands.
+    pub fn spawn_in_with_env(dir: &Path, env: &[(&str, OsString)], args: &[&str]) -> Self {
+        Self::spawn_full(dir, "", None, env, args)
     }
 
     /// Starts griffin in `dir` with `data` as its data dir, which outlives this run
     /// so a relaunch can find what the last one left there.
     pub fn spawn_in_with_data(dir: &Path, data: &Path, args: &[&str]) -> Self {
-        Self::spawn_full(dir, "", Some(data.to_path_buf()), args)
+        Self::spawn_full(dir, "", Some(data.to_path_buf()), &[], args)
     }
 
-    fn spawn_full(dir: &Path, toml: &str, data: Option<PathBuf>, args: &[&str]) -> Self {
+    fn spawn_full(
+        dir: &Path,
+        toml: &str,
+        data: Option<PathBuf>,
+        env: &[(&str, OsString)],
+        args: &[&str],
+    ) -> Self {
         let (data, owned_data) = match data {
             Some(data) => (data, None),
             None => {
@@ -106,6 +119,9 @@ impl Griffin {
         cmd.env("GRIFFIN_CONFIG", config.path());
         cmd.env("GRIFFIN_DATA_DIR", &data);
         cmd.env("TERM", "xterm-256color");
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
 
         let mut child = pair.slave.spawn_command(cmd).expect("spawn griffin");
         // The child holds its own handle; ours would keep the PTY open after it exits.

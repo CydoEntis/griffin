@@ -9,6 +9,7 @@ name = "griffin"
 path = "src/main.rs"
 
 [dependencies]
+ansi-to-tui = "8"
 anyhow = "1"
 arboard = { version = "3", default-features = false }
 clap = { version = "4", features = ["derive"] }
@@ -22,7 +23,7 @@ regex = "1"
 ropey = "1"
 serde = { version = "1", features = ["derive"] }
 streaming-iterator = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
 toml = "1"
 trash = "5"
 tree-sitter = "0.27"

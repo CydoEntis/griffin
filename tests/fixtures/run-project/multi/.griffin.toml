@@ -1,0 +1,8 @@
+[[run]]
+name = "dev"
+command = "colors"
+
+[[run]]
+name = "hello"
+command = "echo hello from griffin"
+cwd = "."

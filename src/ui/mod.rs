@@ -2,6 +2,7 @@ pub mod confirm;
 pub mod find;
 pub mod picker;
 pub mod prompt;
+pub mod run;
 pub mod search;
 pub mod status;
 pub mod tabs;

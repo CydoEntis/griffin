@@ -127,6 +127,61 @@ fn describe(err: &toml::de::Error, text: &str) -> String {
     }
 }
 
+/// The project's `.griffin.toml`, at the project root.
+pub const PROJECT_FILE: &str = ".griffin.toml";
+
+/// `.griffin.toml`. Like `config.toml`, unknown sections are ignored.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ProjectConfig {
+    pub run: Vec<RunEntry>,
+}
+
+/// One `[[run]]` entry: a command F5 can run.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RunEntry {
+    pub name: String,
+    pub command: String,
+    /// Relative to the project root; the root itself when absent.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+/// What loading `.griffin.toml` produced: always a usable (maybe empty) config,
+/// plus why it fell back to empty, if it did.
+#[derive(Debug, Default)]
+pub struct LoadedProject {
+    pub config: ProjectConfig,
+    pub error: Option<String>,
+}
+
+/// Reads `.griffin.toml` from `root`. A missing file means no entries; an
+/// unreadable or malformed one means no entries plus a one-line error.
+pub fn load_project(root: &Path) -> LoadedProject {
+    let path = root.join(PROJECT_FILE);
+    match fs::read_to_string(&path) {
+        Ok(text) => parse_project(&text),
+        Err(err) if err.kind() == ErrorKind::NotFound => LoadedProject::default(),
+        Err(err) => LoadedProject {
+            config: ProjectConfig::default(),
+            error: Some(format!("cannot read {PROJECT_FILE}: {err}")),
+        },
+    }
+}
+
+pub fn parse_project(text: &str) -> LoadedProject {
+    match toml::from_str::<ProjectConfig>(text) {
+        Ok(config) => LoadedProject {
+            config,
+            error: None,
+        },
+        Err(err) => LoadedProject {
+            config: ProjectConfig::default(),
+            error: Some(format!("{PROJECT_FILE} {}", describe(&err, text))),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +313,73 @@ mod tests {
         let base = directories::BaseDirs::new().unwrap();
         assert!(path.starts_with(base.config_dir()));
         assert!(config_path(Some(OsString::new())) == Some(path));
+    }
+    #[test]
+    fn run_entries_are_read_with_an_optional_cwd() {
+        let loaded = parse_project(
+            r#"
+            [[run]]
+            name = "dev"
+            command = "npm run dev"
+            cwd = "web"
+
+            [[run]]
+            name = "test"
+            command = "cargo test"
+            "#,
+        );
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert_eq!(
+            loaded.config.run,
+            [
+                RunEntry {
+                    name: "dev".into(),
+                    command: "npm run dev".into(),
+                    cwd: Some("web".into()),
+                },
+                RunEntry {
+                    name: "test".into(),
+                    command: "cargo test".into(),
+                    cwd: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_project_file_is_an_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let loaded = load_project(dir.path());
+        assert!(loaded.error.is_none());
+        assert!(loaded.config.run.is_empty());
+    }
+
+    #[test]
+    fn the_project_file_is_read_from_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(PROJECT_FILE),
+            "[[run]]\nname = \"dev\"\ncommand = \"echo hi\"\n",
+        )
+        .unwrap();
+        let loaded = load_project(dir.path());
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert_eq!(loaded.config.run[0].name, "dev");
+    }
+
+    #[test]
+    fn a_malformed_project_file_is_an_empty_list_with_a_one_line_error() {
+        let loaded = parse_project("[[run]]\nname = \"dev\"\ncommand = = 1\n");
+        assert!(loaded.config.run.is_empty());
+        let error = loaded.error.expect("malformed toml is an error");
+        assert!(error.starts_with(".griffin.toml line 3:"), "{error}");
+        assert!(!error.contains('\n'), "{error}");
+    }
+
+    #[test]
+    fn a_run_entry_without_a_command_is_an_error() {
+        let loaded = parse_project("[[run]]\nname = \"dev\"\n");
+        assert!(loaded.config.run.is_empty());
+        assert!(loaded.error.is_some());
     }
 }
