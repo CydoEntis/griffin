@@ -28,6 +28,7 @@ use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
 use crate::theme::Theme;
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
+use crate::ui::find::{FindBar, Step};
 use crate::ui::picker::{Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
 use crate::ui::status::render_status;
@@ -592,6 +593,9 @@ pub struct App {
     name_prompt: Option<NamePrompt>,
     /// The go-to-file picker, while it's open; it takes every key.
     picker: Option<Picker>,
+    /// The find bar, while it's open; it takes every key, so the active buffer
+    /// can't change under its matches.
+    find: Option<FindBar>,
     /// The entry the trash prompt will move once answered.
     pending_trash: Option<PathBuf>,
     /// Tabs whose changes the user chose to discard while quitting, so the quit
@@ -745,13 +749,21 @@ impl App {
                     }
                     return;
                 }
+                if let Some(find) = &mut self.find {
+                    let step = find.paste(&text, &self.tabs.active().buffer.rope);
+                    self.find_step(step);
+                    return;
+                }
                 // Bracketed paste bypasses the keymap: it is text, not a key.
                 // Windows Terminal's own Ctrl+V paste arrives this way too.
                 self.edit(|buffer| buffer.paste(&text));
             }
             // The mouse bypasses the keymap too: only keys are remappable.
             AppEvent::Input(Event::Mouse(mouse))
-                if self.prompt.is_none() && self.name_prompt.is_none() && self.picker.is_none() =>
+                if self.prompt.is_none()
+                    && self.name_prompt.is_none()
+                    && self.picker.is_none()
+                    && self.find.is_none() =>
             {
                 self.handle_mouse(mouse, Instant::now());
             }
@@ -772,7 +784,9 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) {
         // Tree letters are only actions when nothing else is reading keys as text.
-        let scope = if self.focus == Focus::Tree
+        let scope = if self.find.is_some() && self.prompt.is_none() {
+            Scope::Find
+        } else if self.focus == Focus::Tree
             && self.prompt.is_none()
             && self.name_prompt.is_none()
             && self.picker.is_none()
@@ -798,6 +812,11 @@ impl App {
             if let Some(outcome) = name_prompt.bar.handle(input) {
                 self.finish_name_prompt(outcome);
             }
+            return;
+        }
+        if let Some(find) = &mut self.find {
+            let step = find.handle(input, &self.tabs.active().buffer.rope);
+            self.find_step(step);
             return;
         }
         match input {
@@ -841,7 +860,8 @@ impl App {
             | Action::ToggleSplit
             | Action::CycleFocus
             | Action::GoToFile
-            | Action::GoToLine => {
+            | Action::GoToLine
+            | Action::Find => {
                 self.handle_action(action);
             }
             _ => {}
@@ -1113,11 +1133,16 @@ impl App {
             Action::GoToLine => {
                 self.open_name_prompt(BarOp::GoToLine, PromptBar::new("Go to line", ""));
             }
-            // Bound only in tree scope, so they never reach the editor.
+            Action::Find => self.open_find(),
+            // Bound only in tree or find bar scope, so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
             | Action::TreeRename
-            | Action::TreeDelete => {}
+            | Action::TreeDelete
+            | Action::FindNext
+            | Action::FindPrev
+            | Action::FindCase
+            | Action::FindRegex => {}
         }
     }
 
@@ -1264,6 +1289,36 @@ impl App {
             }
             Err(_) => self.message = Some(format!("not a line number: {}", text.trim())),
         }
+    }
+
+    /// Ctrl+F: opens the find bar over the active buffer, holding the selection
+    /// when it's on one line, and jumps to the first match from the cursor.
+    fn open_find(&mut self) {
+        self.focus = Focus::Editor;
+        let buffer = self.buffer();
+        let text = buffer
+            .selected_text()
+            .filter(|text| !text.contains('\n'))
+            .unwrap_or_default();
+        let origin = buffer.selection().map_or(buffer.cursor, |s| s.start);
+        self.find = Some(FindBar::new(&text, origin, &buffer.rope));
+        // The bar takes a row from the panes above it.
+        self.find_step(Step::Jump);
+    }
+
+    /// Follows what a key did in the find bar: the cursor goes to the current
+    /// match, or stays where it is when the bar closes.
+    fn find_step(&mut self, step: Step) {
+        match step {
+            Step::Stay => {}
+            Step::Jump => {
+                if let Some(at) = self.find.as_ref().and_then(FindBar::current_match) {
+                    self.buffer_mut().place_cursor(at.start);
+                }
+            }
+            Step::Close => self.find = None,
+        }
+        self.follow_cursor();
     }
 
     /// Ctrl+P: opens the picker and lists the project's files on a background
@@ -1706,7 +1761,7 @@ impl App {
         Panes::new(
             self.screen,
             self.tree_visible,
-            self.name_prompt.is_some(),
+            self.name_prompt.is_some() || self.find.is_some(),
             self.tabs.splits.len(),
         )
     }
@@ -1721,7 +1776,7 @@ impl App {
         let panes = Panes::new(
             frame.area(),
             self.tree_visible,
-            self.name_prompt.is_some(),
+            self.name_prompt.is_some() || self.find.is_some(),
             self.tabs.splits.len(),
         );
         let theme = &self.theme;
@@ -1746,11 +1801,17 @@ impl App {
                 area.tabs,
                 frame,
             );
+            // Matches belong to the active buffer, which the focused split shows.
+            let highlights = match &self.find {
+                Some(find) if split == focused => find.matches(),
+                _ => &[],
+            };
             render_buffer(
                 theme,
                 self.tabs.shown(split).buffer(),
                 &tabs.active().view,
                 self.editor.tab_width,
+                highlights,
                 area.editor,
                 frame,
             );
@@ -1779,6 +1840,10 @@ impl App {
         );
         if let (Some(name_prompt), Some(area)) = (&self.name_prompt, panes.bar) {
             let at = name_prompt.bar.render(theme, frame, area);
+            frame.set_cursor_position(at);
+        }
+        if let (Some(find), Some(area)) = (&self.find, panes.bar) {
+            let at = find.render(theme, frame, area);
             frame.set_cursor_position(at);
         }
         if let Some(picker) = &self.picker {

@@ -5,6 +5,7 @@ mod clipboard;
 mod config;
 mod keymap;
 mod save;
+mod search;
 mod theme;
 mod ui;
 mod view;

@@ -155,6 +155,11 @@ impl Griffin {
 
     /// Sends one key in `[keys]` notation, e.g. `ctrl+s`, `alt+,`, `shift+f5`.
     pub fn send_keys(&mut self, notation: &str) {
+        if cfg!(windows)
+            && let Some(bytes) = win32_input_bytes(notation)
+        {
+            return self.write(&bytes);
+        }
         let bytes = key_bytes(notation).unwrap_or_else(|err| panic!("{err}"));
         self.write(&bytes);
     }
@@ -764,6 +769,22 @@ pub fn key_bytes(notation: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// ConPTY drops CSI u keys it doesn't know, so on Windows the keys that need CSI u
+/// go in win32-input-mode instead (`ESC [ Vk ; Sc ; Uc ; Kd ; Cs ; Rc _`, a press
+/// then a release), which is what Windows Terminal itself sends ConPTY.
+pub fn win32_input_bytes(notation: &str) -> Option<Vec<u8>> {
+    const SHIFT_PRESSED: u16 = 0x10;
+    // Virtual key, scan code and character of the key.
+    let (vk, scan, ch, state) = match notation.trim().to_ascii_lowercase().as_str() {
+        "shift+enter" => (0x0D, 0x1C, 13, SHIFT_PRESSED),
+        _ => return None,
+    };
+    Some(
+        format!("\x1b[{vk};{scan};{ch};1;{state};1_\x1b[{vk};{scan};{ch};0;{state};1_")
+            .into_bytes(),
+    )
+}
+
 fn char_bytes(c: char, mods: Mods) -> Vec<u8> {
     let mut out = Vec::new();
     if mods.alt {
@@ -893,6 +914,15 @@ mod tests {
         assert_eq!(keys("shift+enter"), b"\x1b[13;2u");
         assert_eq!(keys("alt+/"), b"\x1b/");
         assert_eq!(keys("ctrl++"), b"\x1b[43;5u");
+    }
+
+    #[test]
+    fn shift_enter_has_a_win32_input_mode_form_for_conpty() {
+        assert_eq!(
+            win32_input_bytes("shift+enter").as_deref(),
+            Some(&b"\x1b[13;28;13;1;16;1_\x1b[13;28;13;0;16;1_"[..])
+        );
+        assert_eq!(win32_input_bytes("enter"), None);
     }
 
     #[test]

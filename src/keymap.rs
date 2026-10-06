@@ -60,6 +60,16 @@ pub enum Action {
     GoToFile,
     /// Prompts for a line number and moves the cursor there.
     GoToLine,
+    /// Opens the find bar over the active buffer.
+    Find,
+    /// Find bar only: moves to the next match, wrapping.
+    FindNext,
+    /// Find bar only: moves to the previous match, wrapping.
+    FindPrev,
+    /// Find bar only: toggles case-sensitive matching.
+    FindCase,
+    /// Find bar only: toggles regex matching.
+    FindRegex,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -68,6 +78,8 @@ pub enum Action {
 pub enum Scope {
     Global,
     Tree,
+    /// While the find bar is open: its keys win over the global ones.
+    Find,
 }
 
 impl Action {
@@ -133,6 +145,11 @@ impl Action {
         Action::CycleFocus,
         Action::GoToFile,
         Action::GoToLine,
+        Action::Find,
+        Action::FindNext,
+        Action::FindPrev,
+        Action::FindCase,
+        Action::FindRegex,
     ];
 
     pub fn scope(self) -> Scope {
@@ -141,6 +158,9 @@ impl Action {
             | Action::TreeNewFolder
             | Action::TreeRename
             | Action::TreeDelete => Scope::Tree,
+            Action::FindNext | Action::FindPrev | Action::FindCase | Action::FindRegex => {
+                Scope::Find
+            }
             _ => Scope::Global,
         }
     }
@@ -216,6 +236,11 @@ impl Action {
             Action::CycleFocus => "cycle_focus",
             Action::GoToFile => "go_to_file",
             Action::GoToLine => "go_to_line",
+            Action::Find => "find",
+            Action::FindNext => "find_next",
+            Action::FindPrev => "find_prev",
+            Action::FindCase => "find_case",
+            Action::FindRegex => "find_regex",
         }
     }
 
@@ -225,8 +250,8 @@ impl Action {
 }
 
 /// The spec's "Default keymap" table plus R4's movement, R6's editing, R10's
-/// selection, R14's tree keys, R16's tab keys, R17's split keys and R18's picker
-/// keys, one line per binding.
+/// selection, R14's tree keys, R16's tab keys, R17's split keys, R18's picker
+/// keys and R20's find bar keys, one line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -289,6 +314,11 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::CycleFocus, "f6"),
     (Action::GoToFile, "ctrl+p"),
     (Action::GoToLine, "ctrl+g"),
+    (Action::Find, "ctrl+f"),
+    (Action::FindNext, "enter"),
+    (Action::FindPrev, "shift+enter"),
+    (Action::FindCase, "alt+c"),
+    (Action::FindRegex, "alt+r"),
 ];
 
 /// What a key event means to the editor.
@@ -324,6 +354,8 @@ pub struct Keymap {
     bindings: HashMap<Key, Action>,
     /// Checked before `bindings` while the tree has focus.
     tree: HashMap<Key, Action>,
+    /// Checked before `bindings` while the find bar is open.
+    find: HashMap<Key, Action>,
 }
 
 impl Default for Keymap {
@@ -353,6 +385,7 @@ impl Keymap {
         let mut map = Keymap {
             bindings: HashMap::new(),
             tree: HashMap::new(),
+            find: HashMap::new(),
         };
         for &(action, notation) in DEFAULT_BINDINGS {
             if overrides.contains_key(&action) {
@@ -375,6 +408,7 @@ impl Keymap {
         match scope {
             Scope::Global => &mut self.bindings,
             Scope::Tree => &mut self.tree,
+            Scope::Find => &mut self.find,
         }
     }
 
@@ -384,15 +418,19 @@ impl Keymap {
         self.resolve_in(event, Scope::Global)
     }
 
-    /// What `event` means in `scope`: tree bindings win while the tree has focus.
+    /// What `event` means in `scope`: tree bindings win while the tree has focus,
+    /// find bar bindings while the find bar is open.
     pub fn resolve_in(&self, event: &KeyEvent, scope: Scope) -> Input {
         if event.kind == KeyEventKind::Release {
             return Input::Ignored;
         }
         let key = normalize(event.code, event.modifiers);
-        if scope == Scope::Tree
-            && let Some(&action) = self.tree.get(&key)
-        {
+        let scoped = match scope {
+            Scope::Global => None,
+            Scope::Tree => self.tree.get(&key),
+            Scope::Find => self.find.get(&key),
+        };
+        if let Some(&action) = scoped {
             return Input::Action(action);
         }
         if let Some(&action) = self.bindings.get(&key) {
@@ -630,7 +668,10 @@ mod tests {
     #[test]
     fn defaults_build() {
         let map = Keymap::default();
-        assert_eq!(map.bindings.len() + map.tree.len(), DEFAULT_BINDINGS.len());
+        assert_eq!(
+            map.bindings.len() + map.tree.len() + map.find.len(),
+            DEFAULT_BINDINGS.len()
+        );
     }
 
     #[test]
@@ -1053,6 +1094,42 @@ mod tests {
             Input::Action(Action::GoToFile)
         );
         assert_eq!(Action::from_name("go_to_line"), Some(Action::GoToLine));
+    }
+
+    #[test]
+    fn find_keys_resolve_and_bar_keys_only_count_in_find_scope() {
+        let map = Keymap::default();
+        let none = KeyModifiers::NONE;
+        let alt = |c| ev(KeyCode::Char(c), KeyModifiers::ALT);
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('f'), KeyModifiers::CONTROL)),
+            Input::Action(Action::Find)
+        );
+        for (event, action) in [
+            (ev(KeyCode::Enter, none), Action::FindNext),
+            (ev(KeyCode::Enter, KeyModifiers::SHIFT), Action::FindPrev),
+            (alt('c'), Action::FindCase),
+            (alt('r'), Action::FindRegex),
+        ] {
+            assert_eq!(map.resolve_in(&event, Scope::Find), Input::Action(action));
+        }
+        // Outside the bar Enter is still a newline and the Alt keys do nothing.
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Enter, none)),
+            Input::Action(Action::Newline)
+        );
+        assert_eq!(map.resolve(&alt('c')), Input::Ignored);
+        // Global keys still reach the bar.
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Esc, none), Scope::Find),
+            Input::Action(Action::Cancel)
+        );
+        let map = Keymap::new(&keys(&[("find_case", one("alt+i"))])).unwrap();
+        assert_eq!(
+            map.resolve_in(&alt('i'), Scope::Find),
+            Input::Action(Action::FindCase)
+        );
+        assert_eq!(map.resolve_in(&alt('c'), Scope::Find), Input::Ignored);
     }
 
     #[test]

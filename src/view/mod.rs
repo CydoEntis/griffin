@@ -90,12 +90,15 @@ fn text_width(buf: &Buffer, area: Rect) -> usize {
 
 /// Draws `buf` into `area`: a right-aligned line-number gutter, then each line cut
 /// at the right edge (Griffin never wraps), and puts the terminal cursor on the
-/// buffer cursor when it's in view. Pure: reads its inputs only.
+/// buffer cursor when it's in view. The selection and every range in `highlights`
+/// (find matches, sorted by start) get the selection colours. Pure: reads its
+/// inputs only.
 pub fn render_buffer(
     theme: &Theme,
     buf: &Buffer,
     view: &View,
     tab_width: usize,
+    highlights: &[Range<usize>],
     area: Rect,
     frame: &mut Frame,
 ) {
@@ -126,8 +129,15 @@ pub fn render_buffer(
         // `gutter_width` is at most `area.width` here, so it fits in a u16.
         let x = area.x + gutter_width as u16;
         out.set_stringn(x, y, &text, text_width, Style::new());
-        if let Some(selection) = &selection {
-            let cells = selected_cells(buf, line_idx, selection, tab_width);
+        let line_start = buf.rope.line_to_char(line_idx);
+        let line_end = line_start + buf.rope.line(line_idx).len_chars();
+        // Only the highlights that touch this line, found by bisecting the sorted list.
+        let first = highlights.partition_point(|h| h.end <= line_start);
+        let on_line = highlights[first..]
+            .iter()
+            .take_while(|h| h.start < line_end);
+        for range in selection.iter().chain(on_line) {
+            let cells = selected_cells(buf, line_idx, range, tab_width);
             let from = cells.start.max(view.scroll_col);
             let to = cells.end.min(view.scroll_col + text_width);
             for col in from..to {
@@ -338,6 +348,7 @@ mod tests {
                 &buf,
                 &View::default(),
                 4,
+                &[],
                 frame.area(),
                 frame,
             )
@@ -382,6 +393,7 @@ mod tests {
                 &buf,
                 &View::default(),
                 4,
+                &[],
                 frame.area(),
                 frame,
             )
@@ -462,6 +474,43 @@ mod tests {
     }
 
     #[test]
+    fn highlights_get_the_selection_colours_on_their_own_cells() -> Result<()> {
+        let buf = Buffer {
+            rope: Rope::from_str(
+                "foo x
+ab foo foo",
+            ),
+            ..Buffer::empty()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(30, 2))?;
+        terminal.draw(|frame| {
+            render_buffer(
+                &Theme::default(),
+                &buf,
+                &View::default(),
+                4,
+                &[0..3, 9..12, 13..16],
+                frame.area(),
+                frame,
+            )
+        })?;
+        let screen = terminal.backend().buffer();
+        let marked = |y: u16| -> String {
+            (0..30)
+                .filter(|&x| {
+                    screen[(x, y)]
+                        .modifier
+                        .contains(ratatui::style::Modifier::REVERSED)
+                })
+                .map(|x| screen[(x, y)].symbol())
+                .collect()
+        };
+        assert_eq!(marked(0), "foo");
+        assert_eq!(marked(1), "foofoo");
+        Ok(())
+    }
+
+    #[test]
     fn gutter_is_right_aligned_to_the_widest_number() -> Result<()> {
         let text: String = (1..=12).map(|n| format!("line {n}\n")).collect();
         let buf = Buffer {
@@ -475,6 +524,7 @@ mod tests {
                 &buf,
                 &View::default(),
                 4,
+                &[],
                 frame.area(),
                 frame,
             )
