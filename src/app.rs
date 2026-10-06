@@ -1,5 +1,5 @@
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -16,6 +16,7 @@ use tokio::time::timeout;
 use crate::Tui;
 use crate::backup::{self, Backups};
 use crate::buffer::Buffer;
+use crate::buffer::movement::Motion;
 use crate::clipboard::Clipboard;
 use crate::config::EditorConfig;
 #[cfg(windows)]
@@ -23,7 +24,9 @@ use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap};
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
 use crate::ui::status::render_status;
+use crate::ui::tree::{TREE_WIDTH, render_divider, render_tree};
 use crate::view::{View, render_buffer};
+use crate::workspace::{Launch, Tree};
 
 /// Everything the event loop reacts to. Background work (LSP, run output, timers)
 /// adds variants here instead of touching `App` (ADR-0001).
@@ -43,6 +46,16 @@ enum Prompt {
     UnsavedQuit,
     /// The file opened with a newer crash backup beside it.
     Recover,
+    /// Opening another file from the tree with unsaved changes.
+    UnsavedOpen,
+}
+
+/// Which pane keys go to.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    #[default]
+    Editor,
+    Tree,
 }
 
 const UNSAVED_QUIT: Confirm = Confirm {
@@ -96,7 +109,7 @@ struct Click {
 impl Prompt {
     fn confirm(self) -> Confirm {
         match self {
-            Prompt::UnsavedQuit => UNSAVED_QUIT,
+            Prompt::UnsavedQuit | Prompt::UnsavedOpen => UNSAVED_QUIT,
             Prompt::Recover => RECOVER,
         }
     }
@@ -117,6 +130,12 @@ pub struct App {
     message: Option<String>,
     /// While set, every key goes to the prompt instead of the editor.
     prompt: Option<Prompt>,
+    /// The project's file tree, read from disk as folders expand.
+    tree: Tree,
+    tree_visible: bool,
+    focus: Focus,
+    /// The file the unsaved-changes prompt will open once answered.
+    pending_open: Option<PathBuf>,
     clipboard: Box<dyn Clipboard>,
     /// The previous left press, until a double-click uses it up.
     last_click: Option<Click>,
@@ -139,8 +158,9 @@ pub struct App {
 }
 
 impl App {
-    /// `path` is what the command line named, if anything. A file that can't be
-    /// opened leaves an untitled buffer and says why in the status line.
+    /// `path` is what the command line named, if anything: a folder opens as the
+    /// project with the tree showing, a file opens in the editor. A file that can't
+    /// be opened leaves an untitled buffer and says why in the status line.
     pub fn new(
         keymap: Keymap,
         editor: EditorConfig,
@@ -148,7 +168,8 @@ impl App {
         message: Option<String>,
     ) -> Self {
         let mut messages: Vec<String> = message.into_iter().collect();
-        let buffer = match path {
+        let launch = Launch::from_arg(path.as_deref());
+        let buffer = match launch.file {
             Some(path) => Buffer::open(&path).unwrap_or_else(|err| {
                 messages.push(format!("cannot open {}: {err}", path.display()));
                 Buffer::empty()
@@ -164,6 +185,15 @@ impl App {
             screen: Rect::default(),
             message,
             prompt: None,
+            tree: Tree::new(&launch.root),
+            tree_visible: launch.show_tree,
+            // With only a folder open there's nothing to edit yet.
+            focus: if launch.show_tree {
+                Focus::Tree
+            } else {
+                Focus::Editor
+            },
+            pending_open: None,
             clipboard: Box::default(),
             last_click: None,
             drag_from: None,
@@ -250,9 +280,110 @@ impl App {
             return;
         }
         match input {
+            Input::Action(action) if self.focus == Focus::Tree => self.handle_tree_action(action),
             Input::Action(action) => self.handle_action(action),
+            // Typing in the tree does nothing until type-to-find exists.
+            Input::Text(_) if self.focus == Focus::Tree => {}
             Input::Text(ch) => self.edit(|buffer| buffer.type_text(ch.encode_utf8(&mut [0; 4]))),
             Input::Ignored => {}
+        }
+    }
+
+    /// Keys while the tree has focus: arrows browse, Enter opens; the actions that
+    /// make sense anywhere go to `handle_action`, the editing ones are dropped.
+    fn handle_tree_action(&mut self, action: Action) {
+        match action {
+            Action::Move(Motion::Up) => self.tree.move_by(-1),
+            Action::Move(Motion::Down) => self.tree.move_by(1),
+            Action::Move(Motion::PageUp) => self.tree.move_by(-self.tree_page()),
+            Action::Move(Motion::PageDown) => self.tree.move_by(self.tree_page()),
+            Action::Move(Motion::DocStart) => self.tree.select(0),
+            Action::Move(Motion::DocEnd) => self.tree.move_by(isize::MAX),
+            Action::Move(Motion::Right) => self.tree.expand(),
+            Action::Move(Motion::Left) => self.tree.collapse(),
+            Action::Newline => self.activate_tree_row(),
+            Action::Cancel => self.focus = Focus::Editor,
+            Action::Quit | Action::Save | Action::ToggleTree | Action::FocusTree => {
+                self.handle_action(action);
+            }
+            _ => {}
+        }
+        self.follow_tree();
+    }
+
+    /// Enter or a click on the selected row: a folder opens or closes, a file opens
+    /// in the editor.
+    fn activate_tree_row(&mut self) {
+        let Some(row) = self.tree.selected_row() else {
+            return;
+        };
+        if row.entry.is_dir {
+            self.tree.toggle();
+        } else {
+            let path = row.entry.path.clone();
+            self.request_open(path);
+        }
+    }
+
+    /// Opens `path` in place of the current buffer (tabs come later), asking first
+    /// when that would throw away unsaved changes.
+    fn request_open(&mut self, path: PathBuf) {
+        if self.buffer.dirty {
+            self.pending_open = Some(path);
+            self.prompt = Some(Prompt::UnsavedOpen);
+        } else {
+            self.open(&path);
+        }
+    }
+
+    fn open(&mut self, path: &Path) {
+        match Buffer::open(path) {
+            Ok(buffer) => {
+                // The old buffer goes without unsaved edits, so its backup can too.
+                self.delete_backup();
+                self.buffer = buffer;
+                self.view = View::default();
+                self.focus = Focus::Editor;
+                if let Some(text) = self.backups.recoverable(path) {
+                    self.recovery = Some(text);
+                    self.prompt = Some(Prompt::Recover);
+                }
+                self.follow_cursor();
+            }
+            Err(err) => self.message = Some(format!("cannot open {}: {err}", path.display())),
+        }
+    }
+
+    fn toggle_tree(&mut self) {
+        self.tree_visible = !self.tree_visible;
+        if !self.tree_visible {
+            self.focus = Focus::Editor;
+        }
+        // The editor pane just changed width.
+        self.follow_cursor();
+        self.follow_tree();
+    }
+
+    fn switch_focus(&mut self) {
+        match self.focus {
+            Focus::Tree => self.focus = Focus::Editor,
+            Focus::Editor => {
+                if !self.tree_visible {
+                    self.toggle_tree();
+                }
+                self.focus = Focus::Tree;
+            }
+        }
+    }
+
+    /// Rows one PageUp/PageDown moves in the tree.
+    fn tree_page(&self) -> isize {
+        isize::try_from(self.panes().editor.height).unwrap_or(isize::MAX)
+    }
+
+    fn follow_tree(&mut self) {
+        if let Some(area) = self.panes().tree {
+            self.tree.follow(usize::from(area.height));
         }
     }
 
@@ -270,7 +401,7 @@ impl App {
             // Nothing to cancel outside a prompt.
             Action::Cancel => {}
             Action::Move(motion) => {
-                let page = usize::from(editor_area(self.screen).height);
+                let page = usize::from(self.panes().editor.height);
                 self.buffer.move_cursor(motion, page, self.editor.tab_width);
                 self.follow_cursor();
             }
@@ -288,7 +419,7 @@ impl App {
                 buffer.redo();
             }),
             Action::Select(motion) => {
-                let page = usize::from(editor_area(self.screen).height);
+                let page = usize::from(self.panes().editor.height);
                 self.buffer.select(motion, page, self.editor.tab_width);
                 self.follow_cursor();
             }
@@ -310,14 +441,23 @@ impl App {
                 Ok(text) => self.edit(|buffer| buffer.paste(&text)),
                 Err(err) => self.message = Some(format!("cannot paste: {err}")),
             },
+            Action::ToggleTree => self.toggle_tree(),
+            Action::FocusTree => self.switch_focus(),
         }
     }
 
     /// Click, drag, double-click and wheel in the editor pane. `now` is when the
     /// event arrived, passed in so double-click timing is testable.
     fn handle_mouse(&mut self, mouse: MouseEvent, now: Instant) {
-        let area = editor_area(self.screen);
+        let panes = self.panes();
+        let area = panes.editor;
         let (col, row) = (mouse.column, mouse.row);
+        if let Some(tree) = panes.tree
+            && tree.contains(Position::new(col, row))
+        {
+            self.handle_tree_mouse(mouse, tree);
+            return;
+        }
         let inside = area.contains(Position::new(col, row));
         let tab_width = self.editor.tab_width;
         let pos = |app: &Self| {
@@ -329,6 +469,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left)
                 if inside && !mouse.modifiers.contains(KeyModifiers::CONTROL) =>
             {
+                self.focus = Focus::Editor;
                 let pos = pos(self);
                 let double = self.last_click.is_some_and(|last| {
                     (last.col, last.row) == (col, row)
@@ -375,6 +516,29 @@ impl App {
         }
     }
 
+    /// A click selects the row under it and opens it (a folder opens or closes, a
+    /// file opens in the editor); the wheel scrolls the tree.
+    fn handle_tree_mouse(&mut self, mouse: MouseEvent, area: Rect) {
+        // Whatever the editor was tracking for a drag or double-click is over.
+        self.drag_from = None;
+        self.last_click = None;
+        let height = usize::from(area.height);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.focus = Focus::Tree;
+                let line = usize::from(mouse.row.saturating_sub(area.y));
+                if let Some(index) = self.tree.row_at(line) {
+                    self.tree.select(index);
+                    self.activate_tree_row();
+                    self.follow_tree();
+                }
+            }
+            MouseEventKind::ScrollUp => self.tree.scroll_by(-WHEEL_LINES, height),
+            MouseEventKind::ScrollDown => self.tree.scroll_by(WHEEL_LINES, height),
+            _ => {}
+        }
+    }
+
     /// Puts the selection on the clipboard. Returns whether something was copied,
     /// so cut never deletes text the clipboard didn't take.
     fn copy(&mut self) -> bool {
@@ -401,6 +565,16 @@ impl App {
             }
             (Prompt::UnsavedQuit, Answer::Picked('d')) => self.quit(),
             (Prompt::UnsavedQuit, _) => {}
+            (Prompt::UnsavedOpen, Answer::Picked(choice @ ('s' | 'd'))) => {
+                let Some(path) = self.pending_open.take() else {
+                    return;
+                };
+                // A failed save leaves the old buffer open with the error showing.
+                if choice == 'd' || self.save() {
+                    self.open(&path);
+                }
+            }
+            (Prompt::UnsavedOpen, _) => self.pending_open = None,
             (Prompt::Recover, Answer::Picked('r')) => {
                 if let Some(text) = self.recovery.take() {
                     self.buffer.recover(&text);
@@ -495,26 +669,36 @@ impl App {
     }
 
     fn follow_cursor(&mut self) {
-        self.view.follow(
-            &self.buffer,
-            editor_area(self.screen),
-            self.editor.tab_width,
-        );
+        self.view
+            .follow(&self.buffer, self.panes().editor, self.editor.tab_width);
+    }
+
+    fn panes(&self) -> Panes {
+        Panes::new(self.screen, self.tree_visible)
     }
 
     /// Draws the whole screen. Pure: reads `self`, never changes it.
     pub fn render(&self, frame: &mut Frame) {
-        let [editor, status] = screen_layout(frame.area());
+        let panes = Panes::new(frame.area(), self.tree_visible);
         render_buffer(
             &self.buffer,
             &self.view,
             self.editor.tab_width,
-            editor,
+            panes.editor,
             frame,
         );
+        if let (Some(tree), Some(divider)) = (panes.tree, panes.divider) {
+            let focused = self.focus == Focus::Tree;
+            let selected = render_tree(&self.tree, focused, tree, frame);
+            render_divider(divider, frame);
+            // The cursor marks the focused pane; `render_buffer` put it in the editor.
+            if focused && let Some(at) = selected {
+                frame.set_cursor_position(at);
+            }
+        }
         render_status(
             frame,
-            status,
+            panes.status,
             &self.buffer.name(),
             self.buffer.dirty,
             self.message.as_deref(),
@@ -526,13 +710,41 @@ impl App {
     }
 }
 
-/// The editor pane above a one-row status line.
-fn screen_layout(screen: Rect) -> [Rect; 2] {
-    Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(screen)
+/// Where each part of the screen goes: the tree (when shown), a `│` divider and
+/// the editor side by side, above a one-row status line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Panes {
+    tree: Option<Rect>,
+    divider: Option<Rect>,
+    editor: Rect,
+    status: Rect,
 }
 
-fn editor_area(screen: Rect) -> Rect {
-    screen_layout(screen)[0]
+impl Panes {
+    fn new(screen: Rect, tree_visible: bool) -> Self {
+        let [main, status] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(screen);
+        if !tree_visible {
+            return Panes {
+                tree: None,
+                divider: None,
+                editor: main,
+                status,
+            };
+        }
+        let [tree, divider, editor] = Layout::horizontal([
+            Constraint::Length(TREE_WIDTH),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .areas(main);
+        Panes {
+            tree: Some(tree),
+            divider: Some(divider),
+            editor,
+            status,
+        }
+    }
 }
 
 async fn read_input(tx: mpsc::UnboundedSender<AppEvent>) {
@@ -1121,6 +1333,65 @@ world",
         assert_eq!(app.buffer.rope.to_string(), "hi\n");
         assert!(!app.buffer.dirty);
         assert!(!t.backup().exists());
+        Ok(())
+    }
+
+    /// A folder holding `a.txt` ("a") and `b.txt` ("b"), opened as the project.
+    fn project() -> Result<(tempfile::TempDir, App)> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("a.txt"), "a")?;
+        std::fs::write(dir.path().join("b.txt"), "b")?;
+        let mut app = App::new(
+            Keymap::default(),
+            EditorConfig::default(),
+            Some(dir.path().to_path_buf()),
+            None,
+        );
+        app.screen = Rect::new(0, 0, 100, 30);
+        Ok((dir, app))
+    }
+
+    #[test]
+    fn a_folder_opens_with_the_tree_focused_and_typing_does_not_edit() -> Result<()> {
+        let (_dir, mut app) = project()?;
+        assert!(app.tree_visible);
+        assert_eq!(app.focus, Focus::Tree);
+        press(&mut app, &["x", "backspace", "ctrl+v"]);
+        assert_eq!(app.buffer.rope.to_string(), "");
+        assert!(!app.buffer.dirty);
+        Ok(())
+    }
+
+    #[test]
+    fn opening_from_the_tree_saves_first_when_asked() -> Result<()> {
+        let (dir, mut app) = project()?;
+        press(&mut app, &["enter"]);
+        assert_eq!(app.buffer.rope.to_string(), "a");
+        assert_eq!(app.focus, Focus::Editor);
+        press(&mut app, &["x", "ctrl+e", "down", "enter"]);
+        assert_eq!(app.prompt, Some(Prompt::UnsavedOpen));
+        press(&mut app, &["s"]);
+        assert_eq!(app.prompt, None);
+        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt"))?, "xa");
+        assert_eq!(app.buffer.rope.to_string(), "b");
+        Ok(())
+    }
+
+    #[test]
+    fn the_tree_takes_31_columns_from_the_editor_while_shown() -> Result<()> {
+        let (_dir, mut app) = project()?;
+        assert_eq!(app.panes().editor, Rect::new(31, 0, 69, 29));
+        assert_eq!(app.panes().tree, Some(Rect::new(0, 0, 30, 29)));
+        press(&mut app, &["ctrl+b"]);
+        assert_eq!(app.panes().editor, Rect::new(0, 0, 100, 29));
+        assert_eq!(app.panes().tree, None);
+        assert_eq!(app.focus, Focus::Editor);
+        // Ctrl+E brings a hidden tree back with focus.
+        press(&mut app, &["ctrl+e"]);
+        assert!(app.tree_visible);
+        assert_eq!(app.focus, Focus::Tree);
+        press(&mut app, &["esc"]);
+        assert_eq!(app.focus, Focus::Editor);
         Ok(())
     }
 

@@ -30,6 +30,10 @@ pub enum Action {
     Copy,
     Cut,
     Paste,
+    /// Shows or hides the file tree.
+    ToggleTree,
+    /// Moves focus between the file tree and the editor.
+    FocusTree,
 }
 
 impl Action {
@@ -71,6 +75,8 @@ impl Action {
         Action::Copy,
         Action::Cut,
         Action::Paste,
+        Action::ToggleTree,
+        Action::FocusTree,
     ];
 
     /// The name used on the left of `[keys]`.
@@ -117,6 +123,8 @@ impl Action {
             Action::Copy => "copy",
             Action::Cut => "cut",
             Action::Paste => "paste",
+            Action::ToggleTree => "toggle_tree",
+            Action::FocusTree => "focus_tree",
         }
     }
 
@@ -165,6 +173,8 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Copy, "ctrl+c"),
     (Action::Cut, "ctrl+x"),
     (Action::Paste, "ctrl+v"),
+    (Action::ToggleTree, "ctrl+b"),
+    (Action::FocusTree, "ctrl+e"),
 ];
 
 /// What a key event means to the editor.
@@ -775,6 +785,24 @@ mod tests {
         assert_eq!(
             burst_as_paste(&[key(KeyCode::Enter), Event::FocusLost]),
             None
+        );
+    }
+
+    #[test]
+    fn ctrl_b_toggles_and_ctrl_e_focuses_the_tree_by_default() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('b'), KeyModifiers::CONTROL)),
+            Input::Action(Action::ToggleTree)
+        );
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('e'), KeyModifiers::CONTROL)),
+            Input::Action(Action::FocusTree)
+        );
+        let map = Keymap::new(&keys(&[("toggle_tree", one("alt+b"))])).unwrap();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('b'), KeyModifiers::ALT)),
+            Input::Action(Action::ToggleTree)
         );
     }
 
