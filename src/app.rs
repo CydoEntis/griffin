@@ -861,7 +861,8 @@ impl App {
             | Action::CycleFocus
             | Action::GoToFile
             | Action::GoToLine
-            | Action::Find => {
+            | Action::Find
+            | Action::Replace => {
                 self.handle_action(action);
             }
             _ => {}
@@ -1133,7 +1134,8 @@ impl App {
             Action::GoToLine => {
                 self.open_name_prompt(BarOp::GoToLine, PromptBar::new("Go to line", ""));
             }
-            Action::Find => self.open_find(),
+            Action::Find => self.open_find(false),
+            Action::Replace => self.open_find(true),
             // Bound only in tree or find bar scope, so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
@@ -1142,7 +1144,8 @@ impl App {
             | Action::FindNext
             | Action::FindPrev
             | Action::FindCase
-            | Action::FindRegex => {}
+            | Action::FindRegex
+            | Action::ReplaceAll => {}
         }
     }
 
@@ -1291,9 +1294,10 @@ impl App {
         }
     }
 
-    /// Ctrl+F: opens the find bar over the active buffer, holding the selection
-    /// when it's on one line, and jumps to the first match from the cursor.
-    fn open_find(&mut self) {
+    /// Ctrl+F (or Ctrl+R, `replace`, which adds the Replace field): opens the find
+    /// bar over the active buffer, holding the selection when it's on one line,
+    /// and jumps to the first match from the cursor.
+    fn open_find(&mut self, replace: bool) {
         self.focus = Focus::Editor;
         let buffer = self.buffer();
         let text = buffer
@@ -1301,24 +1305,73 @@ impl App {
             .filter(|text| !text.contains('\n'))
             .unwrap_or_default();
         let origin = buffer.selection().map_or(buffer.cursor, |s| s.start);
-        self.find = Some(FindBar::new(&text, origin, &buffer.rope));
+        let mut find = FindBar::new(&text, origin, &buffer.rope);
+        if replace {
+            // Typing starts in Find; Tab moves to Replace.
+            find.show_replace(false);
+        }
+        self.find = Some(find);
         // The bar takes a row from the panes above it.
         self.find_step(Step::Jump);
     }
 
     /// Follows what a key did in the find bar: the cursor goes to the current
-    /// match, or stays where it is when the bar closes.
+    /// match, or stays where it is when the bar closes; replacing edits the buffer
+    /// and then goes to the match after it.
     fn find_step(&mut self, step: Step) {
         match step {
             Step::Stay => {}
-            Step::Jump => {
-                if let Some(at) = self.find.as_ref().and_then(FindBar::current_match) {
-                    self.buffer_mut().place_cursor(at.start);
-                }
-            }
+            Step::Jump => self.jump_to_match(),
             Step::Close => self.find = None,
+            Step::Replace => {
+                self.replace_current();
+                self.jump_to_match();
+            }
+            Step::ReplaceAll => {
+                self.replace_all();
+                self.jump_to_match();
+            }
         }
         self.follow_cursor();
+    }
+
+    fn jump_to_match(&mut self) {
+        if let Some(at) = self.find.as_ref().and_then(FindBar::current_match) {
+            self.buffer_mut().place_cursor(at.start);
+        }
+    }
+
+    /// Replaces the current match and makes the next one after the new text
+    /// current, so a replacement that contains the pattern isn't matched again.
+    fn replace_current(&mut self) {
+        let Some(edit) = self
+            .find
+            .as_ref()
+            .and_then(|find| find.current_replacement(&self.tabs.active().buffer.rope))
+        else {
+            return;
+        };
+        let next = edit.0.start + edit.1.chars().count();
+        self.edit(|buffer| buffer.replace_ranges(std::slice::from_ref(&edit)));
+        if let Some(find) = &mut self.find {
+            find.research_from(&self.tabs.active().buffer.rope, next);
+        }
+    }
+
+    /// Replaces every match as one undo step and says how many in the status line.
+    fn replace_all(&mut self) {
+        let Some(find) = &self.find else {
+            return;
+        };
+        let edits = find.replacements(&self.tabs.active().buffer.rope);
+        if !edits.is_empty() {
+            self.edit(|buffer| buffer.replace_ranges(&edits));
+        }
+        self.message = Some(format!("Replaced {}", edits.len()));
+        let buffer = &self.tabs.active().buffer;
+        if let Some(find) = &mut self.find {
+            find.research_from(&buffer.rope, buffer.cursor);
+        }
     }
 
     /// Ctrl+P: opens the picker and lists the project's files on a background

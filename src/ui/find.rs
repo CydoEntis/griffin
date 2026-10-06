@@ -1,5 +1,6 @@
 //! The find bar: the one-row prompt bar with case and regex toggles, the match
-//! count and, for a bad regex, why it found nothing.
+//! count and, for a bad regex, why it found nothing. Opened with Ctrl+R it has a
+//! Replace field beside the Find field, and Tab moves between them.
 
 use std::ops::Range;
 
@@ -23,11 +24,19 @@ pub enum Step {
     Jump,
     /// Esc: close the bar, leaving the cursor where it is.
     Close,
+    /// Enter in the Replace field: replace the current match, then go to the next.
+    Replace,
+    /// Replace every match as one undo step.
+    ReplaceAll,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FindBar {
     bar: PromptBar,
+    /// The Replace field, once Ctrl+R has asked for it.
+    replace: Option<PromptBar>,
+    /// Keys go to the Replace field instead of the Find field.
+    in_replace: bool,
     case_sensitive: bool,
     regex: bool,
     /// Every match of the bar's text in the buffer, in order.
@@ -46,6 +55,8 @@ impl FindBar {
     pub fn new(text: &str, origin: usize, rope: &Rope) -> Self {
         let mut find = FindBar {
             bar: PromptBar::new("Find", text),
+            replace: None,
+            in_replace: false,
             case_sensitive: false,
             regex: false,
             matches: Vec::new(),
@@ -66,10 +77,52 @@ impl FindBar {
         &self.matches
     }
 
+    /// Adds the Replace field if it isn't there yet; `focus` moves typing into it.
+    pub fn show_replace(&mut self, focus: bool) {
+        self.replace
+            .get_or_insert_with(|| PromptBar::new("Replace", ""));
+        if focus {
+            self.in_replace = true;
+        }
+    }
+
+    /// Every match with the text that replaces it, `$1` groups expanded in regex
+    /// mode. Empty while the bar has no Replace field.
+    pub fn replacements(&self, rope: &Rope) -> Vec<(Range<usize>, String)> {
+        let Some(replace) = &self.replace else {
+            return Vec::new();
+        };
+        search::replacements(rope, &self.query(), replace.text()).unwrap_or_default()
+    }
+
+    /// The current match with the text that replaces it.
+    pub fn current_replacement(&self, rope: &Rope) -> Option<(Range<usize>, String)> {
+        let current = self.current_match()?;
+        self.replacements(rope)
+            .into_iter()
+            .find(|(range, _)| *range == current)
+    }
+
+    /// Searches again after the buffer changed, taking the first match from
+    /// `origin` as the current one.
+    pub fn research_from(&mut self, rope: &Rope, origin: usize) {
+        self.origin = origin;
+        self.search(rope);
+    }
+
+    fn query(&self) -> Query {
+        Query {
+            pattern: self.bar.text().to_string(),
+            case_sensitive: self.case_sensitive,
+            regex: self.regex,
+        }
+    }
+
     /// One key: edits re-run the search, the find keys move or toggle. The buffer
-    /// can't change while the bar is open, since the bar takes every key.
+    /// only changes while the bar is open through the replace steps it returns.
     pub fn handle(&mut self, input: Input, rope: &Rope) -> Step {
         match input {
+            Input::Action(Action::FindNext) if self.in_replace => Step::Replace,
             Input::Action(Action::FindNext) => self.step(1),
             Input::Action(Action::FindPrev) => self.step(-1),
             Input::Action(Action::FindCase) => {
@@ -80,6 +133,21 @@ impl FindBar {
                 self.regex = !self.regex;
                 self.search(rope)
             }
+            Input::Action(Action::ReplaceAll) if self.replace.is_some() => Step::ReplaceAll,
+            Input::Action(Action::Replace) => {
+                self.show_replace(true);
+                Step::Stay
+            }
+            Input::Action(Action::Tab) => {
+                self.in_replace = self.replace.is_some() && !self.in_replace;
+                Step::Stay
+            }
+            input if self.in_replace => match self.replace.as_mut().map(|bar| bar.handle(input)) {
+                Some(Some(Outcome::Cancel)) => Step::Close,
+                // Enter only gets here when `find_next` was moved off it.
+                Some(Some(Outcome::Submit)) => Step::Replace,
+                _ => Step::Stay,
+            },
             input => {
                 let before = self.bar.text().to_string();
                 match self.bar.handle(input) {
@@ -94,11 +162,31 @@ impl FindBar {
     }
 
     /// Pasted text goes in as typed; a line break in it is dropped, since the bar
-    /// holds one line.
+    /// holds one line. A tab moves between the fields as the key does: on Windows
+    /// Tab followed quickly by typing arrives as one paste.
     pub fn paste(&mut self, text: &str, rope: &Rope) -> Step {
         let line = text.lines().next().unwrap_or_default();
+        let mut step = Step::Stay;
+        for (i, part) in line.split('\t').enumerate() {
+            if i > 0 {
+                self.in_replace = self.replace.is_some() && !self.in_replace;
+            }
+            if self.paste_into_field(part, rope) == Step::Jump {
+                step = Step::Jump;
+            }
+        }
+        step
+    }
+
+    fn paste_into_field(&mut self, text: &str, rope: &Rope) -> Step {
+        if self.in_replace {
+            if let Some(replace) = &mut self.replace {
+                let _ = replace.paste(text);
+            }
+            return Step::Stay;
+        }
         let before = self.bar.text().to_string();
-        let _ = self.bar.paste(line);
+        let _ = self.bar.paste(text);
         if self.bar.text() == before {
             Step::Stay
         } else {
@@ -107,12 +195,7 @@ impl FindBar {
     }
 
     fn search(&mut self, rope: &Rope) -> Step {
-        let query = Query {
-            pattern: self.bar.text().to_string(),
-            case_sensitive: self.case_sensitive,
-            regex: self.regex,
-        };
-        (self.matches, self.error) = match search::find_all(rope, &query) {
+        (self.matches, self.error) = match search::find_all(rope, &self.query()) {
             Ok(matches) => (matches, None),
             Err(err) => (Vec::new(), Some(err)),
         };
@@ -147,10 +230,10 @@ impl FindBar {
         }
     }
 
-    /// Draws `Find: text` with, at the right, the toggles (in the accent while on)
-    /// and the match count, and returns where the cursor goes.
+    /// Draws `Find: text` (and `Replace: text` in the second half, when it's
+    /// there) with, at the right, the toggles (in the accent while on) and the
+    /// match count, and returns where the cursor goes.
     pub fn render(&self, theme: &Theme, frame: &mut Frame, area: Rect) -> (u16, u16) {
-        let at = self.bar.render(theme, frame, area);
         let status = self.status();
         let base = Style::new().bg(theme.card2);
         let toggle = |on: bool| base.fg(if on { theme.accent } else { theme.muted });
@@ -169,9 +252,27 @@ impl FindBar {
             (" ", base),
         ];
         let width: usize = parts.iter().map(|(text, _)| text.width()).sum();
-        let mut x = area
-            .right()
-            .saturating_sub(u16::try_from(width).unwrap_or(0));
+        let width = u16::try_from(width).unwrap_or(u16::MAX);
+        let at = match &self.replace {
+            None => self.bar.render(theme, frame, area),
+            Some(replace) => {
+                // Halves of the whole row, not of what the count leaves, so the
+                // Replace field stays put while the count changes width.
+                let find_area = Rect {
+                    width: area.width / 2,
+                    ..area
+                };
+                let replace_area = Rect {
+                    x: area.x + find_area.width,
+                    width: (area.width - find_area.width).saturating_sub(width),
+                    ..area
+                };
+                let find_at = self.bar.render(theme, frame, find_area);
+                let replace_at = replace.render(theme, frame, replace_area);
+                if self.in_replace { replace_at } else { find_at }
+            }
+        };
+        let mut x = area.right().saturating_sub(width);
         for (text, style) in parts {
             let w = u16::try_from(text.width()).unwrap_or(0);
             if x >= area.x {
@@ -243,6 +344,89 @@ mod tests {
             find.handle(Input::Action(Action::Cancel), &rope),
             Step::Close
         );
+    }
+
+    #[test]
+    fn tab_moves_between_fields_and_enter_in_replace_asks_to_replace() {
+        let rope = rope();
+        let mut find = FindBar::new("foo", 0, &rope);
+        let act = Input::Action;
+        // Without the Replace field, Tab and Alt+A do nothing.
+        assert_eq!(find.handle(act(Action::Tab), &rope), Step::Stay);
+        assert_eq!(find.handle(act(Action::ReplaceAll), &rope), Step::Stay);
+        assert!(find.replacements(&rope).is_empty());
+
+        find.show_replace(false);
+        find.handle(act(Action::Tab), &rope);
+        type_text(&mut find, &rope, "x");
+        // Typing in Replace doesn't touch the pattern.
+        assert_eq!(find.matches(), [0..3, 8..11, 12..15]);
+        assert_eq!(
+            find.current_replacement(&rope),
+            Some((0..3, "x".to_string()))
+        );
+        assert_eq!(find.handle(act(Action::FindNext), &rope), Step::Replace);
+        assert_eq!(
+            find.handle(act(Action::ReplaceAll), &rope),
+            Step::ReplaceAll
+        );
+        // Shift+Enter still steps back through matches from the Replace field.
+        assert_eq!(find.handle(act(Action::FindPrev), &rope), Step::Jump);
+        assert_eq!(find.current_match(), Some(12..15));
+        find.handle(act(Action::Tab), &rope);
+        type_text(&mut find, &rope, "x");
+        assert!(find.matches().is_empty());
+        assert_eq!(find.handle(act(Action::Cancel), &rope), Step::Close);
+    }
+
+    #[test]
+    fn a_pasted_tab_moves_to_the_other_field() {
+        let rope = rope();
+        let mut find = FindBar::new("", 0, &rope);
+        find.show_replace(false);
+        assert_eq!(find.paste("foo\tbar", &rope), Step::Jump);
+        assert_eq!(find.matches(), [0..3, 8..11, 12..15]);
+        assert_eq!(
+            find.current_replacement(&rope),
+            Some((0..3, "bar".to_string()))
+        );
+        // Without the Replace field a tab is just dropped.
+        let mut find = FindBar::new("", 0, &rope);
+        find.paste("fo\to", &rope);
+        assert_eq!(find.matches(), [0..3, 8..11, 12..15]);
+    }
+
+    #[test]
+    fn research_from_picks_the_next_match_after_an_edit() {
+        let mut find = FindBar::new("foo", 0, &rope());
+        find.show_replace(true);
+        let edited = Rope::from_str("x bar\nFoo foo\n");
+        find.research_from(&edited, 1);
+        assert_eq!(find.matches(), [6..9, 10..13]);
+        assert_eq!(find.current_match(), Some(6..9));
+    }
+
+    #[test]
+    fn renders_find_and_replace_fields_side_by_side() -> anyhow::Result<()> {
+        let rope = rope();
+        let mut find = FindBar::new("foo", 0, &rope);
+        find.show_replace(true);
+        find.paste("bar", &rope);
+        let mut terminal = Terminal::new(TestBackend::new(52, 1))?;
+        let mut at = (0, 0);
+        terminal.draw(|frame| at = find.render(&Theme::default(), frame, frame.area()))?;
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..52).map(|x| buffer[(x, 0)].symbol()).collect();
+        // Find takes half the row; Replace the rest up to `Aa  .*  1/3 `.
+        assert_eq!(
+            row,
+            format!(
+                "{:<26}{:<14}{}",
+                "Find: foo", "Replace: bar", "Aa  .*  1/3 "
+            )
+        );
+        assert_eq!(at, (38, 0));
+        Ok(())
     }
 
     #[test]
