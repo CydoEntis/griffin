@@ -1,4 +1,6 @@
 mod app;
+mod config;
+mod keymap;
 mod ui;
 
 use std::io::{self, Stdout};
@@ -18,6 +20,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::app::App;
+use crate::keymap::Keymap;
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
@@ -34,6 +37,9 @@ async fn main() -> Result<()> {
     // Opening a path arrives in #4; parsing it now keeps the CLI shape stable.
     let _path = Cli::parse().path;
 
+    // Loaded before the terminal switches screens; a bad config never stops startup.
+    let (keymap, config_error) = load_keymap();
+
     install_panic_hook(|| {
         // Best effort: the process is already panicking, so a failed restore can
         // only be ignored.
@@ -48,10 +54,23 @@ async fn main() -> Result<()> {
         }
     };
 
-    let result = App::new().run(&mut terminal).await;
+    let result = App::new(keymap, config_error).run(&mut terminal).await;
     let restored = restore_terminal();
     result?;
     restored
+}
+
+/// Builds the keymap from `config.toml`, falling back to the defaults (and saying
+/// why in the status line) when the file is malformed or names a bad key.
+fn load_keymap() -> (Keymap, Option<String>) {
+    let loaded = config::load();
+    if let Some(err) = loaded.error {
+        return (Keymap::default(), Some(format!("config error: {err}")));
+    }
+    match Keymap::new(&loaded.config.keys) {
+        Ok(keymap) => (keymap, None),
+        Err(err) => (Keymap::default(), Some(format!("config error: {err}"))),
+    }
 }
 
 fn setup_terminal() -> Result<Tui> {
