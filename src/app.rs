@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -30,8 +31,8 @@ use crate::config::{self, EditorConfig, RunEntry};
 use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
 use crate::lsp::{
-    CompletionItem, Diagnostic, Location, Lsp, LspEvent, LspNews, Severity, char_index,
-    diagnostic_at, diagnostic_jump,
+    CompletionItem, Diagnostic, FormatRequest, Location, Lsp, LspEvent, LspNews, Severity,
+    char_index, diagnostic_at, diagnostic_jump,
 };
 use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
@@ -84,6 +85,10 @@ pub enum AppEvent {
     },
     /// A language server sent a message or exited.
     Lsp(LspEvent),
+    /// Format on save number `format` has waited `FORMAT_TIMEOUT` for its server.
+    FormatTimedOut {
+        format: u64,
+    },
 }
 
 /// A question that takes over the keyboard until it's answered.
@@ -637,6 +642,20 @@ impl Shown<'_> {
 /// How many places Alt+Left can go back through; older ones are forgotten.
 const JUMP_LIST_LEN: usize = 50;
 
+/// How long a save waits for its language server's formatting before saving the
+/// text as it is.
+const FORMAT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// A save waiting on its formatting reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingFormat {
+    /// Numbers the request, so a timer for an earlier one is ignored.
+    format: u64,
+    doc: u64,
+    /// The buffer's revision when asked; edits for older text can't apply.
+    revision: u64,
+}
+
 /// Where the cursor was before a go to definition, for Alt+Left to return to.
 #[derive(Debug, Clone)]
 struct Jump {
@@ -736,6 +755,10 @@ pub struct App {
     /// when asked; an answer arriving once the cursor has left the word is
     /// dropped.
     completion_for: Option<(u64, usize, usize)>,
+    /// The save waiting on format on save, at most `FORMAT_TIMEOUT`.
+    formatting: Option<PendingFormat>,
+    /// Format requests made, for numbering the next.
+    formats: u64,
     should_quit: bool,
 }
 
@@ -966,6 +989,13 @@ impl App {
                     view.status = RunStatus::Exited(code);
                 }
             }
+            AppEvent::FormatTimedOut { format } => {
+                if let Some(pending) = self.formatting.take_if(|p| p.format == format) {
+                    self.lsp.cancel_format();
+                    let seconds = FORMAT_TIMEOUT.as_secs();
+                    self.save_unformatted(pending.doc, &format!("no answer in {seconds} s"));
+                }
+            }
             AppEvent::Lsp(event) => {
                 for news in self.lsp.handle(event) {
                     match news {
@@ -991,6 +1021,7 @@ impl App {
                             }
                         }
                         LspNews::Completion { doc, items } => self.show_completion(doc, items),
+                        LspNews::Formatted { doc, edits } => self.formatted(doc, edits),
                     }
                 }
             }
@@ -1430,9 +1461,8 @@ impl App {
                 self.quit_discarded.clear();
                 self.continue_quit();
             }
-            Action::Save => {
-                self.save_or_ask(AfterSave::Nothing);
-            }
+            Action::Save if self.buffer().path.is_some() => self.save_formatted(),
+            Action::Save => self.save_or_ask(AfterSave::Nothing),
             // Nothing to cancel outside a prompt.
             Action::Cancel => {}
             Action::Move(motion) => {
@@ -2503,11 +2533,21 @@ impl App {
     /// Saves the active buffer and says how it went in the status line. Returns
     /// whether the buffer is now saved.
     fn save(&mut self) -> bool {
-        let name = self.buffer().name();
-        match self.buffer_mut().save() {
+        self.save_doc(self.tabs.active().id, "")
+    }
+
+    /// Saves buffer `id`, saying how it went with `note` after the name. Returns
+    /// whether the buffer is now saved; a buffer closed meanwhile isn't.
+    fn save_doc(&mut self, id: u64, note: &str) -> bool {
+        let Some(doc) = self.tabs.docs.iter_mut().find(|doc| doc.id == id) else {
+            return false;
+        };
+        let name = doc.buffer.name();
+        match doc.buffer.save() {
             Ok(()) => {
-                self.message = Some(format!("saved {name}"));
-                self.delete_backup();
+                // Best effort, as in `delete_backup`.
+                let _ = self.backups.delete(doc.buffer.path.as_deref(), id);
+                self.message = Some(format!("saved {name}{note}"));
                 true
             }
             Err(err) => {
@@ -2515,6 +2555,81 @@ impl App {
                 false
             }
         }
+    }
+
+    fn save_unformatted(&mut self, id: u64, why: &str) {
+        self.save_doc(id, &format!(" unformatted ({why})"));
+    }
+
+    /// Ctrl+S on a buffer with a path. With `format_on_save` for its language the
+    /// write waits for the server's formatting, which `formatted` or the timer
+    /// carries on with; the loop keeps running meanwhile (ADR-0001). Only Ctrl+S
+    /// formats: a save answering a close or quit prompt goes straight to disk.
+    fn save_formatted(&mut self) {
+        let doc = self.tabs.active().id;
+        if self.formatting.is_some_and(|p| p.doc == doc) {
+            return;
+        }
+        if let Some(earlier) = self.formatting.take() {
+            // One request at a time; the earlier file mustn't stay unsaved.
+            self.lsp.cancel_format();
+            self.save_unformatted(earlier.doc, "saving another file");
+        }
+        let (tab_width, insert_spaces) = (self.editor.tab_width, self.editor.insert_spaces);
+        match self.lsp.format_on_save(doc, tab_width, insert_spaces) {
+            FormatRequest::Off => {
+                self.save();
+            }
+            FormatRequest::Unavailable(why) => self.save_unformatted(doc, &why),
+            FormatRequest::Sent => {
+                self.formats += 1;
+                let format = self.formats;
+                self.formatting = Some(PendingFormat {
+                    format,
+                    doc,
+                    revision: self.buffer().revision,
+                });
+                self.message = Some(format!("formatting {}", self.buffer().name()));
+                if let Some(events) = self.events.clone() {
+                    tokio::spawn(async move {
+                        tokio::time::sleep(FORMAT_TIMEOUT).await;
+                        // The loop has stopped if this fails; nothing is waiting.
+                        let _ = events.send(AppEvent::FormatTimedOut { format });
+                    });
+                }
+            }
+        }
+    }
+
+    /// The formatting reply for buffer `id`: applies its edits as one undo step,
+    /// then saves. A failed reply, or a buffer edited since the request, saves
+    /// the text as it is.
+    fn formatted(&mut self, id: u64, edits: Result<Vec<(Range<usize>, String)>, String>) {
+        let Some(pending) = self.formatting.take_if(|p| p.doc == id) else {
+            return;
+        };
+        let edits = match edits {
+            Ok(edits) => edits,
+            Err(why) => return self.save_unformatted(id, &format!("server error: {why}")),
+        };
+        let Some(doc) = self.tabs.docs.iter_mut().find(|doc| doc.id == id) else {
+            return;
+        };
+        if doc.buffer.revision != pending.revision {
+            return self.save_unformatted(id, "edited while formatting");
+        }
+        doc.buffer.apply_edits(&edits);
+        // Other views of the buffer keep their places, edit by edit from the end.
+        for (range, text) in edits.iter().rev() {
+            let delta = text.chars().count().cast_signed() - range.len().cast_signed();
+            if delta != 0 {
+                self.tabs.shift_others(id, range.start, delta);
+            }
+        }
+        if self.tabs.active().id == id {
+            self.follow_cursor();
+        }
+        self.save_doc(id, "");
     }
 
     fn edit(&mut self, edit: impl FnOnce(&mut Buffer)) {

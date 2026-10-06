@@ -16,7 +16,7 @@ use std::time::Duration;
 use lsp_types::{
     CompletionItemKind, CompletionResponse, CompletionTextEdit, DiagnosticSeverity,
     GotoDefinitionResponse, Hover, HoverContents, InsertTextFormat, MarkedString, MarkupKind,
-    Position, PublishDiagnosticsParams, Uri,
+    Position, PublishDiagnosticsParams, TextEdit, Uri,
 };
 use ropey::Rope;
 use serde_json::Value;
@@ -358,12 +358,68 @@ pub enum LspNews {
         doc: u64,
         items: Vec<CompletionItem>,
     },
+    /// The answer to the formatting request for buffer `doc`: edits as char
+    /// ranges into the text the request was made against, sorted and not
+    /// overlapping, or why there are none to apply.
+    Formatted {
+        doc: u64,
+        edits: Result<Vec<(Range<usize>, String)>, String>,
+    },
+}
+
+/// What asking to format a buffer before saving it did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FormatRequest {
+    /// Its language doesn't have `format_on_save`, or it has no server: just save.
+    Off,
+    /// The request is out; the reply comes back from `handle` as
+    /// `LspNews::Formatted`.
+    Sent,
+    /// It should be formatted but can't be now, and why.
+    Unavailable(String),
+}
+
+/// A formatting reply as edits against `rope`, the text the request was made
+/// against, in document order. `null` means nothing to change. Edits that
+/// overlap can't be applied one after another, so they count as an error.
+fn formatting_edits(message: &Value, rope: &Rope) -> Result<Vec<(Range<usize>, String)>, String> {
+    if let Some(error) = message.get("error") {
+        return Err(error["message"].as_str().unwrap_or("error").to_string());
+    }
+    let edits = serde_json::from_value::<Option<Vec<TextEdit>>>(message["result"].clone())
+        .map_err(|_| "unreadable reply".to_string())?
+        .unwrap_or_default();
+    let mut edits: Vec<_> = edits
+        .into_iter()
+        .map(|edit| {
+            let start = char_index(rope, edit.range.start);
+            (
+                start..char_index(rope, edit.range.end).max(start),
+                edit.new_text,
+            )
+        })
+        .collect();
+    // Stable, so inserts at one position keep the order the server gave them.
+    edits.sort_by_key(|(range, _)| range.start);
+    if edits.windows(2).any(|pair| pair[0].0.end > pair[1].0.start) {
+        return Err("overlapping edits".into());
+    }
+    Ok(edits)
 }
 
 /// A completion request awaiting its reply, with the text it was made against
 /// so the reply's ranges read right even after more typing.
 #[derive(Debug)]
 struct PendingCompletion {
+    server: u64,
+    id: i64,
+    doc: u64,
+    rope: Rope,
+}
+
+/// A formatting request awaiting its reply, with the text it was made against.
+#[derive(Debug)]
+struct PendingFormat {
     server: u64,
     id: i64,
     doc: u64,
@@ -426,6 +482,8 @@ pub struct Lsp {
     hover: Option<(u64, i64)>,
     /// The completion awaiting its reply, likewise.
     completion: Option<PendingCompletion>,
+    /// The formatting request a save is waiting on.
+    format: Option<PendingFormat>,
 }
 
 impl Lsp {
@@ -638,6 +696,49 @@ impl Lsp {
             .is_some_and(|c| c.triggers.iter().any(|t| t == ch))
     }
 
+    /// Asks the server following buffer `doc` to format it with the editor's
+    /// indentation, when its language has `format_on_save`.
+    pub fn format_on_save(
+        &mut self,
+        doc: u64,
+        tab_width: usize,
+        insert_spaces: bool,
+    ) -> FormatRequest {
+        let Some(attached) = self.docs.get(&doc) else {
+            return FormatRequest::Off;
+        };
+        let lang = attached.lang;
+        if !self.config.get(lang).is_some_and(|c| c.format_on_save) {
+            return FormatRequest::Off;
+        }
+        let Some(client) = self
+            .servers
+            .get_mut(&attached.server)
+            .filter(|c| c.is_ready() && attached.opened)
+        else {
+            return FormatRequest::Unavailable(format!("{lang} server not ready"));
+        };
+        if !client.formats {
+            return FormatRequest::Unavailable(format!("{lang} server can't format"));
+        }
+        let tab_size = u32::try_from(tab_width).unwrap_or(u32::MAX);
+        let id = client.formatting(&attached.uri, tab_size, insert_spaces);
+        // The server's copy is the buffer's text: every event is followed by a
+        // sync, so the reply's positions read against this.
+        self.format = Some(PendingFormat {
+            server: attached.server,
+            id,
+            doc,
+            rope: attached.rope.clone(),
+        });
+        FormatRequest::Sent
+    }
+
+    /// Stops waiting for the formatting reply; one arriving later is ignored.
+    pub fn cancel_format(&mut self) {
+        self.format = None;
+    }
+
     /// Sends the position request `send` makes for char index `cursor` in buffer
     /// `doc`. Returns (server, request id), or `None` with no ready server.
     fn request_at(
@@ -660,9 +761,10 @@ impl Lsp {
 
     /// Hands a server's message or exit to its client, turns published
     /// diagnostics into char ranges for each buffer they name, and passes on the
-    /// answers to the latest go to definition, hover and completion.
+    /// answers to the latest go to definition, hover, completion and formatting.
     pub fn handle(&mut self, event: LspEvent) -> Vec<LspNews> {
         let completion = self.completion.as_ref().map(|p| (p.server, p.id));
+        let format = self.format.as_ref().map(|p| (p.server, p.id));
         let reply = match &event.event {
             ServerEvent::Message(message) if message.get("method").is_none() => message["id"]
                 .as_i64()
@@ -671,6 +773,7 @@ impl Lsp {
                     self.definition == Some(*reply)
                         || self.hover == Some(*reply)
                         || completion == Some(*reply)
+                        || format == Some(*reply)
                 }),
             _ => None,
         };
@@ -683,6 +786,13 @@ impl Lsp {
             let news = if self.definition == Some(reply) {
                 self.definition = None;
                 LspNews::Definition(first_location(&message["result"]))
+            } else if format == Some(reply)
+                && let Some(pending) = self.format.take()
+            {
+                LspNews::Formatted {
+                    doc: pending.doc,
+                    edits: formatting_edits(&message, &pending.rope),
+                }
             } else if completion == Some(reply)
                 && let Some(pending) = self.completion.take()
             {
@@ -776,7 +886,7 @@ mod tests {
             "rust".to_string(),
             LspServer {
                 command: Some(command.into()),
-                args: Vec::new(),
+                ..LspServer::default()
             },
         )])
     }
@@ -1021,6 +1131,63 @@ mod tests {
     }
 
     #[test]
+    fn formatting_edits_are_sorted_char_ranges_and_errors_say_why() {
+        let rope = Rope::from_str("é x\nfn  a(){}\n");
+        let edit = |l1, c1, l2, c2, text: &str| {
+            serde_json::json!({"range": {"start": {"line": l1, "character": c1},
+                                         "end": {"line": l2, "character": c2}},
+                               "newText": text})
+        };
+        let reply = serde_json::json!({"id": 1, "result": [
+            edit(1, 7, 1, 7, " "), edit(0, 1, 0, 2, ""), edit(1, 2, 1, 4, " ")
+        ]});
+        assert_eq!(
+            formatting_edits(&reply, &rope),
+            Ok(vec![
+                (1..2, String::new()),
+                (6..8, " ".into()),
+                (11..11, " ".into())
+            ])
+        );
+        let none = serde_json::json!({"id": 1, "result": null});
+        assert_eq!(formatting_edits(&none, &rope), Ok(Vec::new()));
+        let error = serde_json::json!({"id": 1, "error": {"code": -32603, "message": "boom"}});
+        assert_eq!(formatting_edits(&error, &rope), Err("boom".into()));
+        let overlap = serde_json::json!({"id": 1, "result": [
+            edit(1, 0, 1, 4, ""), edit(1, 2, 1, 6, "")
+        ]});
+        assert!(formatting_edits(&overlap, &rope).is_err());
+    }
+
+    #[test]
+    fn format_on_save_is_off_unless_the_language_asks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lsp = Lsp::new(config("ra"));
+        lsp.docs.insert(
+            1,
+            Attached {
+                server: 0,
+                uri: path_to_uri(&dir.path().join("a.rs")).unwrap(),
+                lang: "rust",
+                opened: true,
+                version: 0,
+                rope: Rope::new(),
+                revision: 0,
+                saves: 0,
+            },
+        );
+        assert_eq!(lsp.format_on_save(1, 4, true), FormatRequest::Off);
+        assert_eq!(lsp.format_on_save(2, 4, true), FormatRequest::Off);
+        if let Some(rust) = lsp.config.get_mut("rust") {
+            rust.format_on_save = true;
+        }
+        assert_eq!(
+            lsp.format_on_save(1, 4, true),
+            FormatRequest::Unavailable("rust server not ready".into())
+        );
+    }
+
+    #[test]
     fn without_an_app_channel_nothing_starts() {
         let dir = tempfile::tempdir().unwrap();
         let mut lsp = Lsp::new(config("griffin-no-such-server"));
@@ -1035,7 +1202,7 @@ mod tests {
             "rust".to_string(),
             LspServer {
                 command: None,
-                args: Vec::new(),
+                ..LspServer::default()
             },
         )]));
         let dir = tempfile::tempdir().unwrap();

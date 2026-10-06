@@ -7,7 +7,8 @@
 //!   `{"responses": {"<method>": <result>}, "notify": {"<method>": [<message>]},
 //!   "exit_on": "<method>"}`. Every key is optional:
 //!   - `responses`: the result for each request method. `initialize` defaults to
-//!     incremental sync with saves; `shutdown` and anything unscripted get `null`.
+//!     incremental sync with saves and formatting; `shutdown` and anything
+//!     unscripted get `null`.
 //!     `"$uri"` and `"$dir/<name>"` are filled in as for `notify`.
 //!   - `notify`: messages (e.g. `textDocument/publishDiagnostics` notifications)
 //!     to send right after receiving each method; `jsonrpc` is filled in, and any
@@ -17,6 +18,9 @@
 //!   - `exit_on`: a method that makes it exit with code 3 at once, as a crash.
 //!   - `delay`: milliseconds to wait before answering each method, as a slow
 //!     server would; its `notify` messages follow the late answer.
+//!   - `silent`: methods whose requests are never answered, as a hung server's.
+//!   - `errors`: the JSON-RPC error object to answer each method with instead
+//!     of a result.
 //!
 //! It exits cleanly on `exit` or when stdin closes.
 
@@ -57,8 +61,19 @@ fn main() -> ExitCode {
         if let Some(ms) = script["delay"][method].as_u64() {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }
-        if let Some(id) = message.get("id")
+        let silent = script["silent"]
+            .as_array()
+            .is_some_and(|list| list.iter().any(|m| m.as_str() == Some(method)));
+        if let Some(error) = script["errors"].get(method)
+            && let Some(id) = message.get("id")
+        {
+            write_message(
+                &mut output,
+                &json!({"jsonrpc": "2.0", "id": id, "error": error}),
+            );
+        } else if let Some(id) = message.get("id")
             && !method.is_empty()
+            && !silent
         {
             let result = match script["responses"].get(method) {
                 Some(result) => {
@@ -110,7 +125,8 @@ fn default_initialize() -> Value {
                 "openClose": true,
                 "change": 2,
                 "save": {"includeText": false}
-            }
+            },
+            "documentFormattingProvider": true
         },
         "serverInfo": {"name": "fake_lsp"}
     })
