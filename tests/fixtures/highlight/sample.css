@@ -1,0 +1,9 @@
+/* A sample for the highlight tests. */
+body {
+  margin: 0;
+  font-family: "Helvetica", sans-serif;
+}
+
+.card > h1 {
+  padding: 12px 1.5em;
+}

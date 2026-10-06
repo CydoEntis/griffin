@@ -16,6 +16,7 @@ pub static TYPESCRIPT: Language = Language {
         tree_sitter_javascript::HIGHLIGHT_QUERY,
     ],
     injections: tree_sitter_javascript::INJECTIONS_QUERY,
+    embeds: &[],
     roles: ROLES,
     compiled: OnceLock::new(),
 };
@@ -32,6 +33,7 @@ pub static TSX: Language = Language {
         tree_sitter_javascript::HIGHLIGHT_QUERY,
     ],
     injections: tree_sitter_javascript::INJECTIONS_QUERY,
+    embeds: &[],
     roles: ROLES,
     compiled: OnceLock::new(),
 };

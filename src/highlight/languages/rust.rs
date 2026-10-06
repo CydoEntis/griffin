@@ -26,6 +26,7 @@ pub static RUST: Language = Language {
     grammar: || tree_sitter_rust::LANGUAGE.into(),
     highlights: &[OWN, tree_sitter_rust::HIGHLIGHTS_QUERY],
     injections: tree_sitter_rust::INJECTIONS_QUERY,
+    embeds: &[],
     roles: &[
         ("constructor", Role::Type),
         ("label", Role::Constant),
