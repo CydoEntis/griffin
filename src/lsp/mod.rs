@@ -5,6 +5,7 @@
 
 mod client;
 mod position;
+pub mod servers;
 mod transport;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
