@@ -117,6 +117,8 @@ impl Buffer {
     /// Moves the cursor. `page_height` is how many lines PageUp/PageDown move;
     /// `tab_width` makes Up/Down keep the on-screen column across tabs.
     pub fn move_cursor(&mut self, motion: Motion, page_height: usize, tab_width: usize) {
+        // Typing after a move is a new undo step even if it lands back where it was.
+        self.history.seal();
         let len = self.rope.len_chars();
         let cursor = self.cursor.min(len);
         let page = isize::try_from(page_height.max(1)).unwrap_or(isize::MAX);

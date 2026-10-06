@@ -153,7 +153,7 @@ impl App {
         match input {
             Input::Action(action) => self.handle_action(action),
             Input::Text(ch) => {
-                self.buffer.insert(ch.encode_utf8(&mut [0; 4]));
+                self.buffer.type_text(ch.encode_utf8(&mut [0; 4]));
                 self.follow_cursor();
             }
             Input::Ignored => {}
@@ -161,6 +161,10 @@ impl App {
     }
 
     fn handle_action(&mut self, action: Action) {
+        // Enter joins the run of typing it ends; every other action closes it.
+        if action != Action::Newline {
+            self.buffer.seal_undo_group();
+        }
         match action {
             Action::Quit if self.buffer.dirty => self.prompt = Some(Prompt::UnsavedQuit),
             Action::Quit => self.should_quit = true,
@@ -181,6 +185,12 @@ impl App {
                 let (width, spaces) = (self.editor.tab_width, self.editor.insert_spaces);
                 self.edit(|buffer| buffer.tab(width, spaces));
             }
+            Action::Undo => self.edit(|buffer| {
+                buffer.undo();
+            }),
+            Action::Redo => self.edit(|buffer| {
+                buffer.redo();
+            }),
         }
     }
 
@@ -419,6 +429,25 @@ mod tests {
         }
         assert_eq!(app.buffer.rope.to_string(), "fn {\n    y");
         assert!(app.buffer.dirty);
+    }
+
+    #[test]
+    fn ctrl_z_and_ctrl_y_undo_and_redo() {
+        let mut app = App {
+            screen: Rect::new(0, 0, 100, 30),
+            ..App::default()
+        };
+        for k in ["a", "b", "ctrl+s", "c", "d"] {
+            app.handle_event(key(k));
+        }
+        // Saving is a non-typing action, so it split the run.
+        app.handle_event(key("ctrl+z"));
+        assert_eq!(app.buffer.rope.to_string(), "ab");
+        app.handle_event(key("ctrl+z"));
+        assert_eq!(app.buffer.rope.to_string(), "");
+        app.handle_event(key("ctrl+y"));
+        assert_eq!(app.buffer.rope.to_string(), "ab");
+        assert_eq!(app.buffer.cursor, 2);
     }
 
     #[test]
