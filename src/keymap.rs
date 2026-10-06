@@ -74,6 +74,8 @@ pub enum Action {
     Replace,
     /// Find bar only: replaces every match and reports how many.
     ReplaceAll,
+    /// Opens the project search panel.
+    ProjectSearch,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -82,7 +84,8 @@ pub enum Action {
 pub enum Scope {
     Global,
     Tree,
-    /// While the find bar is open: its keys win over the global ones.
+    /// While the find bar or project search is open: its keys win over the
+    /// global ones.
     Find,
 }
 
@@ -156,6 +159,7 @@ impl Action {
         Action::FindRegex,
         Action::Replace,
         Action::ReplaceAll,
+        Action::ProjectSearch,
     ];
 
     pub fn scope(self) -> Scope {
@@ -251,6 +255,7 @@ impl Action {
             Action::FindRegex => "find_regex",
             Action::Replace => "replace",
             Action::ReplaceAll => "replace_all",
+            Action::ProjectSearch => "project_search",
         }
     }
 
@@ -261,7 +266,8 @@ impl Action {
 
 /// The spec's "Default keymap" table plus R4's movement, R6's editing, R10's
 /// selection, R14's tree keys, R16's tab keys, R17's split keys, R18's picker
-/// keys, R20's find bar keys and R21's Replace All, one line per binding.
+/// keys, R20's find bar keys, R21's Replace All and R22's project search, one
+/// line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -331,6 +337,7 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::FindRegex, "alt+r"),
     (Action::Replace, "ctrl+r"),
     (Action::ReplaceAll, "alt+a"),
+    (Action::ProjectSearch, "alt+f"),
 ];
 
 /// What a key event means to the editor.
@@ -1159,6 +1166,23 @@ mod tests {
         assert_eq!(map.resolve(&alt_a), Input::Ignored);
         let map = Keymap::new(&keys(&[("replace_all", one("alt+shift+a"))])).unwrap();
         assert_eq!(map.resolve_in(&alt_a, Scope::Find), Input::Ignored);
+    }
+
+    #[test]
+    fn alt_f_opens_project_search_and_can_be_remapped() {
+        let map = Keymap::default();
+        let alt_f = ev(KeyCode::Char('f'), KeyModifiers::ALT);
+        assert_eq!(map.resolve(&alt_f), Input::Action(Action::ProjectSearch));
+        assert_eq!(
+            Action::from_name("project_search"),
+            Some(Action::ProjectSearch)
+        );
+        let map = Keymap::new(&keys(&[("project_search", one("alt+g"))])).unwrap();
+        assert_eq!(map.resolve(&alt_f), Input::Ignored);
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('g'), KeyModifiers::ALT)),
+            Input::Action(Action::ProjectSearch)
+        );
     }
 
     #[test]

@@ -53,32 +53,37 @@ fn compare(a: &Entry, b: &Entry) -> Ordering {
 /// a large project must list in well under a second.
 pub fn list_files(root: &Path) -> Vec<String> {
     let found: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    WalkBuilder::new(root)
-        .hidden(false)
-        .require_git(false)
-        .filter_entry(|entry| entry.file_name() != ".git")
-        .build_parallel()
-        .run(|| {
-            let found = &found;
-            let mut batch = Batch {
-                files: Vec::new(),
-                found,
-            };
-            Box::new(move |entry| {
-                if let Ok(entry) = entry
-                    && entry.file_type().is_some_and(|kind| !kind.is_dir())
-                    && let Ok(relative) = entry.path().strip_prefix(root)
-                {
-                    batch.files.push(relative_name(relative));
-                }
-                WalkState::Continue
-            })
-        });
+    project_walk(root).build_parallel().run(|| {
+        let found = &found;
+        let mut batch = Batch {
+            files: Vec::new(),
+            found,
+        };
+        Box::new(move |entry| {
+            if let Ok(entry) = entry
+                && entry.file_type().is_some_and(|kind| !kind.is_dir())
+                && let Ok(relative) = entry.path().strip_prefix(root)
+            {
+                batch.files.push(relative_name(relative));
+            }
+            WalkState::Continue
+        })
+    });
     let mut files = found
         .into_inner()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     files.sort_unstable();
     files
+}
+
+/// A walk over everything under `root` that the project shows: what `list_files`
+/// lists, for other whole-project walks such as project search.
+pub fn project_walk(root: &Path) -> WalkBuilder {
+    let mut walk = WalkBuilder::new(root);
+    walk.hidden(false)
+        .require_git(false)
+        .filter_entry(|entry| entry.file_name() != ".git");
+    walk
 }
 
 /// One walker thread's finds, handed over when the thread finishes so threads
@@ -100,7 +105,8 @@ impl Drop for Batch<'_> {
     }
 }
 
-fn relative_name(relative: &Path) -> String {
+/// `relative` with `/` between its parts, as lists show paths.
+pub fn relative_name(relative: &Path) -> String {
     let parts: Vec<_> = relative
         .components()
         .map(|part| part.as_os_str().to_string_lossy())
