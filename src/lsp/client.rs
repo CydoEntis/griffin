@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use lsp_types::{
     ClientCapabilities, ClientInfo, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, GotoCapability, GotoDefinitionParams,
-    InitializeParams, PartialResultParams, Position, TextDocumentClientCapabilities,
-    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncClientCapabilities,
-    TextDocumentSyncKind, Uri, VersionedTextDocumentIdentifier, WorkDoneProgressParams,
-    WorkspaceFolder,
+    HoverClientCapabilities, HoverParams, InitializeParams, MarkupKind, PartialResultParams,
+    Position, TextDocumentClientCapabilities, TextDocumentContentChangeEvent,
+    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncClientCapabilities, TextDocumentSyncKind, Uri,
+    VersionedTextDocumentIdentifier, WorkDoneProgressParams, WorkspaceFolder,
 };
 use ropey::Rope;
 use serde::Serialize;
@@ -100,6 +100,11 @@ impl Client {
                     definition: Some(GotoCapability {
                         dynamic_registration: None,
                         link_support: Some(true),
+                    }),
+                    // Plain text first: the popup shows text, not markdown styles.
+                    hover: Some(HoverClientCapabilities {
+                        dynamic_registration: None,
+                        content_format: Some(vec![MarkupKind::PlainText, MarkupKind::Markdown]),
                     }),
                     ..Default::default()
                 }),
@@ -307,6 +312,19 @@ impl Client {
         self.request("textDocument/definition", to_json(params))
     }
 
+    /// Asks for hover information on the symbol at `position` in `uri`. Returns
+    /// the request's id, which the reply will carry.
+    pub fn hover(&mut self, uri: &Uri, position: Position) -> i64 {
+        let params = HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position,
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+        self.request("textDocument/hover", to_json(params))
+    }
+
     pub fn did_close(&self, uri: &Uri) {
         let params = DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -460,6 +478,25 @@ mod tests {
         let reply = json!({"jsonrpc": "2.0", "id": id, "result": null});
         assert_eq!(client.handle(reply), None);
         assert!(client.pending.is_empty());
+    }
+
+    #[test]
+    fn hover_sends_the_position_and_advertises_plain_text() {
+        let (_client, mut rx) = started();
+        let init = drain(&mut rx);
+        assert_eq!(
+            init[0]["params"]["capabilities"]["textDocument"]["hover"]["contentFormat"],
+            json!(["plaintext", "markdown"])
+        );
+        let (mut client, mut rx) = ready(json!(2));
+        let id = client.hover(&uri(), Position::new(1, 4));
+        let sent = drain(&mut rx);
+        assert_eq!(sent[0]["method"], "textDocument/hover");
+        assert_eq!(sent[0]["id"], id);
+        assert_eq!(
+            sent[0]["params"]["position"],
+            json!({"line": 1, "character": 4})
+        );
     }
 
     #[test]

@@ -37,6 +37,7 @@ use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
 use crate::ui::find::{FindBar, Step};
+use crate::ui::hover::render_hover;
 use crate::ui::picker::{Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
 use crate::ui::run::{RunStatus, RunView, render_run_panel};
@@ -44,7 +45,7 @@ use crate::ui::search::{ProjectSearch, Searched};
 use crate::ui::status::{Status, render_status};
 use crate::ui::tabs::{TabLabel, render_tabs, tab_at};
 use crate::ui::tree::{TREE_WIDTH, render_divider, render_tree};
-use crate::view::{Marks, View, render_buffer};
+use crate::view::{Marks, View, cursor_cell, render_buffer};
 use crate::workspace::ops::{self, Trash};
 use crate::workspace::walk::{list_files, relative_name};
 use crate::workspace::{Launch, Tree};
@@ -722,6 +723,11 @@ pub struct App {
     lsp: Lsp,
     /// Places go to definition left, newest last, at most `JUMP_LIST_LEN`.
     jumps: Vec<Jump>,
+    /// The hover popup's text, while it's showing. Any key or click closes it.
+    hover: Option<String>,
+    /// The hover awaiting its reply, as (buffer id, cursor) when asked; an answer
+    /// for a cursor that has since moved is dropped.
+    hover_for: Option<(u64, usize)>,
     should_quit: bool,
 }
 
@@ -873,6 +879,7 @@ impl App {
         match event {
             AppEvent::Input(Event::Key(key)) => self.handle_key(key),
             AppEvent::Input(Event::Paste(text)) if self.prompt.is_none() => {
+                self.hover = None;
                 if let Some(picker) = &mut self.picker {
                     if let Some(picked) = picker.paste(&text) {
                         self.finish_picker(picked);
@@ -902,6 +909,9 @@ impl App {
             }
             // The mouse bypasses the keymap too: only keys are remappable.
             AppEvent::Input(Event::Mouse(mouse)) if !self.modal_open() => {
+                if mouse.kind != MouseEventKind::Moved {
+                    self.hover = None;
+                }
                 self.handle_mouse(mouse, Instant::now());
             }
             // A smaller pane can leave the cursor outside it.
@@ -963,6 +973,13 @@ impl App {
                         LspNews::Definition(None) => {
                             self.message = Some("No definition found".into());
                         }
+                        LspNews::Hover(text) => {
+                            let asked = self.hover_for.take();
+                            let here = (self.tabs.active().id, self.buffer().cursor);
+                            if asked == Some(here) && !self.modal_open() {
+                                self.hover = text;
+                            }
+                        }
                     }
                 }
             }
@@ -984,6 +1001,11 @@ impl App {
                 Scope::Global
             };
         let input = self.keymap.resolve_in(&key, scope);
+        // Any key closes the hover popup; Esc does nothing else, the rest still
+        // do what they do.
+        if self.hover.take().is_some() && input == Input::Action(Action::Cancel) {
+            return;
+        }
         if let Some(prompt) = self.prompt {
             if let Some(answer) = self.confirm(prompt).answer(input) {
                 self.answer_prompt(prompt, answer);
@@ -1344,6 +1366,7 @@ impl App {
             Action::PrevDiagnostic => self.jump_to_diagnostic(false),
             Action::GoToDefinition => self.request_definition(),
             Action::JumpBack => self.jump_back(),
+            Action::Hover => self.request_hover(),
             // Bound only in tree or find bar scope, so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
@@ -2409,6 +2432,17 @@ impl App {
         }
     }
 
+    /// Asks the active buffer's language server about the symbol at the cursor.
+    /// The answer arrives later as an `AppEvent::Lsp`; with no server, or no
+    /// answer, nothing shows.
+    fn request_hover(&mut self) {
+        let doc = self.tabs.active().id;
+        let cursor = self.buffer().cursor;
+        if self.lsp.hover(doc, cursor) {
+            self.hover_for = Some((doc, cursor));
+        }
+    }
+
     /// Goes to `location`, opening its file in a tab first when it isn't the
     /// active one, and remembers where the cursor was for Alt+Left.
     fn go_to(&mut self, location: &Location) {
@@ -2574,6 +2608,21 @@ impl App {
                 errors: count(Severity::Error),
             },
         );
+        if let Some(text) = &self.hover
+            && !self.modal_open()
+        {
+            let area = panes.splits[focused].editor;
+            let view = &self.tabs.splits[focused].active().view;
+            let shown = self.tabs.shown(focused);
+            // Over everything but the status line, which stays readable.
+            let bounds = Rect {
+                height: screen.height.saturating_sub(1),
+                ..screen
+            };
+            if let Some(at) = cursor_cell(shown.buffer(), view, self.editor.tab_width, area) {
+                render_hover(theme, text, at, bounds, frame);
+            }
+        }
         if let (Some(name_prompt), Some(area)) = (&self.name_prompt, panes.bar) {
             let at = name_prompt.bar.render(theme, frame, area);
             frame.set_cursor_position(at);

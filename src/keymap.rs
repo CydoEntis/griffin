@@ -95,6 +95,9 @@ pub enum Action {
     GoToDefinition,
     /// Returns to where the cursor was before the last go to definition.
     JumpBack,
+    /// Asks the language server about the symbol under the cursor and shows the
+    /// answer in a popup.
+    Hover,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -188,6 +191,7 @@ impl Action {
         Action::PrevDiagnostic,
         Action::GoToDefinition,
         Action::JumpBack,
+        Action::Hover,
     ];
 
     pub fn scope(self) -> Scope {
@@ -294,6 +298,7 @@ impl Action {
             Action::PrevDiagnostic => "prev_diagnostic",
             Action::GoToDefinition => "go_to_definition",
             Action::JumpBack => "jump_back",
+            Action::Hover => "hover",
         }
     }
 
@@ -306,7 +311,7 @@ impl Action {
 /// selection, R14's tree keys, R16's tab keys, R17's split keys, R18's picker
 /// keys, R20's find bar keys, R21's Replace All, R22's project search, R23's
 /// project replace, R26's run keys, R27's stop and restart, R30's diagnostic
-/// jumps and R31's definition keys, one line per binding.
+/// jumps, R31's definition keys and R32's hover, one line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -386,6 +391,7 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::PrevDiagnostic, "shift+f8"),
     (Action::GoToDefinition, "f12"),
     (Action::JumpBack, "alt+left"),
+    (Action::Hover, "alt+k"),
 ];
 
 /// What a key event means to the editor.
@@ -786,6 +792,15 @@ mod tests {
         assert_eq!(
             map.resolve(&ev(KeyCode::Left, KeyModifiers::ALT)),
             Input::Action(Action::JumpBack)
+        );
+    }
+
+    #[test]
+    fn alt_k_hovers_by_default() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('k'), KeyModifiers::ALT)),
+            Input::Action(Action::Hover)
         );
     }
 
