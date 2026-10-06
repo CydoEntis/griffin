@@ -760,6 +760,7 @@ dependencies = [
  "directories",
  "futures-util",
  "ignore",
+ "libc",
  "nucleo",
  "portable-pty",
  "ratatui",
@@ -783,6 +784,7 @@ dependencies = [
  "tree-sitter-typescript",
  "unicode-width",
  "vt100",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

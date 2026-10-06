@@ -1,0 +1,5 @@
+#!/bin/sh
+# Process tree fixture: starts a long-lived grandchild, prints its pid, waits.
+sleep 300 &
+echo "grandchild $!"
+wait

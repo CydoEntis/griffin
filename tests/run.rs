@@ -123,3 +123,46 @@ fn a_malformed_project_file_says_so_in_the_status_line() {
     });
     griffin.assert_running_for(Duration::from_millis(200));
 }
+
+#[test]
+fn shift_f5_stops_the_command_and_ctrl_f5_restarts_it() {
+    let mut griffin = open_project();
+    griffin.send_keys("f5");
+    griffin.wait_for_text("red line", WAIT);
+    // Stopped during the script's pause, so its stderr line never comes.
+    griffin.send_keys("shift+f5");
+    griffin.wait_for_screen("the stopped title", WAIT, |screen| {
+        screen[usize::from(TITLE_ROW)].starts_with(" dev · stopped")
+    });
+    assert!(row(&griffin, OUTPUT_ROW).starts_with(" red line"));
+
+    // Ctrl+F5 after a stop starts it again in a cleared panel.
+    griffin.send_keys("ctrl+f5");
+    griffin.wait_for_screen("the restarted marker", WAIT, |screen| {
+        screen[usize::from(OUTPUT_ROW)].contains("restarted")
+            && screen[usize::from(TITLE_ROW)].starts_with(" dev · running")
+    });
+    griffin.wait_for_screen("the output again under the marker", WAIT, |screen| {
+        screen[usize::from(OUTPUT_ROW) + 1].starts_with(" red line")
+    });
+    assert!(!row(&griffin, OUTPUT_ROW + 2).contains("red line"));
+
+    // Ctrl+F5 while it's running stops it and starts it once more.
+    griffin.send_keys("ctrl+f5");
+    griffin.wait_for_screen("a second restart", WAIT, |screen| {
+        screen[usize::from(OUTPUT_ROW)].contains("restarted")
+            && screen[usize::from(OUTPUT_ROW) + 1].starts_with(" red line")
+            && screen[usize::from(TITLE_ROW)].starts_with(" dev · running")
+    });
+    // Only the new run finishes; the killed one sent nothing more.
+    griffin.wait_for_screen("the new run's exit", WAIT, |screen| {
+        screen[usize::from(TITLE_ROW)].starts_with(" dev · exited 0")
+    });
+    let screen = griffin.screen();
+    assert_eq!(
+        screen.iter().filter(|l| l.contains("second line")).count(),
+        1,
+        "{}",
+        screen.join("\n")
+    );
+}
