@@ -5,9 +5,9 @@ use ropey::RopeSlice;
 use unicode_width::UnicodeWidthChar;
 
 use crate::buffer::Buffer;
+use crate::buffer::movement::display_col;
 
-/// Which part of a buffer the editor pane shows. Cursor-following scrolling
-/// arrives in #5; until then both stay at 0.
+/// Which part of a buffer the editor pane shows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct View {
     /// First buffer line shown.
@@ -16,16 +16,49 @@ pub struct View {
     pub scroll_col: usize,
 }
 
+impl View {
+    /// Scrolls just enough that `buf`'s cursor is inside `area`. Called from the
+    /// event handler after the cursor moves, so rendering never has to.
+    pub fn follow(&mut self, buf: &Buffer, area: Rect, tab_width: usize) {
+        let (line, col) = buf.cursor_line_col();
+        let height = usize::from(area.height).max(1);
+        if line < self.scroll_row {
+            self.scroll_row = line;
+        } else if line >= self.scroll_row + height {
+            self.scroll_row = line + 1 - height;
+        }
+
+        let width = text_width(buf, area).max(1);
+        let x = display_col(buf.rope.line(line), col, tab_width);
+        if x < self.scroll_col {
+            self.scroll_col = x;
+        } else if x >= self.scroll_col + width {
+            self.scroll_col = x + 1 - width;
+        }
+    }
+}
+
 /// Between the line number and the text.
 const GUTTER_SEPARATOR: &str = " │ ";
 
+/// Cells left of the text: one of padding, the widest line number, the separator.
+fn gutter_width(buf: &Buffer) -> usize {
+    let digits = buf.rope.len_lines().to_string().len();
+    1 + digits + GUTTER_SEPARATOR.chars().count()
+}
+
+/// Cells available for text in `area`.
+fn text_width(buf: &Buffer, area: Rect) -> usize {
+    usize::from(area.width).saturating_sub(gutter_width(buf))
+}
+
 /// Draws `buf` into `area`: a right-aligned line-number gutter, then each line cut
-/// at the right edge (Griffin never wraps). Pure: reads its inputs only.
+/// at the right edge (Griffin never wraps), and puts the terminal cursor on the
+/// buffer cursor when it's in view. Pure: reads its inputs only.
 pub fn render_buffer(buf: &Buffer, view: &View, tab_width: usize, area: Rect, frame: &mut Frame) {
     let digits = buf.rope.len_lines().to_string().len();
-    // One cell of padding on the left, then the number, then the separator.
-    let gutter_width = 1 + digits + GUTTER_SEPARATOR.chars().count();
-    let text_width = usize::from(area.width).saturating_sub(gutter_width);
+    let gutter_width = gutter_width(buf);
+    let text_width = text_width(buf, area);
     let gutter_style = Style::new().dim();
 
     let out = frame.buffer_mut();
@@ -50,6 +83,23 @@ pub fn render_buffer(buf: &Buffer, view: &View, tab_width: usize, area: Rect, fr
         let x = area.x + gutter_width as u16;
         out.set_stringn(x, y, &text, text_width, Style::new());
     }
+
+    if let Some((x, y)) = cursor_cell(buf, view, tab_width, area) {
+        frame.set_cursor_position((x, y));
+    }
+}
+
+/// The screen cell of `buf`'s cursor, or `None` when it's scrolled out of `area`.
+fn cursor_cell(buf: &Buffer, view: &View, tab_width: usize, area: Rect) -> Option<(u16, u16)> {
+    let (line, col) = buf.cursor_line_col();
+    let row = line.checked_sub(view.scroll_row)?;
+    let x = display_col(buf.rope.line(line), col, tab_width).checked_sub(view.scroll_col)?;
+    if row >= usize::from(area.height) || x >= text_width(buf, area) {
+        return None;
+    }
+    // Both are below the area's u16 width and height, checked just above.
+    let x = area.x + (gutter_width(buf) + x) as u16;
+    Some((x, area.y + row as u16))
 }
 
 /// The part of `line` that falls in display columns `scroll_col..scroll_col+width`,
@@ -136,6 +186,92 @@ mod tests {
     #[test]
     fn control_chars_are_visible() {
         assert_eq!(visible("a\u{1}b", 0, 10), "a?b");
+    }
+
+    fn buffer_at(text: &str, cursor: usize) -> Buffer {
+        Buffer {
+            rope: Rope::from_str(text),
+            cursor,
+            ..Buffer::empty()
+        }
+    }
+
+    #[test]
+    fn follow_scrolls_down_and_back_up_to_the_cursor() {
+        let text: String = (1..=50).map(|n| format!("{n}\n")).collect();
+        let mut buf = buffer_at(&text, 0);
+        let area = Rect::new(0, 0, 40, 10);
+        let mut view = View::default();
+        buf.cursor = buf.rope.line_to_char(9);
+        view.follow(&buf, area, 4);
+        assert_eq!(view.scroll_row, 0);
+        buf.cursor = buf.rope.line_to_char(10);
+        view.follow(&buf, area, 4);
+        assert_eq!(view.scroll_row, 1);
+        buf.cursor = buf.rope.line_to_char(40);
+        view.follow(&buf, area, 4);
+        assert_eq!(view.scroll_row, 31);
+        buf.cursor = buf.rope.line_to_char(35);
+        view.follow(&buf, area, 4);
+        assert_eq!(view.scroll_row, 31);
+        buf.cursor = buf.rope.line_to_char(5);
+        view.follow(&buf, area, 4);
+        assert_eq!(view.scroll_row, 5);
+    }
+
+    #[test]
+    fn follow_scrolls_sideways_in_display_columns() {
+        // Gutter " 1 │ " is 5 cells, leaving 10 for text.
+        let mut buf = buffer_at("\tabcdefghijklmnop", 0);
+        let area = Rect::new(0, 0, 15, 5);
+        let mut view = View::default();
+        buf.cursor = 6; // display column 9: the last visible cell
+        view.follow(&buf, area, 4);
+        assert_eq!(view.scroll_col, 0);
+        buf.cursor = 7; // display column 10
+        view.follow(&buf, area, 4);
+        assert_eq!(view.scroll_col, 1);
+        buf.cursor = 0;
+        view.follow(&buf, area, 4);
+        assert_eq!(view.scroll_col, 0);
+    }
+
+    #[test]
+    fn follow_with_an_empty_area_does_not_panic() {
+        let buf = buffer_at("abc\ndef", 5);
+        let mut view = View::default();
+        view.follow(&buf, Rect::default(), 4);
+        assert_eq!(view.scroll_row, 1);
+    }
+
+    #[test]
+    fn cursor_is_drawn_on_its_cell() -> Result<()> {
+        // Cursor on `x`.
+        let buf = buffer_at("ab\n\t日x", 5);
+        let mut terminal = Terminal::new(TestBackend::new(20, 5))?;
+        terminal.draw(|frame| render_buffer(&buf, &View::default(), 4, frame.area(), frame))?;
+        // Gutter is 5 cells; the tab and `日` fill 6 more.
+        terminal.backend_mut().assert_cursor_position((11, 1));
+        Ok(())
+    }
+
+    #[test]
+    fn cursor_scrolled_out_of_view_is_not_placed() {
+        let buf = buffer_at("abc\ndef", 5);
+        let view = View {
+            scroll_row: 0,
+            scroll_col: 3,
+        };
+        assert_eq!(cursor_cell(&buf, &view, 4, Rect::new(0, 0, 20, 5)), None);
+        let view = View {
+            scroll_row: 0,
+            scroll_col: 0,
+        };
+        assert_eq!(
+            cursor_cell(&buf, &view, 4, Rect::new(0, 0, 20, 1)),
+            None,
+            "line 2 is below a one-row area"
+        );
     }
 
     #[test]

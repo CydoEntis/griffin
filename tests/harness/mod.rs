@@ -224,6 +224,34 @@ impl Griffin {
         }
     }
 
+    /// Waits until the cursor is at (col, row), 0-based. The cursor moves after the
+    /// frame's text is written, so seeing new text doesn't mean the cursor is there
+    /// yet. Panics with the screen and the cursor on timeout.
+    pub fn wait_for_cursor(&self, col: u16, row: u16, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut parser = self.parser();
+        loop {
+            let (r, c) = parser.screen().cursor_position();
+            if (c.min(COLS - 1), r) == (col, row) {
+                return;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                panic!(
+                    "timed out after {timeout:?} waiting for the cursor at ({col}, {row}); \
+                     it is at ({c}, {r})\n{}",
+                    dump(&screen_lines(&parser))
+                );
+            }
+            parser = self
+                .shared
+                .changed
+                .wait_timeout(parser, deadline - now)
+                .expect("screen lock poisoned")
+                .0;
+        }
+    }
+
     /// Checks griffin is still running after `grace`. Proving a key did nothing
     /// needs some window to wait in; this returns early if griffin exits.
     pub fn assert_running_for(&mut self, grace: Duration) {

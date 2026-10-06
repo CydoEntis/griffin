@@ -1,3 +1,5 @@
+pub mod movement;
+
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -35,6 +37,11 @@ pub struct Buffer {
     // Set by editing (#6).
     #[allow(dead_code)]
     pub dirty: bool,
+    /// Char index into `rope`; at most `rope.len_chars()`.
+    pub cursor: usize,
+    /// Display column Up/Down aim for, so crossing a shorter line doesn't lose it.
+    /// Cleared by any other motion.
+    pub goal_col: Option<usize>,
 }
 
 impl Buffer {
@@ -73,6 +80,8 @@ impl Buffer {
             path,
             line_ending,
             dirty: false,
+            cursor: 0,
+            goal_col: None,
         }
     }
 
