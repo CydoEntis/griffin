@@ -78,6 +78,19 @@ enum Prompt {
     Recover,
     /// Moving the tree's selected entry to the trash.
     Trash,
+    /// Replacing project search's hits in every listed file.
+    ProjectReplace,
+}
+
+/// A project replace waiting for its prompt's answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingReplace {
+    query: Query,
+    with: String,
+    /// The files with matches, relative to the root as the list shows them.
+    files: Vec<String>,
+    /// How many matches those files hold, for the prompt.
+    matches: usize,
 }
 
 /// What happens once a save as succeeds, for the saves a question started.
@@ -154,7 +167,7 @@ const RECOVER: Confirm = Confirm {
     labels: Labels::Words,
 };
 
-const TRASH_CHOICES: &[Choice] = &[
+const YES_NO: &[Choice] = &[
     Choice {
         key: 'y',
         label: "yes",
@@ -342,6 +355,14 @@ impl Tabs {
         {
             doc.buffer.set_caret(tab.caret);
         }
+    }
+
+    fn doc_mut(&mut self, id: u64) -> &mut Doc {
+        // As in `doc`: callers only pass ids of open buffers.
+        self.docs
+            .iter_mut()
+            .find(|doc| doc.id == id)
+            .expect("a tab's buffer is open")
     }
 
     fn doc(&self, id: u64) -> &Doc {
@@ -617,6 +638,8 @@ pub struct App {
     searches: u64,
     /// Set to stop the running project search's walk.
     search_cancel: Option<Arc<AtomicBool>>,
+    /// The project replace the replace prompt will do once answered.
+    pending_replace: Option<PendingReplace>,
     /// The entry the trash prompt will move once answered.
     pending_trash: Option<PathBuf>,
     /// Tabs whose changes the user chose to discard while quitting, so the quit
@@ -1194,7 +1217,8 @@ impl App {
             | Action::FindPrev
             | Action::FindCase
             | Action::FindRegex
-            | Action::ReplaceAll => {}
+            | Action::ReplaceAll
+            | Action::ProjectReplace => {}
         }
     }
 
@@ -1211,9 +1235,24 @@ impl App {
                         .map(file_name)
                         .unwrap_or_default()
                 )),
-                choices: TRASH_CHOICES,
+                choices: YES_NO,
                 labels: Labels::Keys,
             },
+            Prompt::ProjectReplace => {
+                let (matches, files) = self
+                    .pending_replace
+                    .as_ref()
+                    .map_or((0, 0), |pending| (pending.matches, pending.files.len()));
+                Confirm {
+                    question: Cow::Owned(format!(
+                        "Replace {} in {}?",
+                        plural(matches, "match", "matches"),
+                        plural(files, "file", "files")
+                    )),
+                    choices: YES_NO,
+                    labels: Labels::Keys,
+                }
+            }
         }
     }
 
@@ -1449,8 +1488,110 @@ impl App {
                 self.close_project_search();
                 self.open_hit(&hit);
             }
+            Searched::Replace { query, with, files } => {
+                self.ask_project_replace(query, with, files)
+            }
             Searched::Close => self.close_project_search(),
         }
+    }
+
+    /// The file at `relative`, a `/`-separated path under the project root.
+    fn project_path(&self, relative: &str) -> PathBuf {
+        let mut path = self.tree.root().to_path_buf();
+        path.extend(relative.split('/'));
+        path
+    }
+
+    /// How many matches of `query` the file at `relative` holds: in its open
+    /// buffer, edits and all, or else on disk. A file that can't be read counts
+    /// none.
+    fn count_matches(&self, relative: &str, query: &Query) -> usize {
+        let path = self.project_path(relative);
+        match self.tabs.find(&path) {
+            Some(doc) => search::find_all(&self.tabs.doc(doc).buffer.rope, query)
+                .map_or(0, |found| found.len()),
+            None => search::count_in_file(&path, query).unwrap_or(0),
+        }
+    }
+
+    /// Alt+Enter in project search: counts what would change and asks first.
+    fn ask_project_replace(&mut self, query: Query, with: String, files: Vec<String>) {
+        let mut matches = 0;
+        let mut kept = Vec::new();
+        for file in files {
+            let count = self.count_matches(&file, &query);
+            if count > 0 {
+                matches += count;
+                kept.push(file);
+            }
+        }
+        if matches == 0 {
+            self.message = Some("nothing to replace".into());
+            return;
+        }
+        self.pending_replace = Some(PendingReplace {
+            query,
+            with,
+            files: kept,
+            matches,
+        });
+        self.prompt = Some(Prompt::ProjectReplace);
+    }
+
+    /// The replace prompt's yes: open buffers are edited in place, one undo step
+    /// each and left unsaved; other files are rewritten and saved atomically. A
+    /// file that fails is named in the status line and the rest still go ahead.
+    /// Then the search runs again, so the list shows what's left.
+    fn replace_in_project(&mut self) {
+        let Some(pending) = self.pending_replace.take() else {
+            return;
+        };
+        let mut replaced = 0;
+        let mut files = 0;
+        let mut failures = Vec::new();
+        let mut edited = false;
+        for relative in &pending.files {
+            let path = self.project_path(relative);
+            let count = match self.tabs.find(&path) {
+                Some(id) => {
+                    let doc = self.tabs.doc_mut(id);
+                    let edits =
+                        search::replacements(&doc.buffer.rope, &pending.query, &pending.with)
+                            .unwrap_or_default();
+                    if !edits.is_empty() {
+                        doc.buffer.replace_ranges(&edits);
+                        doc.backup_due = true;
+                        edited = true;
+                    }
+                    edits.len()
+                }
+                None => match search::replace_in_file(&path, &pending.query, &pending.with) {
+                    Ok(count) => count,
+                    Err(err) => {
+                        failures.push(format!("cannot write {relative}: {err}"));
+                        0
+                    }
+                },
+            };
+            if count > 0 {
+                replaced += count;
+                files += 1;
+            }
+        }
+        if edited {
+            self.follow_cursor();
+            if let Some(edits) = &self.edits {
+                // The timer only stops with the loop, after which nothing edits.
+                let _ = edits.send(());
+            }
+        }
+        let mut message = vec![format!(
+            "Replaced {replaced} in {}",
+            plural(files, "file", "files")
+        )];
+        message.extend(failures);
+        self.message = Some(message.join(" · "));
+        self.start_project_search(pending.query);
     }
 
     fn close_project_search(&mut self) {
@@ -1541,8 +1682,7 @@ impl App {
 
     /// Opens a hit's file in a tab with the cursor on the match.
     fn open_hit(&mut self, hit: &Hit) {
-        let mut path = self.tree.root().to_path_buf();
-        path.extend(hit.path.split('/'));
+        let path = self.project_path(&hit.path);
         self.open(&path);
         // A file that failed to open left some other buffer active.
         let opened = self.buffer().path.as_deref().map(absolute) == Some(absolute(&path));
@@ -1839,6 +1979,8 @@ impl App {
             (Prompt::UnsavedClose, _) => {}
             (Prompt::Trash, Answer::Picked('y')) => self.trash_pending(),
             (Prompt::Trash, _) => self.pending_trash = None,
+            (Prompt::ProjectReplace, Answer::Picked('y')) => self.replace_in_project(),
+            (Prompt::ProjectReplace, _) => self.pending_replace = None,
             (Prompt::Recover, Answer::Picked('r')) => {
                 if let Some(text) = self.recovery.take() {
                     self.buffer_mut().recover(&text);
@@ -2074,6 +2216,11 @@ impl App {
             self.confirm(prompt).render(theme, frame, frame.area());
         }
     }
+}
+
+/// `count` and the noun that goes with it, e.g. `1 file` or `2 files`.
+fn plural(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
 }
 
 /// The last part of `path`, for messages and tab names.
@@ -3370,6 +3517,136 @@ needle
         assert!(batches > 1, "every hit came in one batch");
         assert_eq!(panel(&app).hits().len(), 2000);
         assert_eq!(panel(&app).status(), "2000 hits");
+        Ok(())
+    }
+
+    fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            let target = to.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                std::fs::create_dir(&target)?;
+                copy_dir(&entry.path(), &target)?;
+            } else {
+                std::fs::copy(entry.path(), &target)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A temp copy of the project replace fixture, open as the project, with
+    /// `notes.txt` in CRLF: three `todo`s there, one in `src/app.rs`.
+    fn replace_project() -> Result<(tempfile::TempDir, App)> {
+        let dir = tempfile::tempdir()?;
+        copy_dir(Path::new("tests/fixtures/project_replace"), dir.path())?;
+        let notes = dir.path().join("notes.txt");
+        let lf = std::fs::read_to_string(&notes)?.replace("\r\n", "\n");
+        std::fs::write(&notes, lf.replace('\n', "\r\n"))?;
+        let mut app = App::new(
+            Keymap::default(),
+            EditorConfig::default(),
+            Some(dir.path().to_path_buf()),
+            None,
+        );
+        app.screen = Rect::new(0, 0, 100, 30);
+        Ok((dir, app))
+    }
+
+    /// Searches for `todo`, then asks to replace it with `done`.
+    fn replace_todo(app: &mut App) {
+        press(app, &["alt+f", "t", "o", "d", "o", "enter"]);
+        assert_eq!(panel(app).status(), "3 hits");
+        press(app, &["tab", "d", "o", "n", "e", "alt+enter"]);
+    }
+
+    #[test]
+    fn project_replace_edits_open_buffers_in_place_and_saves_the_rest() -> Result<()> {
+        let (dir, mut app) = replace_project()?;
+        let notes = dir.path().join("notes.txt");
+        let code = dir.path().join("src").join("app.rs");
+        let code_before = std::fs::read(&code)?;
+        app.open(&code);
+        replace_todo(&mut app);
+        assert_eq!(app.prompt, Some(Prompt::ProjectReplace));
+        assert_eq!(
+            app.confirm(Prompt::ProjectReplace).text(),
+            "Replace 4 matches in 2 files? y / n"
+        );
+        press(&mut app, &["y"]);
+        assert_eq!(app.prompt, None);
+        assert_eq!(app.message.as_deref(), Some("Replaced 4 in 2 files"));
+        // Rewritten on disk, still CRLF, and no temp file left beside it.
+        assert_eq!(
+            std::fs::read(&notes)?,
+            b"done: buy milk\r\nnothing here\r\ndone later, done soon\r\n"
+        );
+        let mut names: Vec<_> = std::fs::read_dir(dir.path())?
+            .map(|entry| entry.map(|e| e.file_name()))
+            .collect::<io::Result<_>>()?;
+        names.sort();
+        assert_eq!(names, ["README.md", "notes.txt", "src"]);
+        // The open buffer changed in memory only, left unsaved.
+        assert_eq!(std::fs::read(&code)?, code_before);
+        assert_eq!(
+            app.buffer().rope.to_string(),
+            "fn main() {\n    // done tidy\n}\n"
+        );
+        assert!(app.buffer().dirty);
+        // The list was searched again: nothing is left to find.
+        assert_eq!(panel(&app).status(), "no hits");
+        // One undo step takes the buffer's whole replace back.
+        press(&mut app, &["esc", "ctrl+z"]);
+        assert_eq!(
+            app.buffer().rope.to_string(),
+            "fn main() {\n    // TODO tidy\n}\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn project_replace_reports_a_file_it_cannot_write_and_does_the_others() -> Result<()> {
+        let (dir, mut app) = replace_project()?;
+        let notes = dir.path().join("notes.txt");
+        let code = dir.path().join("src").join("app.rs");
+        let notes_before = std::fs::read(&notes)?;
+        let mut perms = std::fs::metadata(&notes)?.permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&notes, perms.clone())?;
+        replace_todo(&mut app);
+        press(&mut app, &["y"]);
+        let notes_after = std::fs::read(&notes)?;
+        // tempdir can't delete a read-only file on Windows.
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "only to let the temp dir clean up"
+        )]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&notes, perms)?;
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Replaced 1 in 1 file · cannot write notes.txt: read-only")
+        );
+        assert_eq!(notes_after, notes_before);
+        assert_eq!(
+            std::fs::read_to_string(&code)?.replace("\r\n", "\n"),
+            "fn main() {\n    // done tidy\n}\n"
+        );
+        // What's left is what the failed file still holds.
+        assert_eq!(panel(&app).status(), "2 hits");
+        Ok(())
+    }
+
+    #[test]
+    fn project_replace_does_nothing_when_answered_no() -> Result<()> {
+        let (dir, mut app) = replace_project()?;
+        let notes = dir.path().join("notes.txt");
+        let before = std::fs::read(&notes)?;
+        replace_todo(&mut app);
+        press(&mut app, &["n"]);
+        assert_eq!(app.prompt, None);
+        assert_eq!(app.pending_replace, None);
+        assert_eq!(std::fs::read(&notes)?, before);
+        assert_eq!(panel(&app).status(), "3 hits");
         Ok(())
     }
 }

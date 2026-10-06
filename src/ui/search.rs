@@ -1,6 +1,8 @@
 //! The project search panel: a centred card with a query line, the case and regex
 //! toggles, and every line in the project the last search found, as
-//! `path:line: text`. Enter searches; once the hits are in, Enter opens one.
+//! `path:line: text`. Enter searches; once the hits are in, Enter opens one. Tab
+//! moves to the Replace field beside the query, and Alt+Enter replaces the hits
+//! in every listed file.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -25,6 +27,13 @@ pub enum Searched {
     Start(Query),
     /// Open this hit's file at its line and column.
     Open(Hit),
+    /// Alt+Enter: replace the listed hits' query with `with` in these files, the
+    /// listed ones, by the paths the list shows.
+    Replace {
+        query: Query,
+        with: String,
+        files: Vec<String>,
+    },
     /// Esc: close the panel, stopping any search still running.
     Close,
 }
@@ -32,6 +41,10 @@ pub enum Searched {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectSearch {
     query: PromptBar,
+    /// What Alt+Enter puts in place of each match.
+    replace: PromptBar,
+    /// Keys go to the Replace field instead of the query; Tab moves between them.
+    in_replace: bool,
     case_sensitive: bool,
     regex: bool,
     /// What the listed hits were found for; `None` until a search starts.
@@ -61,6 +74,8 @@ impl ProjectSearch {
     pub fn new() -> Self {
         ProjectSearch {
             query: PromptBar::new("Search", ""),
+            replace: PromptBar::new("Replace", ""),
+            in_replace: false,
             case_sensitive: false,
             regex: false,
             searched: None,
@@ -141,7 +156,8 @@ impl ProjectSearch {
 
     /// Up and Down move through the hits, Alt+C and Alt+R toggle case and regex
     /// (searching again once a search has run), Enter searches or, when the hits
-    /// listed are for what's typed, opens the selected one; Esc closes.
+    /// listed are for what's typed, opens the selected one; Tab moves between the
+    /// query and the Replace field; Alt+Enter replaces; Esc closes.
     pub fn handle(&mut self, input: Input) -> Option<Searched> {
         match input {
             Input::Action(Action::Move(Motion::Up)) => {
@@ -166,19 +182,59 @@ impl ProjectSearch {
             }
             // The find bar's Enter, as the panel reads keys in its scope.
             Input::Action(Action::FindNext) => self.submit(),
-            input => match self.query.handle(input)? {
+            Input::Action(Action::Tab) => {
+                self.in_replace = !self.in_replace;
+                None
+            }
+            Input::Action(Action::ProjectReplace) => self.replace_all(),
+            input => match self.field().handle(input)? {
                 Outcome::Submit => self.submit(),
                 Outcome::Cancel => Some(Searched::Close),
             },
         }
     }
 
-    /// Pasted text goes into the query as if typed; a line break is Enter.
-    pub fn paste(&mut self, text: &str) -> Option<Searched> {
-        match self.query.paste(text)? {
-            Outcome::Submit => self.submit(),
-            Outcome::Cancel => Some(Searched::Close),
+    /// The field keys type into.
+    fn field(&mut self) -> &mut PromptBar {
+        if self.in_replace {
+            &mut self.replace
+        } else {
+            &mut self.query
         }
+    }
+
+    /// Pasted text goes into the field as if typed; a line break is Enter. A tab
+    /// moves between the fields as the key does: on Windows Tab followed quickly
+    /// by typing arrives as one paste.
+    pub fn paste(&mut self, text: &str) -> Option<Searched> {
+        for (i, part) in text.split('\t').enumerate() {
+            if i > 0 {
+                self.in_replace = !self.in_replace;
+            }
+            match self.field().paste(part) {
+                None => {}
+                Some(Outcome::Submit) => return self.submit(),
+                Some(Outcome::Cancel) => return Some(Searched::Close),
+            }
+        }
+        None
+    }
+
+    /// Alt+Enter: once a search has finished with hits, replace them in every
+    /// file listed, with what the Replace field holds.
+    fn replace_all(&self) -> Option<Searched> {
+        let query = self.searched.clone()?;
+        if self.running || self.hits.is_empty() {
+            return None;
+        }
+        let mut files: Vec<String> = self.hits.iter().map(|hit| hit.path.clone()).collect();
+        // Sorted by path already, so each file's hits sit together.
+        files.dedup();
+        Some(Searched::Replace {
+            query,
+            with: self.replace.text().to_string(),
+            files,
+        })
     }
 
     fn submit(&mut self) -> Option<Searched> {
@@ -239,7 +295,7 @@ impl ProjectSearch {
     /// Draws the card centred in `area`: a border, the query line with the toggles
     /// (in the accent while on) and the status at its right, then the hits with
     /// their matches in the accent and the selected one filled with `hov`.
-    /// Returns where the cursor goes, in the query.
+    /// Returns where the cursor goes, in the query or the Replace field.
     pub fn render(&self, theme: &Theme, frame: &mut Frame, area: Rect) -> (u16, u16) {
         let card = Self::card(area);
         frame.render_widget(Clear, card);
@@ -294,11 +350,27 @@ impl ProjectSearch {
             (status.as_str(), status_style),
             (" ", gap),
         ];
-        let at = self.query.render(theme, frame, area);
         let width: usize = parts.iter().map(|(text, _)| text.width()).sum();
-        let mut x = area
-            .right()
-            .saturating_sub(u16::try_from(width).unwrap_or(u16::MAX));
+        let width = u16::try_from(width).unwrap_or(u16::MAX);
+        // Halves of the whole row, as in the find bar, so the Replace field stays
+        // put while the status changes width.
+        let query_area = Rect {
+            width: area.width / 2,
+            ..area
+        };
+        let replace_area = Rect {
+            x: area.x + query_area.width,
+            width: (area.width - query_area.width).saturating_sub(width),
+            ..area
+        };
+        let query_at = self.query.render(theme, frame, query_area);
+        let replace_at = self.replace.render(theme, frame, replace_area);
+        let at = if self.in_replace {
+            replace_at
+        } else {
+            query_at
+        };
+        let mut x = area.right().saturating_sub(width);
         for (text, style) in parts {
             if x >= area.x {
                 frame.buffer_mut().set_string(x, area.y, text, style);
@@ -438,6 +510,46 @@ mod tests {
         );
         search.fail("invalid regex".into());
         assert_eq!(search.status(), "invalid regex");
+    }
+
+    #[test]
+    fn tab_moves_to_replace_and_alt_enter_asks_for_the_listed_files() {
+        let mut search = ProjectSearch::new();
+        let replace = Input::Action(Action::ProjectReplace);
+        type_query(&mut search, "TODO");
+        // Nothing listed yet, so nothing to replace.
+        assert_eq!(search.handle(replace), None);
+        assert_eq!(search.handle(Input::Action(Action::Tab)), None);
+        type_query(&mut search, "DONE");
+        search.start(1, query("TODO", false, false));
+        search.add(
+            1,
+            vec![
+                hit("b.rs", 0, "TODO"),
+                hit("a.rs", 4, "TODO"),
+                hit("a.rs", 1, "TODO"),
+            ],
+        );
+        // Still searching: the list isn't complete.
+        assert_eq!(search.handle(replace), None);
+        search.finish(1);
+        assert_eq!(
+            search.handle(replace),
+            Some(Searched::Replace {
+                query: query("TODO", false, false),
+                with: "DONE".into(),
+                files: vec!["a.rs".into(), "b.rs".into()],
+            })
+        );
+        // Tab goes back to the query, which typing then edits.
+        search.handle(Input::Action(Action::Tab));
+        type_query(&mut search, "!");
+        assert_eq!(search.query().pattern, "TODO!");
+        assert_eq!(search.replace.text(), "DONE");
+        // A pasted tab switches fields too.
+        assert_eq!(search.paste("?\tX"), None);
+        assert_eq!(search.query().pattern, "TODO!?");
+        assert_eq!(search.replace.text(), "DONEX");
     }
 
     #[test]

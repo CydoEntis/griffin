@@ -76,6 +76,8 @@ pub enum Action {
     ReplaceAll,
     /// Opens the project search panel.
     ProjectSearch,
+    /// Project search only: asks, then replaces the matches in every listed file.
+    ProjectReplace,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -160,6 +162,7 @@ impl Action {
         Action::Replace,
         Action::ReplaceAll,
         Action::ProjectSearch,
+        Action::ProjectReplace,
     ];
 
     pub fn scope(self) -> Scope {
@@ -172,7 +175,8 @@ impl Action {
             | Action::FindPrev
             | Action::FindCase
             | Action::FindRegex
-            | Action::ReplaceAll => Scope::Find,
+            | Action::ReplaceAll
+            | Action::ProjectReplace => Scope::Find,
             _ => Scope::Global,
         }
     }
@@ -256,6 +260,7 @@ impl Action {
             Action::Replace => "replace",
             Action::ReplaceAll => "replace_all",
             Action::ProjectSearch => "project_search",
+            Action::ProjectReplace => "project_replace",
         }
     }
 
@@ -266,8 +271,8 @@ impl Action {
 
 /// The spec's "Default keymap" table plus R4's movement, R6's editing, R10's
 /// selection, R14's tree keys, R16's tab keys, R17's split keys, R18's picker
-/// keys, R20's find bar keys, R21's Replace All and R22's project search, one
-/// line per binding.
+/// keys, R20's find bar keys, R21's Replace All, R22's project search and R23's
+/// project replace, one line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
     (Action::Save, "ctrl+s"),
@@ -338,6 +343,7 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Replace, "ctrl+r"),
     (Action::ReplaceAll, "alt+a"),
     (Action::ProjectSearch, "alt+f"),
+    (Action::ProjectReplace, "alt+enter"),
 ];
 
 /// What a key event means to the editor.
@@ -1182,6 +1188,24 @@ mod tests {
         assert_eq!(
             map.resolve(&ev(KeyCode::Char('g'), KeyModifiers::ALT)),
             Input::Action(Action::ProjectSearch)
+        );
+    }
+
+    #[test]
+    fn alt_enter_replaces_across_the_project_only_in_find_scope() {
+        let map = Keymap::default();
+        let alt_enter = ev(KeyCode::Enter, KeyModifiers::ALT);
+        assert_eq!(
+            map.resolve_in(&alt_enter, Scope::Find),
+            Input::Action(Action::ProjectReplace)
+        );
+        assert_ne!(
+            map.resolve(&alt_enter),
+            Input::Action(Action::ProjectReplace)
+        );
+        assert_eq!(
+            Action::from_name("project_replace"),
+            Some(Action::ProjectReplace)
         );
     }
 
