@@ -1,11 +1,12 @@
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, EventStream, KeyEvent};
 use futures_util::StreamExt;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use tokio::sync::mpsc;
 
 use crate::Tui;
+use crate::keymap::{Action, Input, Keymap};
 use crate::ui::status::render_status;
 
 /// Everything the event loop reacts to. Background work (LSP, run output, timers)
@@ -18,12 +19,19 @@ pub enum AppEvent {
 /// All editor state, owned by the main task.
 #[derive(Debug, Default)]
 pub struct App {
+    keymap: Keymap,
+    /// Shown in the status line, e.g. why the config fell back to defaults.
+    message: Option<String>,
     should_quit: bool,
 }
 
 impl App {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(keymap: Keymap, message: Option<String>) -> Self {
+        Self {
+            keymap,
+            message,
+            should_quit: false,
+        }
     }
 
     pub async fn run(&mut self, terminal: &mut Tui) -> Result<()> {
@@ -60,14 +68,17 @@ impl App {
         }
     }
 
-    // Temporary: Ctrl+Q is matched here until #3 moves key handling into
-    // src/keymap.rs (plan rule R5, "not yet: #3").
     fn handle_key(&mut self, key: KeyEvent) {
-        if key.kind == KeyEventKind::Press
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
-        {
-            self.should_quit = true;
+        match self.keymap.resolve(&key) {
+            Input::Action(action) => self.handle_action(action),
+            // Typing arrives with buffers in #6.
+            Input::Text(_) | Input::Ignored => {}
+        }
+    }
+
+    fn handle_action(&mut self, action: Action) {
+        match action {
+            Action::Quit => self.should_quit = true,
         }
     }
 
@@ -75,7 +86,7 @@ impl App {
     pub fn render(&self, frame: &mut Frame) {
         let [_editor, status] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(frame.area());
-        render_status(frame, status);
+        render_status(frame, status, self.message.as_deref());
     }
 }
 
@@ -94,37 +105,65 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    fn key(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
-        AppEvent::Input(Event::Key(KeyEvent::new(code, modifiers)))
+    use crate::config::{KeyBinding, KeysConfig};
+    use crate::keymap::key_event;
+    use crossterm::event::KeyEventKind;
+
+    fn key(notation: &str) -> AppEvent {
+        AppEvent::Input(Event::Key(key_event(notation)))
     }
 
     #[test]
     fn ctrl_q_quits() {
-        let mut app = App::new();
-        app.handle_event(key(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        let mut app = App::default();
+        app.handle_event(key("ctrl+q"));
         assert!(app.should_quit);
     }
 
     #[test]
     fn plain_q_does_not_quit() {
-        let mut app = App::new();
-        app.handle_event(key(KeyCode::Char('q'), KeyModifiers::NONE));
+        let mut app = App::default();
+        app.handle_event(key("q"));
         assert!(!app.should_quit);
     }
 
     #[test]
     fn key_release_does_not_quit() {
-        let mut app = App::new();
-        let mut release = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
+        let mut app = App::default();
+        let mut release = key_event("ctrl+q");
         release.kind = KeyEventKind::Release;
         app.handle_event(AppEvent::Input(Event::Key(release)));
         assert!(!app.should_quit);
     }
 
     #[test]
+    fn keys_go_through_the_configured_keymap() -> Result<()> {
+        let mut keys = KeysConfig::new();
+        keys.insert("quit".into(), KeyBinding::One("alt+q".into()));
+        let mut app = App::new(Keymap::new(&keys)?, None);
+        app.handle_event(key("ctrl+q"));
+        assert!(!app.should_quit);
+        app.handle_event(key("alt+q"));
+        assert!(app.should_quit);
+        Ok(())
+    }
+
+    #[test]
+    fn status_line_shows_the_message() -> Result<()> {
+        let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+        let app = App::new(Keymap::default(), Some("config error: boom".into()));
+        terminal.draw(|frame| app.render(frame))?;
+        let buffer = terminal.backend().buffer();
+        let last: String = (0..100).map(|x| buffer[(x, 29)].symbol()).collect();
+        assert!(last.starts_with("griffin"), "{last}");
+        assert!(last.contains("config error: boom"), "{last}");
+        Ok(())
+    }
+
+    #[test]
     fn status_line_is_on_the_last_row() -> Result<()> {
         let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
-        let app = App::new();
+        let app = App::default();
         terminal.draw(|frame| app.render(frame))?;
 
         let buffer = terminal.backend().buffer();

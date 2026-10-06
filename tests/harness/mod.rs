@@ -41,7 +41,7 @@ pub struct Griffin {
     exited: Option<ExitStatus>,
     // Kept alive so the PTY stays open for the reader and the child.
     _master: Box<dyn MasterPty + Send>,
-    // Kept alive so `GRIFFIN_CONFIG` points at a real (empty) file until the end.
+    // Kept alive so `GRIFFIN_CONFIG` points at a real file until the end.
     _config: NamedTempFile,
 }
 
@@ -54,7 +54,22 @@ impl Griffin {
 
     /// Starts griffin with `dir` as its working directory.
     pub fn spawn_in(dir: &Path, args: &[&str]) -> Self {
-        let config = NamedTempFile::new().expect("create empty temp config");
+        Self::spawn_in_with_config(dir, "", args)
+    }
+
+    /// Starts griffin in the current directory with `toml` as its `config.toml`.
+    pub fn spawn_with_config(toml: &str, args: &[&str]) -> Self {
+        let dir = std::env::current_dir().expect("test process has a current directory");
+        Self::spawn_in_with_config(&dir, toml, args)
+    }
+
+    /// Starts griffin with `dir` as its working directory and `toml` as its config.
+    pub fn spawn_in_with_config(dir: &Path, toml: &str, args: &[&str]) -> Self {
+        let mut config = NamedTempFile::new().expect("create temp config");
+        config
+            .write_all(toml.as_bytes())
+            .and_then(|()| config.flush())
+            .expect("write temp config");
 
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -179,6 +194,27 @@ impl Griffin {
                 .wait_timeout(parser, deadline - now)
                 .expect("screen lock poisoned")
                 .0;
+        }
+    }
+
+    /// Checks griffin is still running after `grace`. Proving a key did nothing
+    /// needs some window to wait in; this returns early if griffin exits.
+    pub fn assert_running_for(&mut self, grace: Duration) {
+        if self.exited.is_some() {
+            panic!(
+                "griffin already exited
+{}",
+                dump(&self.screen())
+            );
+        }
+        match self.exit.recv_timeout(grace) {
+            Err(RecvTimeoutError::Timeout) => {}
+            Ok(status) => panic!(
+                "griffin exited unexpectedly with {status:?}
+{}",
+                dump(&self.screen())
+            ),
+            Err(RecvTimeoutError::Disconnected) => panic!("griffin's wait thread vanished"),
         }
     }
 
