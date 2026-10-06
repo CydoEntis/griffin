@@ -9,10 +9,11 @@ mod transport;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use lsp_types::Uri;
+use lsp_types::{DiagnosticSeverity, PublishDiagnosticsParams, Uri};
 use ropey::Rope;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
@@ -22,7 +23,7 @@ use crate::buffer::Buffer;
 use crate::config::LspServer;
 use crate::highlight::languages;
 use client::Client;
-use position::path_to_uri;
+use position::{char_index, path_to_uri};
 
 /// Something one server did, tagged with the server it came from.
 #[derive(Debug)]
@@ -37,6 +38,61 @@ pub enum ServerEvent {
     Message(Value),
     /// The server's output closed and the process exited, with its code if any.
     Exited(Option<i32>),
+}
+
+/// How bad a diagnostic is. A server that doesn't say is taken to mean an error,
+/// as the protocol suggests clients do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    Error,
+    Warning,
+    Information,
+    Hint,
+}
+
+/// One problem a server reported in a buffer, by char indices into the text as
+/// it was when the report arrived.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub range: Range<usize>,
+    pub severity: Severity,
+    pub message: String,
+}
+
+/// Where F8 (`forward`) or Shift+F8 moves `cursor` among `diagnostics` (sorted
+/// by start): the start of the next one after it, or the previous one before it,
+/// wrapping around at either end. `None` when there are none.
+pub fn diagnostic_jump(diagnostics: &[Diagnostic], cursor: usize, forward: bool) -> Option<usize> {
+    let mut starts = diagnostics.iter().map(|d| d.range.start);
+    if forward {
+        let first = diagnostics.first()?.range.start;
+        Some(starts.find(|&start| start > cursor).unwrap_or(first))
+    } else {
+        let last = diagnostics.last()?.range.start;
+        Some(starts.rfind(|&start| start < cursor).unwrap_or(last))
+    }
+}
+
+/// The diagnostic under `cursor`, the most severe when several overlap. A cursor
+/// on an empty range's position counts as on it.
+pub fn diagnostic_at(diagnostics: &[Diagnostic], cursor: usize) -> Option<&Diagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.range.contains(&cursor) || d.range.start == cursor)
+        .min_by_key(|d| d.severity)
+}
+
+/// What a server's message means for the app.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LspNews {
+    /// A line for the status line (a crash, a failed start).
+    Message(String),
+    /// The full set of diagnostics now standing for buffer `doc`, sorted by
+    /// start; empty clears them.
+    Diagnostics {
+        doc: u64,
+        diagnostics: Vec<Diagnostic>,
+    },
 }
 
 /// The `[lsp.<lang>]` key for `path`: the highlight registry's language name, except
@@ -247,14 +303,62 @@ impl Lsp {
         Some(id)
     }
 
-    /// Hands a server's message or exit to its client. Returns a status line when
-    /// there's news (a crash, a failed start).
-    pub fn handle(&mut self, event: LspEvent) -> Option<String> {
-        let client = self.servers.get_mut(&event.server)?;
-        match event.event {
+    /// Hands a server's message or exit to its client, and turns published
+    /// diagnostics into char ranges for each buffer they name.
+    pub fn handle(&mut self, event: LspEvent) -> Vec<LspNews> {
+        let Some(client) = self.servers.get_mut(&event.server) else {
+            return Vec::new();
+        };
+        let message = match event.event {
+            ServerEvent::Message(message)
+                if message["method"] == "textDocument/publishDiagnostics"
+                    && message.get("id").is_none() =>
+            {
+                return self.diagnostics(event.server, message);
+            }
             ServerEvent::Message(message) => client.handle(message),
             ServerEvent::Exited(code) => client.exited(code),
+        };
+        message.map(LspNews::Message).into_iter().collect()
+    }
+
+    /// The buffers `server` follows under the published URI, each with the
+    /// diagnostics mapped onto its text. Positions are read against the text the
+    /// server was last sent, which is the buffer's text: every event is followed
+    /// by a sync before the next one is handled.
+    fn diagnostics(&self, server: u64, message: Value) -> Vec<LspNews> {
+        let Ok(params) =
+            serde_json::from_value::<PublishDiagnosticsParams>(message["params"].clone())
+        else {
+            return Vec::new();
+        };
+        let mut news = Vec::new();
+        for (&doc, attached) in &self.docs {
+            if attached.server != server || attached.uri != params.uri {
+                continue;
+            }
+            let mut diagnostics: Vec<Diagnostic> = params
+                .diagnostics
+                .iter()
+                .map(|d| {
+                    let start = char_index(&attached.rope, d.range.start);
+                    let end = char_index(&attached.rope, d.range.end).max(start);
+                    Diagnostic {
+                        range: start..end,
+                        severity: match d.severity {
+                            Some(DiagnosticSeverity::WARNING) => Severity::Warning,
+                            Some(DiagnosticSeverity::INFORMATION) => Severity::Information,
+                            Some(DiagnosticSeverity::HINT) => Severity::Hint,
+                            _ => Severity::Error,
+                        },
+                        message: d.message.clone(),
+                    }
+                })
+                .collect();
+            diagnostics.sort_by_key(|d| (d.range.start, d.range.end));
+            news.push(LspNews::Diagnostics { doc, diagnostics });
         }
+        news
     }
 
     /// Asks every server to stop and gives them a moment to go. Whatever is still
@@ -331,6 +435,104 @@ mod tests {
         assert_eq!(lsp.servers.len(), 1);
         // Plain text has no server and isn't followed.
         assert!(!lsp.docs.contains_key(&2));
+    }
+
+    fn diag(range: Range<usize>, severity: Severity) -> Diagnostic {
+        Diagnostic {
+            range,
+            severity,
+            message: String::new(),
+        }
+    }
+
+    #[test]
+    fn jumps_go_to_the_next_or_previous_start_and_wrap() {
+        let list = [diag(2..4, Severity::Warning), diag(10..12, Severity::Error)];
+        assert_eq!(diagnostic_jump(&list, 0, true), Some(2));
+        assert_eq!(diagnostic_jump(&list, 2, true), Some(10));
+        assert_eq!(diagnostic_jump(&list, 3, true), Some(10));
+        assert_eq!(diagnostic_jump(&list, 10, true), Some(2));
+        assert_eq!(diagnostic_jump(&list, 11, false), Some(10));
+        assert_eq!(diagnostic_jump(&list, 10, false), Some(2));
+        assert_eq!(diagnostic_jump(&list, 2, false), Some(10));
+        assert_eq!(diagnostic_jump(&[], 5, true), None);
+        assert_eq!(diagnostic_jump(&[], 5, false), None);
+    }
+
+    #[test]
+    fn the_diagnostic_at_the_cursor_is_the_worst_one_covering_it() {
+        let list = [
+            diag(2..8, Severity::Warning),
+            diag(4..6, Severity::Error),
+            diag(9..9, Severity::Hint),
+        ];
+        assert_eq!(diagnostic_at(&list, 1), None);
+        assert_eq!(
+            diagnostic_at(&list, 2).map(|d| d.severity),
+            Some(Severity::Warning)
+        );
+        assert_eq!(
+            diagnostic_at(&list, 5).map(|d| d.severity),
+            Some(Severity::Error)
+        );
+        assert_eq!(diagnostic_at(&list, 8), None);
+        assert_eq!(
+            diagnostic_at(&list, 9).map(|d| d.severity),
+            Some(Severity::Hint)
+        );
+    }
+
+    #[test]
+    fn a_publish_becomes_sorted_char_ranges_for_the_buffer_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lsp = Lsp::new(config("ra"));
+        let uri = path_to_uri(&dir.path().join("a.rs")).unwrap();
+        lsp.docs.insert(
+            7,
+            Attached {
+                server: 1,
+                uri: uri.clone(),
+                lang: "rust",
+                opened: true,
+                version: 0,
+                rope: Rope::from_str("é🦀 x\nyy\n"),
+                revision: 0,
+                saves: 0,
+            },
+        );
+        let message = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {"uri": uri.as_str(), "diagnostics": [
+                {"range": {"start": {"line": 1, "character": 0},
+                           "end": {"line": 1, "character": 2}},
+                 "message": "no severity"},
+                {"range": {"start": {"line": 0, "character": 4},
+                           "end": {"line": 0, "character": 5}},
+                 "severity": 2, "message": "after the crab"}
+            ]}
+        });
+        let news = lsp.diagnostics(1, message.clone());
+        assert_eq!(
+            news,
+            [LspNews::Diagnostics {
+                doc: 7,
+                diagnostics: vec![
+                    Diagnostic {
+                        range: 3..4,
+                        severity: Severity::Warning,
+                        message: "after the crab".into(),
+                    },
+                    Diagnostic {
+                        range: 5..7,
+                        severity: Severity::Error,
+                        message: "no severity".into(),
+                    },
+                ],
+            }]
+        );
+        // Another server's report on the same file isn't this one's.
+        assert!(lsp.diagnostics(2, message).is_empty());
     }
 
     #[test]

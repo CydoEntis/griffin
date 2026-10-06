@@ -9,7 +9,9 @@
 //!   - `responses`: the result for each request method. `initialize` defaults to
 //!     incremental sync with saves; `shutdown` and anything unscripted get `null`.
 //!   - `notify`: messages (e.g. `textDocument/publishDiagnostics` notifications)
-//!     to send right after receiving each method; `jsonrpc` is filled in.
+//!     to send right after receiving each method; `jsonrpc` is filled in, and any
+//!     string `"$uri"` in them becomes the received message's document URI, so a
+//!     script needn't know where the test put its files.
 //!   - `exit_on`: a method that makes it exit with code 3 at once, as a crash.
 //!
 //! It exits cleanly on `exit` or when stdin closes.
@@ -62,14 +64,26 @@ fn main() -> ExitCode {
             );
         }
         if let Some(list) = script["notify"][method].as_array() {
+            let uri = message["params"]["textDocument"]["uri"].clone();
             for note in list {
                 let mut note = note.clone();
+                fill_uri(&mut note, &uri);
                 note["jsonrpc"] = json!("2.0");
                 write_message(&mut output, &note);
             }
         }
     }
     ExitCode::SUCCESS
+}
+
+/// Replaces every `"$uri"` string in `value` with `uri`.
+fn fill_uri(value: &mut Value, uri: &Value) {
+    match value {
+        Value::String(text) if text == "$uri" => *value = uri.clone(),
+        Value::Array(items) => items.iter_mut().for_each(|item| fill_uri(item, uri)),
+        Value::Object(fields) => fields.values_mut().for_each(|field| fill_uri(field, uri)),
+        _ => {}
+    }
 }
 
 fn default_initialize() -> Value {

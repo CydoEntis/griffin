@@ -411,6 +411,38 @@ impl Griffin {
         }
     }
 
+    /// The text of the underlined cells on `row`, in order.
+    pub fn underlined_text(&self, row: u16) -> String {
+        underlined_cells(&self.parser(), row)
+    }
+
+    /// Waits until the underlined cells on `row` read exactly `text`. Panics with
+    /// the screen on timeout.
+    pub fn wait_for_underlined(&self, row: u16, text: &str, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut parser = self.parser();
+        loop {
+            let underlined = underlined_cells(&parser, row);
+            if underlined == text {
+                return;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                panic!(
+                    "timed out after {timeout:?} waiting for row {row} to show {text:?} \
+                     underlined; it shows {underlined:?}\n{}",
+                    dump(&screen_lines(&parser))
+                );
+            }
+            parser = self
+                .shared
+                .changed
+                .wait_timeout(parser, deadline - now)
+                .expect("screen lock poisoned")
+                .0;
+        }
+    }
+
     /// The background colour of the cell at (`col`, `row`).
     pub fn bg_at(&self, col: u16, row: u16) -> vt100::Color {
         self.parser()
@@ -795,6 +827,18 @@ fn reversed_cells(parser: &vt100::Parser, row: u16) -> String {
     (0..COLS)
         .filter_map(|col| screen.cell(row, col))
         .filter(|cell| cell.inverse() && !cell.is_wide_continuation())
+        .map(|cell| match cell.contents() {
+            "" => " ".to_string(),
+            text => text.to_string(),
+        })
+        .collect()
+}
+
+fn underlined_cells(parser: &vt100::Parser, row: u16) -> String {
+    let screen = parser.screen();
+    (0..COLS)
+        .filter_map(|col| screen.cell(row, col))
+        .filter(|cell| cell.underline() && !cell.is_wide_continuation())
         .map(|cell| match cell.contents() {
             "" => " ".to_string(),
             text => text.to_string(),
