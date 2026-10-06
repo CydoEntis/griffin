@@ -8,6 +8,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::buffer::Buffer;
 use crate::buffer::movement::{char_col_at, char_width, display_col};
+use crate::highlight::Role;
 use crate::theme::Theme;
 
 /// Which part of a buffer the editor pane shows.
@@ -107,6 +108,7 @@ pub fn render_buffer(
     let text_width = text_width(buf, area);
     let gutter_style = Style::new().fg(theme.muted);
     let selection = buf.selection();
+    let syntax = visible_spans(buf, view, area);
 
     let out = frame.buffer_mut();
     for (screen_row, line_idx) in (view.scroll_row..buf.rope.len_lines())
@@ -129,6 +131,17 @@ pub fn render_buffer(
         // `gutter_width` is at most `area.width` here, so it fits in a u16.
         let x = area.x + gutter_width as u16;
         out.set_stringn(x, y, &text, text_width, Style::new());
+        for (cells, role) in role_cells(buf, line_idx, &syntax, tab_width) {
+            let from = cells.start.max(view.scroll_col);
+            let to = cells.end.min(view.scroll_col + text_width);
+            for col in from..to {
+                // Below `text_width`, which fits in the area's u16 width.
+                let cell_x = x + (col - view.scroll_col) as u16;
+                if let Some(cell) = out.cell_mut((cell_x, y)) {
+                    cell.set_style(theme.syntax.style(role));
+                }
+            }
+        }
         let line_start = buf.rope.line_to_char(line_idx);
         let line_end = line_start + buf.rope.line(line_idx).len_chars();
         // Only the highlights that touch this line, found by bisecting the sorted list.
@@ -153,6 +166,53 @@ pub fn render_buffer(
     if let Some((x, y)) = cursor_cell(buf, view, tab_width, area) {
         frame.set_cursor_position((x, y));
     }
+}
+
+/// The syntax roles in the lines `view` shows of `buf` in `area`, as sorted byte
+/// ranges. Empty when the buffer isn't highlighted.
+fn visible_spans(buf: &Buffer, view: &View, area: Rect) -> Vec<(Range<usize>, Role)> {
+    let Some(highlighter) = &buf.highlighter else {
+        return Vec::new();
+    };
+    let lines = buf.rope.len_lines();
+    let first = view.scroll_row.min(lines);
+    let last = (view.scroll_row + usize::from(area.height)).min(lines);
+    let bytes = buf.rope.line_to_byte(first)..buf.rope.line_to_byte(last);
+    highlighter.spans(&buf.rope, bytes)
+}
+
+/// Display columns of line `line_idx` drawn in each role of `spans` (sorted byte
+/// ranges), merged where neighbouring characters share a role.
+fn role_cells(
+    buf: &Buffer,
+    line_idx: usize,
+    spans: &[(Range<usize>, Role)],
+    tab_width: usize,
+) -> Vec<(Range<usize>, Role)> {
+    let mut byte = buf.rope.line_to_byte(line_idx);
+    let mut next = spans.partition_point(|(range, _)| range.end <= byte);
+    let mut out: Vec<(Range<usize>, Role)> = Vec::new();
+    let mut col = 0;
+    for ch in buf.rope.line(line_idx).chars() {
+        if ch == '\n' || next >= spans.len() {
+            break;
+        }
+        let w = char_width(ch, col, tab_width);
+        while next < spans.len() && spans[next].0.end <= byte {
+            next += 1;
+        }
+        if let Some((range, role)) = spans.get(next)
+            && range.contains(&byte)
+        {
+            match out.last_mut() {
+                Some((cells, prev)) if cells.end == col && prev == role => cells.end = col + w,
+                _ => out.push((col..col + w, *role)),
+            }
+        }
+        byte += ch.len_utf8();
+        col += w;
+    }
+    out
 }
 
 /// Display columns of line `line_idx` covered by `selection`. A selected line break
@@ -507,6 +567,34 @@ ab foo foo",
         };
         assert_eq!(marked(0), "foo");
         assert_eq!(marked(1), "foofoo");
+        Ok(())
+    }
+
+    #[test]
+    fn syntax_roles_colour_their_cells() -> Result<()> {
+        let mut buf = Buffer {
+            rope: Rope::from_str(
+                "fn f() {}
+	// x",
+            ),
+            path: Some("a.rs".into()),
+            ..Buffer::empty()
+        };
+        buf.sync_highlight();
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(20, 2))?;
+        terminal.draw(|frame| {
+            render_buffer(&theme, &buf, &View::default(), 4, &[], frame.area(), frame)
+        })?;
+        let screen = terminal.backend().buffer();
+        let fg = |x: u16, y: u16| screen[(x, y)].fg;
+        // Gutter " 1 │ " is 5 cells.
+        assert_eq!(fg(5, 0), theme.syntax.keyword.fg.unwrap_or_default());
+        assert_eq!(fg(6, 0), theme.syntax.keyword.fg.unwrap_or_default());
+        assert_eq!(fg(8, 0), theme.syntax.function.fg.unwrap_or_default());
+        // The comment starts after a tab, four cells in.
+        assert_eq!(fg(9, 1), theme.syntax.comment.fg.unwrap_or_default());
+        assert_eq!(fg(12, 1), theme.syntax.comment.fg.unwrap_or_default());
         Ok(())
     }
 

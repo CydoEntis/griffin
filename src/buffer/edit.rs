@@ -6,6 +6,7 @@ use std::ops::Range;
 use super::Buffer;
 use super::history::EditKind;
 use super::movement::display_col;
+use crate::highlight::input_edit;
 
 /// Replace `removed` at char index `at` with `inserted`. An insertion has an empty
 /// `removed`; a deletion an empty `inserted`.
@@ -41,6 +42,10 @@ impl Buffer {
             change.removed,
             "a Change must describe the text it removes"
         );
+        if let Some(highlighter) = &mut self.highlighter {
+            let edit = input_edit(&self.rope, change.at, removed_len, &change.inserted);
+            highlighter.edit(&edit);
+        }
         self.rope.remove(change.at..change.at + removed_len);
         self.rope.insert(change.at, &change.inserted);
         self.cursor = change.at + change.inserted.chars().count();

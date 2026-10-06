@@ -533,7 +533,7 @@ impl Tabs {
         if split == self.focused {
             Shown::Live(buffer)
         } else {
-            Shown::Copy(buffer.with_caret(tab.caret))
+            Shown::Copy(Box::new(buffer.with_caret(tab.caret)))
         }
     }
 
@@ -583,7 +583,8 @@ impl Tabs {
 /// A split's buffer as `Tabs::shown` hands it out for drawing and scrolling.
 enum Shown<'a> {
     Live(&'a Buffer),
-    Copy(Buffer),
+    // Boxed: a buffer is far bigger than the reference beside it.
+    Copy(Box<Buffer>),
 }
 
 impl Shown<'_> {
@@ -771,6 +772,10 @@ impl App {
     /// Draws one frame as a synchronized update, so a terminal shows it whole: a
     /// themed frame repaints every cell, and drawn piecemeal it tears.
     fn draw(&mut self, terminal: &mut Tui) -> Result<()> {
+        // Rendering only reads syntax trees, so they're brought up to date here.
+        for doc in &mut self.tabs.docs {
+            doc.buffer.sync_highlight();
+        }
         execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
         self.screen = terminal.draw(|frame| self.render(frame))?.area;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;

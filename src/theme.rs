@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::highlight::Role;
+
 /// Hydra's theme names, in Hydra's order; `Theme::named` knows each one.
 #[cfg(test)]
 pub const NAMES: &[&str] = &[
@@ -127,6 +129,27 @@ pub struct Syntax {
     pub property: Style,
     pub tag: Style,
     pub attribute: Style,
+}
+
+impl Syntax {
+    /// The style text in `role` is drawn with.
+    pub fn style(&self, role: Role) -> Style {
+        match role {
+            Role::Keyword => self.keyword,
+            Role::String => self.string,
+            Role::Comment => self.comment,
+            Role::Function => self.function,
+            Role::Type => self.r#type,
+            Role::Number => self.number,
+            Role::Constant => self.constant,
+            Role::Operator => self.operator,
+            Role::Punctuation => self.punctuation,
+            Role::Variable => self.variable,
+            Role::Property => self.property,
+            Role::Tag => self.tag,
+            Role::Attribute => self.attribute,
+        }
+    }
 }
 
 impl Default for Theme {
