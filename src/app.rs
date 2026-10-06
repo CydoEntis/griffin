@@ -11,6 +11,7 @@ use crate::Tui;
 use crate::buffer::Buffer;
 use crate::config::EditorConfig;
 use crate::keymap::{Action, Input, Keymap};
+use crate::ui::confirm::{Answer, Choice, Confirm};
 use crate::ui::status::render_status;
 use crate::view::{View, render_buffer};
 
@@ -19,6 +20,39 @@ use crate::view::{View, render_buffer};
 #[derive(Debug)]
 pub enum AppEvent {
     Input(Event),
+}
+
+/// A question that takes over the keyboard until it's answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Prompt {
+    /// Ctrl+Q with unsaved changes.
+    UnsavedQuit,
+}
+
+const UNSAVED_QUIT: Confirm = Confirm {
+    question: "Unsaved changes",
+    choices: &[
+        Choice {
+            key: 's',
+            label: "save",
+        },
+        Choice {
+            key: 'd',
+            label: "discard",
+        },
+        Choice {
+            key: 'c',
+            label: "cancel",
+        },
+    ],
+};
+
+impl Prompt {
+    fn confirm(self) -> Confirm {
+        match self {
+            Prompt::UnsavedQuit => UNSAVED_QUIT,
+        }
+    }
 }
 
 /// All editor state, owned by the main task.
@@ -34,6 +68,8 @@ pub struct App {
     screen: Rect,
     /// Shown in the status line, e.g. why the config fell back to defaults.
     message: Option<String>,
+    /// While set, every key goes to the prompt instead of the editor.
+    prompt: Option<Prompt>,
     should_quit: bool,
 }
 
@@ -62,6 +98,7 @@ impl App {
             view: View::default(),
             screen: Rect::default(),
             message,
+            prompt: None,
             should_quit: false,
         }
     }
@@ -106,7 +143,14 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        match self.keymap.resolve(&key) {
+        let input = self.keymap.resolve(&key);
+        if let Some(prompt) = self.prompt {
+            if let Some(answer) = prompt.confirm().answer(input) {
+                self.answer_prompt(prompt, answer);
+            }
+            return;
+        }
+        match input {
             Input::Action(action) => self.handle_action(action),
             Input::Text(ch) => {
                 self.buffer.insert(ch.encode_utf8(&mut [0; 4]));
@@ -118,7 +162,13 @@ impl App {
 
     fn handle_action(&mut self, action: Action) {
         match action {
+            Action::Quit if self.buffer.dirty => self.prompt = Some(Prompt::UnsavedQuit),
             Action::Quit => self.should_quit = true,
+            Action::Save => {
+                self.save();
+            }
+            // Nothing to cancel outside a prompt.
+            Action::Cancel => {}
             Action::Move(motion) => {
                 let page = usize::from(editor_area(self.screen).height);
                 self.buffer.move_cursor(motion, page, self.editor.tab_width);
@@ -130,6 +180,38 @@ impl App {
             Action::Tab => {
                 let (width, spaces) = (self.editor.tab_width, self.editor.insert_spaces);
                 self.edit(|buffer| buffer.tab(width, spaces));
+            }
+        }
+    }
+
+    fn answer_prompt(&mut self, prompt: Prompt, answer: Answer) {
+        self.prompt = None;
+        match (prompt, answer) {
+            (Prompt::UnsavedQuit, Answer::Picked('s')) => {
+                // A failed save leaves the editor open with the error showing.
+                self.should_quit = self.save();
+            }
+            (Prompt::UnsavedQuit, Answer::Picked('d')) => self.should_quit = true,
+            (Prompt::UnsavedQuit, _) => {}
+        }
+    }
+
+    /// Saves the buffer and says how it went in the status line. Returns whether
+    /// the buffer is now saved.
+    fn save(&mut self) -> bool {
+        if self.buffer.path.is_none() {
+            self.message = Some("no file name (save as comes later)".into());
+            return false;
+        }
+        let name = self.buffer.name();
+        match self.buffer.save() {
+            Ok(()) => {
+                self.message = Some(format!("saved {name}"));
+                true
+            }
+            Err(err) => {
+                self.message = Some(format!("cannot save {name}: {err}"));
+                false
             }
         }
     }
@@ -161,9 +243,13 @@ impl App {
             frame,
             status,
             &self.buffer.name(),
+            self.buffer.dirty,
             self.message.as_deref(),
             self.buffer.cursor_line_col(),
         );
+        if let Some(prompt) = self.prompt {
+            prompt.confirm().render(frame, frame.area());
+        }
     }
 }
 
@@ -204,6 +290,61 @@ mod tests {
         let mut app = App::default();
         app.handle_event(key("ctrl+q"));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_q_with_unsaved_changes_asks_first() {
+        let mut app = App::default();
+        app.handle_event(key("x"));
+        app.handle_event(key("ctrl+q"));
+        assert!(!app.should_quit);
+        assert_eq!(app.prompt, Some(Prompt::UnsavedQuit));
+        // Keys answer the prompt instead of editing.
+        app.handle_event(key("y"));
+        assert_eq!(app.buffer.rope.to_string(), "x");
+        app.handle_event(key("esc"));
+        assert_eq!(app.prompt, None);
+        app.handle_event(key("ctrl+q"));
+        app.handle_event(key("c"));
+        assert_eq!(app.prompt, None);
+        assert!(!app.should_quit);
+        app.handle_event(key("ctrl+q"));
+        app.handle_event(key("shift+d"));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn save_then_quit_on_an_untitled_buffer_stays_open() {
+        let mut app = App::default();
+        app.handle_event(key("x"));
+        app.handle_event(key("ctrl+q"));
+        app.handle_event(key("s"));
+        assert!(!app.should_quit);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("no file name (save as comes later)")
+        );
+    }
+
+    #[test]
+    fn ctrl_s_saves_and_clears_dirty() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "hi\r\n")?;
+        let mut app = App::new(
+            Keymap::default(),
+            EditorConfig::default(),
+            Some(path.clone()),
+            None,
+        );
+        app.handle_event(key("x"));
+        assert!(app.buffer.dirty);
+        app.handle_event(key("ctrl+s"));
+        assert!(!app.buffer.dirty);
+        assert_eq!(std::fs::read_to_string(&path)?, "xhi\r\n");
+        let message = app.message.unwrap_or_default();
+        assert!(message.starts_with("saved "), "{message}");
+        Ok(())
     }
 
     #[test]

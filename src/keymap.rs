@@ -14,6 +14,9 @@ use crate::config::KeysConfig;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     Quit,
+    Save,
+    /// Esc: closes whatever prompt or popup is open.
+    Cancel,
     Move(Motion),
     Newline,
     Backspace,
@@ -24,6 +27,8 @@ pub enum Action {
 impl Action {
     const ALL: &[Action] = &[
         Action::Quit,
+        Action::Save,
+        Action::Cancel,
         Action::Move(Motion::Left),
         Action::Move(Motion::Right),
         Action::Move(Motion::Up),
@@ -46,6 +51,8 @@ impl Action {
     pub fn name(self) -> &'static str {
         match self {
             Action::Quit => "quit",
+            Action::Save => "save",
+            Action::Cancel => "cancel",
             Action::Move(motion) => match motion {
                 Motion::Left => "move_left",
                 Motion::Right => "move_right",
@@ -76,6 +83,8 @@ impl Action {
 /// line per binding.
 const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Quit, "ctrl+q"),
+    (Action::Save, "ctrl+s"),
+    (Action::Cancel, "esc"),
     (Action::Move(Motion::Left), "left"),
     (Action::Move(Motion::Right), "right"),
     (Action::Move(Motion::Up), "up"),
@@ -445,6 +454,24 @@ mod tests {
         let map = Keymap::default();
         let event = ev(KeyCode::Char('q'), KeyModifiers::CONTROL);
         assert_eq!(map.resolve(&event), Input::Action(Action::Quit));
+    }
+
+    #[test]
+    fn ctrl_s_saves_and_esc_cancels_by_default() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            Input::Action(Action::Save)
+        );
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Esc, KeyModifiers::NONE)),
+            Input::Action(Action::Cancel)
+        );
+        // Plain letters stay text, so prompts can read their answers from it.
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('s'), KeyModifiers::NONE)),
+            Input::Text('s')
+        );
     }
 
     #[test]
