@@ -78,8 +78,10 @@ rows 1..   file tree (30 cols) │ editor [│ editor]
            find / prompt bar (1 row, when open)
 last row   status: message · path · Ln:Col · language · LSP · ⚠ diag count
 ```
-Popups (go to file, confirm, recover, completion, hover) are centred cards over a
-dimmed screen, as in Hydra.
+Dialogs (go to file, confirm, recover) are centred cards over a dimmed screen, as
+in Hydra. Hover and completion are small cards anchored at the cursor (below it,
+flipping above or shifting left near the screen edges), with no dimming
+(decided 2026-10-06).
 
 **Default keymap** (all remappable, R5):
 
