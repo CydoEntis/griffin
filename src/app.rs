@@ -30,11 +30,12 @@ use crate::config::{self, EditorConfig, RunEntry};
 use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
 use crate::lsp::{
-    Diagnostic, Location, Lsp, LspEvent, LspNews, Severity, char_index, diagnostic_at,
-    diagnostic_jump,
+    CompletionItem, Diagnostic, Location, Lsp, LspEvent, LspNews, Severity, char_index,
+    diagnostic_at, diagnostic_jump,
 };
 use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
+use crate::ui::completion::{self, Completion};
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
 use crate::ui::find::{FindBar, Step};
 use crate::ui::hover::render_hover;
@@ -728,6 +729,13 @@ pub struct App {
     /// The hover awaiting its reply, as (buffer id, cursor) when asked; an answer
     /// for a cursor that has since moved is dropped.
     hover_for: Option<(u64, usize)>,
+    /// The completion popup, while it's open. It takes the keys it uses before
+    /// the editor does; any other key or a click closes it.
+    completion: Option<Completion>,
+    /// The completion awaiting its reply, as (buffer id, word start, cursor)
+    /// when asked; an answer arriving once the cursor has left the word is
+    /// dropped.
+    completion_for: Option<(u64, usize, usize)>,
     should_quit: bool,
 }
 
@@ -880,6 +888,7 @@ impl App {
             AppEvent::Input(Event::Key(key)) => self.handle_key(key),
             AppEvent::Input(Event::Paste(text)) if self.prompt.is_none() => {
                 self.hover = None;
+                self.completion = None;
                 if let Some(picker) = &mut self.picker {
                     if let Some(picked) = picker.paste(&text) {
                         self.finish_picker(picked);
@@ -911,6 +920,7 @@ impl App {
             AppEvent::Input(Event::Mouse(mouse)) if !self.modal_open() => {
                 if mouse.kind != MouseEventKind::Moved {
                     self.hover = None;
+                    self.completion = None;
                 }
                 self.handle_mouse(mouse, Instant::now());
             }
@@ -980,6 +990,7 @@ impl App {
                                 self.hover = text;
                             }
                         }
+                        LspNews::Completion { doc, items } => self.show_completion(doc, items),
                     }
                 }
             }
@@ -1035,13 +1046,144 @@ impl App {
             self.find_step(step);
             return;
         }
+        // The completion popup sits over the editor, so Enter, Tab and the arrows
+        // reach it first.
+        if self.completion.is_some() && self.complete_key(input) {
+            return;
+        }
         match input {
             Input::Action(action) if self.focus == Focus::Tree => self.handle_tree_action(action),
             Input::Action(action) => self.handle_action(action),
             // Typing in the tree does nothing until type-to-find exists.
             Input::Text(_) if self.focus == Focus::Tree => {}
-            Input::Text(ch) => self.edit(|buffer| buffer.type_text(ch.encode_utf8(&mut [0; 4]))),
+            Input::Text(ch) => {
+                self.edit(|buffer| buffer.type_text(ch.encode_utf8(&mut [0; 4])));
+                if self.lsp.is_trigger(self.tabs.active().id, ch) {
+                    self.request_completion();
+                }
+            }
             Input::Ignored => {}
+        }
+    }
+
+    /// A key while the completion popup is open. Returns whether the popup used
+    /// it; otherwise the popup has closed and the key goes on to the editor.
+    fn complete_key(&mut self, input: Input) -> bool {
+        let Some(open) = &self.completion else {
+            return false;
+        };
+        let buffer = self.buffer();
+        let typed = completion::typed_word(&buffer.rope, open.start, buffer.cursor);
+        let Some(typed) = typed.filter(|_| open.doc == self.tabs.active().id) else {
+            self.completion = None;
+            return false;
+        };
+        let has_items = !open.shown(&typed).is_empty();
+        match input {
+            // More of the word: it stays open and filters on it.
+            Input::Text(ch) if completion::is_word_char(ch) => {
+                self.edit(|buffer| buffer.type_text(ch.encode_utf8(&mut [0; 4])));
+                self.refilter();
+                true
+            }
+            Input::Action(Action::Backspace) => {
+                self.buffer_mut().seal_undo_group();
+                self.edit(Buffer::backspace);
+                self.refilter();
+                true
+            }
+            Input::Action(Action::Move(motion @ (Motion::Up | Motion::Down))) if has_items => {
+                if let Some(open) = &mut self.completion {
+                    open.step(&typed, motion == Motion::Down);
+                }
+                true
+            }
+            Input::Action(Action::Newline | Action::Tab) if has_items => {
+                self.accept_completion(&typed);
+                true
+            }
+            Input::Action(Action::Cancel) => {
+                self.completion = None;
+                true
+            }
+            // Key releases and unbound keys: nothing happened.
+            Input::Ignored => true,
+            _ => {
+                self.completion = None;
+                false
+            }
+        }
+    }
+
+    /// After the word under an open popup changed: back to the best match, or
+    /// closed once the cursor has left the word.
+    fn refilter(&mut self) {
+        let buffer = self.buffer();
+        let on_word = self.completion.as_ref().is_some_and(|c| {
+            completion::typed_word(&buffer.rope, c.start, buffer.cursor).is_some()
+        });
+        match &mut self.completion {
+            Some(open) if on_word => open.reset(),
+            _ => self.completion = None,
+        }
+    }
+
+    /// Replaces the word with the selected item's text as one undo step, and
+    /// closes the popup.
+    fn accept_completion(&mut self, typed: &str) {
+        let Some(open) = self.completion.take() else {
+            return;
+        };
+        let Some(item) = open.selected(typed) else {
+            return;
+        };
+        let cursor = self.buffer().cursor;
+        let len = self.buffer().rope.len_chars();
+        let range = open.replaced(item, cursor);
+        let range = range.start.min(len)..range.end.min(len);
+        let text = item.text.clone();
+        self.edit(|buffer| {
+            buffer.seal_undo_group();
+            buffer.replace_ranges(&[(range, text)]);
+        });
+    }
+
+    /// Asks the active buffer's language server for completions at the cursor.
+    /// The answer arrives later as an `AppEvent::Lsp`; with no server, nothing
+    /// shows.
+    fn request_completion(&mut self) {
+        self.completion = None;
+        // The server must have the text as it is now, including the key that
+        // asked, before it reads the position.
+        self.sync_lsp();
+        let doc = self.tabs.active().id;
+        let buffer = self.buffer();
+        let (cursor, start) = (
+            buffer.cursor,
+            completion::word_start(&buffer.rope, buffer.cursor),
+        );
+        if self.lsp.completion(doc, cursor) {
+            self.completion_for = Some((doc, start, cursor));
+        }
+    }
+
+    /// Opens the popup with a completion answer, unless something else has the
+    /// keys, the buffer changed, or the cursor has left the word it was asked
+    /// about.
+    fn show_completion(&mut self, doc: u64, items: Vec<CompletionItem>) {
+        let Some((asked_doc, start, asked_at)) = self.completion_for.take() else {
+            return;
+        };
+        let buffer = self.buffer();
+        let on_word = completion::typed_word(&buffer.rope, start, buffer.cursor).is_some();
+        if asked_doc == doc
+            && self.tabs.active().id == doc
+            && on_word
+            && self.focus == Focus::Editor
+            && !self.modal_open()
+            && !items.is_empty()
+        {
+            self.completion = Some(Completion::new(doc, start, asked_at, items));
         }
     }
 
@@ -1367,6 +1509,7 @@ impl App {
             Action::GoToDefinition => self.request_definition(),
             Action::JumpBack => self.jump_back(),
             Action::Hover => self.request_hover(),
+            Action::Complete => self.request_completion(),
             // Bound only in tree or find bar scope, so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
@@ -2621,6 +2764,24 @@ impl App {
             };
             if let Some(at) = cursor_cell(shown.buffer(), view, self.editor.tab_width, area) {
                 render_hover(theme, text, at, bounds, frame);
+            }
+        }
+        if let Some(open) = &self.completion
+            && open.doc == self.tabs.active().id
+            && !self.modal_open()
+        {
+            let area = panes.splits[focused].editor;
+            let view = &self.tabs.splits[focused].active().view;
+            let shown = self.tabs.shown(focused);
+            let buffer = shown.buffer();
+            let bounds = Rect {
+                height: screen.height.saturating_sub(1),
+                ..screen
+            };
+            if let Some(typed) = completion::typed_word(&buffer.rope, open.start, buffer.cursor)
+                && let Some(at) = cursor_cell(buffer, view, self.editor.tab_width, area)
+            {
+                open.render(theme, &typed, at, bounds, frame);
             }
         }
         if let (Some(name_prompt), Some(area)) = (&self.name_prompt, panes.bar) {
