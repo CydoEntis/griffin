@@ -1,12 +1,13 @@
 use std::path::PathBuf;
-#[cfg(windows)]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyEvent};
+use crossterm::event::{
+    Event, EventStream, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use futures_util::StreamExt;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use tokio::sync::mpsc;
 #[cfg(windows)]
 use tokio::time::timeout;
@@ -54,6 +55,20 @@ const UNSAVED_QUIT: Confirm = Confirm {
     ],
 };
 
+/// A second left click on the same cell within this long selects a word.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// Lines one wheel notch scrolls.
+const WHEEL_LINES: isize = 3;
+
+/// Where and when the last left button press landed, for double-click detection.
+#[derive(Debug, Clone, Copy)]
+struct Click {
+    at: Instant,
+    col: u16,
+    row: u16,
+}
+
 impl Prompt {
     fn confirm(self) -> Confirm {
         match self {
@@ -78,6 +93,11 @@ pub struct App {
     /// While set, every key goes to the prompt instead of the editor.
     prompt: Option<Prompt>,
     clipboard: Box<dyn Clipboard>,
+    /// The previous left press, until a double-click uses it up.
+    last_click: Option<Click>,
+    /// Char index a left press landed on while the button is held, so a drag
+    /// selects from there.
+    drag_from: Option<usize>,
     should_quit: bool,
 }
 
@@ -108,6 +128,8 @@ impl App {
             message,
             prompt: None,
             clipboard: Box::default(),
+            last_click: None,
+            drag_from: None,
             should_quit: false,
         }
     }
@@ -149,6 +171,10 @@ impl App {
             // Terminal's own Ctrl+V paste arrives this way too.
             AppEvent::Input(Event::Paste(text)) if self.prompt.is_none() => {
                 self.edit(|buffer| buffer.paste(&text));
+            }
+            // The mouse bypasses the keymap too: only keys are remappable.
+            AppEvent::Input(Event::Mouse(mouse)) if self.prompt.is_none() => {
+                self.handle_mouse(mouse, Instant::now());
             }
             // A smaller pane can leave the cursor outside it.
             AppEvent::Input(Event::Resize(..)) => self.follow_cursor(),
@@ -228,6 +254,68 @@ impl App {
                 Ok(text) => self.edit(|buffer| buffer.paste(&text)),
                 Err(err) => self.message = Some(format!("cannot paste: {err}")),
             },
+        }
+    }
+
+    /// Click, drag, double-click and wheel in the editor pane. `now` is when the
+    /// event arrived, passed in so double-click timing is testable.
+    fn handle_mouse(&mut self, mouse: MouseEvent, now: Instant) {
+        let area = editor_area(self.screen);
+        let (col, row) = (mouse.column, mouse.row);
+        let inside = area.contains(Position::new(col, row));
+        let tab_width = self.editor.tab_width;
+        let pos = |app: &Self| {
+            app.view
+                .screen_to_char(&app.buffer, area, col, row, tab_width)
+        };
+        match mouse.kind {
+            // Ctrl+click is left for go to definition (#32).
+            MouseEventKind::Down(MouseButton::Left)
+                if inside && !mouse.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                let pos = pos(self);
+                let double = self.last_click.is_some_and(|last| {
+                    (last.col, last.row) == (col, row)
+                        && now.saturating_duration_since(last.at) <= DOUBLE_CLICK
+                });
+                if double {
+                    self.buffer.select_word_at(pos);
+                    // A third click starts over rather than counting as another double.
+                    self.last_click = None;
+                    self.drag_from = None;
+                } else {
+                    self.buffer.place_cursor(pos);
+                    self.last_click = Some(Click { at: now, col, row });
+                    self.drag_from = Some(pos);
+                }
+                self.follow_cursor();
+            }
+            MouseEventKind::Down(_) => self.drag_from = None,
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(from) = self.drag_from {
+                    let pos = pos(self);
+                    self.buffer.select_to(from, pos);
+                    self.follow_cursor();
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                // A release somewhere new without a drag event in between still
+                // ends the selection there.
+                if let Some(from) = self.drag_from.take() {
+                    let pos = pos(self);
+                    if pos != self.buffer.cursor {
+                        self.buffer.select_to(from, pos);
+                        self.follow_cursor();
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp if inside => {
+                self.view.scroll_by(&self.buffer, area, -WHEEL_LINES);
+            }
+            MouseEventKind::ScrollDown if inside => {
+                self.view.scroll_by(&self.buffer, area, WHEEL_LINES);
+            }
+            _ => {}
         }
     }
 
@@ -636,6 +724,112 @@ mod tests {
         app.handle_event(AppEvent::Input(Event::Paste("d".into())));
         assert_eq!(app.buffer.rope.to_string(), "x");
         assert!(!app.should_quit);
+    }
+
+    fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    const LEFT_DOWN: MouseEventKind = MouseEventKind::Down(MouseButton::Left);
+    const LEFT_UP: MouseEventKind = MouseEventKind::Up(MouseButton::Left);
+
+    fn click(app: &mut App, col: u16, row: u16, at: Instant) {
+        app.handle_mouse(mouse(LEFT_DOWN, col, row), at);
+        app.handle_mouse(mouse(LEFT_UP, col, row), at);
+    }
+
+    #[test]
+    fn click_places_the_cursor_past_the_gutter() {
+        // Gutter " 1 │ " is 5 cells.
+        let mut app = app_with(
+            "hello
+world",
+            &FakeClipboard::default(),
+        );
+        click(&mut app, 7, 1, Instant::now());
+        assert_eq!(app.buffer.cursor_line_col(), (1, 2));
+        assert_eq!(app.buffer.selection(), None);
+        // The status line isn't the editor.
+        click(&mut app, 5, 29, Instant::now());
+        assert_eq!(app.buffer.cursor_line_col(), (1, 2));
+    }
+
+    #[test]
+    fn double_click_needs_the_same_cell_within_400_ms() {
+        let mut app = app_with("hello world", &FakeClipboard::default());
+        let t0 = Instant::now();
+        click(&mut app, 6, 0, t0);
+        click(&mut app, 6, 0, t0 + Duration::from_millis(400));
+        assert_eq!(app.buffer.selected_text().as_deref(), Some("hello"));
+
+        // Too slow: a second plain click.
+        let t1 = t0 + Duration::from_secs(5);
+        click(&mut app, 12, 0, t1);
+        click(&mut app, 12, 0, t1 + Duration::from_millis(401));
+        assert_eq!(app.buffer.selection(), None);
+        assert_eq!(app.buffer.cursor, 7);
+
+        // Another cell: a plain click.
+        let t2 = t1 + Duration::from_secs(5);
+        click(&mut app, 12, 0, t2);
+        click(&mut app, 13, 0, t2 + Duration::from_millis(10));
+        assert_eq!(app.buffer.selection(), None);
+
+        // A third quick click is a plain click again.
+        let t3 = t2 + Duration::from_secs(5);
+        for i in 0..3 {
+            click(&mut app, 6, 0, t3 + Duration::from_millis(i * 10));
+        }
+        assert_eq!(app.buffer.selection(), None);
+        assert_eq!(app.buffer.cursor, 1);
+    }
+
+    #[test]
+    fn drag_selects_from_press_to_release() {
+        let mut app = app_with("hello world", &FakeClipboard::default());
+        let now = Instant::now();
+        app.handle_mouse(mouse(LEFT_DOWN, 11, 0), now);
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 7, 0), now);
+        app.handle_mouse(mouse(LEFT_UP, 7, 0), now);
+        assert_eq!(app.buffer.selected_text().as_deref(), Some("llo "));
+        assert_eq!(app.buffer.cursor, 2);
+        // A drag without a press in the editor selects nothing.
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 15, 0), now);
+        assert_eq!(app.buffer.cursor, 2);
+    }
+
+    #[test]
+    fn ctrl_click_is_not_a_click() {
+        let mut app = app_with("hello", &FakeClipboard::default());
+        let mut event = mouse(LEFT_DOWN, 8, 0);
+        event.modifiers = KeyModifiers::CONTROL;
+        app.handle_mouse(event, Instant::now());
+        assert_eq!(app.buffer.cursor, 0);
+    }
+
+    #[test]
+    fn wheel_scrolls_without_moving_the_cursor() {
+        let text: String = (1..=100).map(|n| format!("line {n}\n")).collect();
+        let mut app = app_with(&text, &FakeClipboard::default());
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 10, 10), Instant::now());
+        assert_eq!(app.view.scroll_row, 3);
+        assert_eq!(app.buffer.cursor, 0);
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, 10, 10), Instant::now());
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, 10, 10), Instant::now());
+        assert_eq!(app.view.scroll_row, 0);
+    }
+
+    #[test]
+    fn mouse_is_ignored_while_a_prompt_is_open() {
+        let mut app = app_with("", &FakeClipboard::default());
+        press(&mut app, &["x", "x", "ctrl+q"]);
+        app.handle_event(AppEvent::Input(Event::Mouse(mouse(LEFT_DOWN, 5, 0))));
+        assert_eq!(app.buffer.cursor, 2);
     }
 
     #[test]

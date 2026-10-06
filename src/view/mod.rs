@@ -7,7 +7,7 @@ use ropey::RopeSlice;
 use unicode_width::UnicodeWidthChar;
 
 use crate::buffer::Buffer;
-use crate::buffer::movement::{char_width, display_col};
+use crate::buffer::movement::{char_col_at, char_width, display_col};
 
 /// Which part of a buffer the editor pane shows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +37,39 @@ impl View {
         } else if x >= self.scroll_col + width {
             self.scroll_col = x + 1 - width;
         }
+    }
+
+    /// The char index under screen cell (`col`, `row`) of `area`: the inverse of the
+    /// column maths `render_buffer` draws with. A cell in the gutter maps to the
+    /// line's start, one past a line's end to that end, one below the last line to
+    /// the last line, and one inside a tab or wide character to that character.
+    pub fn screen_to_char(
+        &self,
+        buf: &Buffer,
+        area: Rect,
+        col: u16,
+        row: u16,
+        tab_width: usize,
+    ) -> usize {
+        let last = buf.rope.len_lines() - 1;
+        let line = (self.scroll_row + usize::from(row.saturating_sub(area.y))).min(last);
+        let x = usize::from(col.saturating_sub(area.x)).saturating_sub(gutter_width(buf));
+        let slice = buf.rope.line(line);
+        buf.rope.line_to_char(line) + char_col_at(slice, self.scroll_col + x, tab_width)
+    }
+
+    /// Scrolls by `lines` (negative is up) without touching the cursor, stopping
+    /// when the first or last line reaches the edge of `area`.
+    pub fn scroll_by(&mut self, buf: &Buffer, area: Rect, lines: isize) {
+        let height = usize::from(area.height).max(1);
+        let max = buf.rope.len_lines().saturating_sub(height);
+        let target = self.scroll_row.saturating_add_signed(lines);
+        // A view already past `max` (a pane that just grew) may still scroll up.
+        self.scroll_row = if lines >= 0 {
+            target.min(max.max(self.scroll_row))
+        } else {
+            target
+        };
     }
 }
 
@@ -345,6 +378,61 @@ mod tests {
         assert_eq!(reversed(1), "#..............");
         assert_eq!(reversed(2), "...............");
         Ok(())
+    }
+
+    #[test]
+    fn screen_to_char_inverts_the_render_columns() {
+        // Gutter " 1 │ " is 5 cells.
+        let buf = buffer_at("ab\n\t日x\nlast", 0);
+        let view = View::default();
+        let area = Rect::new(0, 0, 20, 10);
+        let at = |col, row| view.screen_to_char(&buf, area, col, row, 4);
+        assert_eq!(at(5, 0), 0);
+        assert_eq!(at(6, 0), 1);
+        // Past the end of `ab`.
+        assert_eq!(at(15, 0), 2);
+        // In the gutter: the line's start.
+        assert_eq!(at(1, 1), 3);
+        // Anywhere on the tab is the tab; both cells of `日` are `日`.
+        assert_eq!(at(8, 1), 3);
+        assert_eq!(at(9, 1), 4);
+        assert_eq!(at(10, 1), 4);
+        assert_eq!(at(11, 1), 5);
+        // Below the last line: the last line, at that column.
+        assert_eq!(at(6, 9), 8);
+    }
+
+    #[test]
+    fn screen_to_char_accounts_for_scrolling() {
+        let text: String = (0..50).map(|n| format!("{n:02}abcdef\n")).collect();
+        let buf = buffer_at(&text, 0);
+        let view = View {
+            scroll_row: 10,
+            scroll_col: 2,
+        };
+        // An area 3 rows down; gutter " 51 │ " is 6 cells.
+        let area = Rect::new(0, 3, 30, 5);
+        let pos = view.screen_to_char(&buf, area, 6, 4, 4);
+        assert_eq!(pos, buf.rope.line_to_char(11) + 2);
+    }
+
+    #[test]
+    fn scroll_by_stops_at_both_ends() {
+        let text: String = (0..20).map(|n| format!("{n}\n")).collect();
+        let buf = buffer_at(&text, 0);
+        let area = Rect::new(0, 0, 20, 10);
+        let mut view = View::default();
+        view.scroll_by(&buf, area, -3);
+        assert_eq!(view.scroll_row, 0);
+        view.scroll_by(&buf, area, 3);
+        assert_eq!(view.scroll_row, 3);
+        for _ in 0..5 {
+            view.scroll_by(&buf, area, 3);
+        }
+        // 21 lines (the last one empty) in a 10-row area.
+        assert_eq!(view.scroll_row, 11);
+        view.scroll_by(&buf, area, -3);
+        assert_eq!(view.scroll_row, 8);
     }
 
     #[test]

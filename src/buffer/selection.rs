@@ -31,6 +31,33 @@ impl Buffer {
         self.anchor = Some(anchor);
     }
 
+    /// Selects the word (or run of spaces or punctuation) around `pos`, as a
+    /// double-click does. At a line's end it takes the run before the line break.
+    pub fn select_word_at(&mut self, pos: usize) {
+        self.history.seal();
+        let range = self.word_at(pos);
+        self.anchor = Some(range.start);
+        self.cursor = range.end;
+        self.goal_col = None;
+    }
+
+    /// Puts the cursor at `pos` with nothing selected, as a click does.
+    pub fn place_cursor(&mut self, pos: usize) {
+        self.history.seal();
+        self.anchor = None;
+        self.cursor = pos.min(self.rope.len_chars());
+        self.goal_col = None;
+    }
+
+    /// Selects from `anchor` to `pos`, as dragging the mouse does.
+    pub fn select_to(&mut self, anchor: usize, pos: usize) {
+        self.history.seal();
+        let len = self.rope.len_chars();
+        self.anchor = Some(anchor.min(len));
+        self.cursor = pos.min(len);
+        self.goal_col = None;
+    }
+
     pub fn select_all(&mut self) {
         self.history.seal();
         self.anchor = Some(0);
@@ -180,6 +207,41 @@ mod tests {
         b.move_cursor(Motion::Right, 10, 4);
         assert_eq!(show(&b), "abc|d");
         assert_eq!(b.selection(), None);
+    }
+
+    #[test]
+    fn select_word_at_takes_the_run_around_a_position() {
+        let cases = [
+            (0, "^foo_bar|  baz.qux\nnext"),
+            (5, "^foo_bar|  baz.qux\nnext"),
+            (7, "foo_bar^  |baz.qux\nnext"),
+            (12, "foo_bar  baz^.|qux\nnext"),
+            // At the line's end: the word before the break, not the next line.
+            (16, "foo_bar  baz.^qux|\nnext"),
+            (17, "foo_bar  baz.qux\n^next|"),
+            (21, "foo_bar  baz.qux\n^next|"),
+        ];
+        for (pos, expected) in cases {
+            let mut b = buf("|foo_bar  baz.qux\nnext");
+            b.select_word_at(pos);
+            assert_eq!(show(&b), expected, "at {pos}");
+        }
+        // An empty line has nothing to take.
+        let mut b = buf("a\n\n|b");
+        b.select_word_at(2);
+        assert_eq!(b.selection(), None);
+        assert_eq!(b.cursor, 2);
+    }
+
+    #[test]
+    fn select_to_and_place_cursor() {
+        let mut b = buf("|hello world");
+        b.select_to(6, 2);
+        assert_eq!(show(&b), "he|llo ^world");
+        b.place_cursor(4);
+        assert_eq!(show(&b), "hell|o world");
+        b.place_cursor(99);
+        assert_eq!(b.cursor, 11);
     }
 
     #[test]

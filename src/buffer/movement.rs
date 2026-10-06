@@ -2,6 +2,8 @@
 //! up on screen (the goal column for Up/Down) are display columns, so a tab or a
 //! wide character counts for the cells it fills.
 
+use std::ops::Range;
+
 use ropey::RopeSlice;
 use unicode_width::UnicodeWidthChar;
 
@@ -164,6 +166,32 @@ impl Buffer {
             None => self.cursor = 0,
             Some(_) => self.cursor = self.rope.len_chars(),
         }
+    }
+
+    /// The run of one char class (word, punctuation or spaces) containing the char
+    /// at `pos`, or the one just before it when `pos` is a line's end. Never
+    /// crosses a line break; empty on an empty line.
+    pub(super) fn word_at(&self, pos: usize) -> Range<usize> {
+        let len = self.rope.len_chars();
+        let pos = pos.min(len);
+        let on_line = |i: usize| i < len && self.rope.char(i) != '\n';
+        let seed = if on_line(pos) {
+            pos
+        } else if pos > 0 && on_line(pos - 1) {
+            pos - 1
+        } else {
+            return pos..pos;
+        };
+        let run = class(self.rope.char(seed));
+        let same = |i: usize| on_line(i) && class(self.rope.char(i)) == run;
+        let (mut start, mut end) = (seed, seed + 1);
+        while start > 0 && same(start - 1) {
+            start -= 1;
+        }
+        while same(end) {
+            end += 1;
+        }
+        start..end
     }
 
     /// Start of the word (or punctuation run) before `pos`, skipping spaces and
