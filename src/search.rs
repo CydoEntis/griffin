@@ -11,6 +11,7 @@ use ignore::WalkState;
 use regex::{Regex, RegexBuilder};
 use ropey::Rope;
 
+use crate::buffer::Buffer;
 use crate::workspace::walk::{project_walk, relative_name};
 
 /// What to look for and how.
@@ -237,6 +238,34 @@ impl Drop for HitBatch<'_> {
     }
 }
 
+/// How many matches of `query` the file at `path` holds, counted as
+/// `replace_in_file` would replace them.
+pub fn count_in_file(path: &Path, query: &Query) -> anyhow::Result<usize> {
+    let buffer = Buffer::open(path)?;
+    Ok(replacements(&buffer.rope, query, "")
+        .map_err(anyhow::Error::msg)?
+        .len())
+}
+
+/// Replaces every match of `query` in the file at `path` with `template`
+/// (expanded as `replacements` does) and writes it back atomically with the line
+/// ending it had, returning how many were replaced. A file with no matches is
+/// left alone. A read-only file is refused rather than renamed over, which some
+/// systems would allow.
+pub fn replace_in_file(path: &Path, query: &Query, template: &str) -> anyhow::Result<usize> {
+    let mut buffer = Buffer::open(path)?;
+    let edits = replacements(&buffer.rope, query, template).map_err(anyhow::Error::msg)?;
+    if edits.is_empty() {
+        return Ok(0);
+    }
+    if std::fs::metadata(path)?.permissions().readonly() {
+        anyhow::bail!("read-only");
+    }
+    buffer.replace_ranges(&edits);
+    buffer.save()?;
+    Ok(edits.len())
+}
+
 /// The index of the first match starting at or after `pos`, wrapping to the first
 /// match when none does. `None` only when there are no matches.
 pub fn next_from(matches: &[Range<usize>], pos: usize) -> Option<usize> {
@@ -418,6 +447,58 @@ mod tests {
             &send,
         );
         assert_eq!(sent.into_inner().expect("no panics"), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn replace_in_file_keeps_line_endings_and_expands_groups() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let crlf = dir.path().join("crlf.txt");
+        std::fs::write(&crlf, "key=1\r\nother\r\nkey=22\r\n")?;
+        let q = query(r"key=(\d+)", false, true);
+        assert_eq!(count_in_file(&crlf, &q)?, 2);
+        assert_eq!(replace_in_file(&crlf, &q, "k:$1")?, 2);
+        assert_eq!(std::fs::read(&crlf)?, b"k:1\r\nother\r\nk:22\r\n");
+
+        let lf = dir.path().join("lf.txt");
+        std::fs::write(&lf, "a TODO\nb todo\n")?;
+        assert_eq!(
+            replace_in_file(&lf, &query("todo", false, false), "done")?,
+            2
+        );
+        assert_eq!(std::fs::read(&lf)?, b"a done\nb done\n");
+        // No temp file is left beside them.
+        let mut names: Vec<_> = std::fs::read_dir(dir.path())?
+            .map(|entry| entry.map(|e| e.file_name()))
+            .collect::<Result<_, _>>()?;
+        names.sort();
+        assert_eq!(names, ["crlf.txt", "lf.txt"]);
+        Ok(())
+    }
+
+    #[test]
+    fn replace_in_file_refuses_a_read_only_file_and_leaves_it() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("locked.txt");
+        std::fs::write(&path, "TODO\n")?;
+        let mut perms = std::fs::metadata(&path)?.permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms.clone())?;
+        let result = replace_in_file(&path, &query("todo", false, false), "done");
+        assert_eq!(std::fs::read(&path)?, b"TODO\n");
+        // tempdir can't delete a read-only file on Windows.
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "only to let the temp dir clean up"
+        )]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms)?;
+        assert_eq!(result.map_err(|e| e.to_string()), Err("read-only".into()));
+        // Nothing to replace leaves even a read-only file alone, without error.
+        assert_eq!(
+            replace_in_file(&path, &query("absent", false, false), "x")?,
+            0
+        );
         Ok(())
     }
 
