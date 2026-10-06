@@ -8,10 +8,12 @@
 //!   "exit_on": "<method>"}`. Every key is optional:
 //!   - `responses`: the result for each request method. `initialize` defaults to
 //!     incremental sync with saves; `shutdown` and anything unscripted get `null`.
+//!     `"$uri"` and `"$dir/<name>"` are filled in as for `notify`.
 //!   - `notify`: messages (e.g. `textDocument/publishDiagnostics` notifications)
 //!     to send right after receiving each method; `jsonrpc` is filled in, and any
-//!     string `"$uri"` in them becomes the received message's document URI, so a
-//!     script needn't know where the test put its files.
+//!     string `"$uri"` in them becomes the received message's document URI, and
+//!     `"$dir/<name>"` the URI of file `<name>` in the same folder, so a script
+//!     needn't know where the test put its files.
 //!   - `exit_on`: a method that makes it exit with code 3 at once, as a crash.
 //!
 //! It exits cleanly on `exit` or when stdin closes.
@@ -54,7 +56,11 @@ fn main() -> ExitCode {
             && !method.is_empty()
         {
             let result = match script["responses"].get(method) {
-                Some(result) => result.clone(),
+                Some(result) => {
+                    let mut result = result.clone();
+                    fill_uri(&mut result, &message["params"]["textDocument"]["uri"]);
+                    result
+                }
                 None if method == "initialize" => default_initialize(),
                 None => Value::Null,
             };
@@ -76,10 +82,16 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Replaces every `"$uri"` string in `value` with `uri`.
+/// Replaces every `"$uri"` string in `value` with `uri`, and every
+/// `"$dir/<name>"` with the URI of `<name>` beside it.
 fn fill_uri(value: &mut Value, uri: &Value) {
     match value {
         Value::String(text) if text == "$uri" => *value = uri.clone(),
+        Value::String(text) if text.starts_with("$dir/") => {
+            if let Some((dir, _)) = uri.as_str().and_then(|uri| uri.rsplit_once('/')) {
+                *value = Value::String(format!("{dir}/{}", &text["$dir/".len()..]));
+            }
+        }
         Value::Array(items) => items.iter_mut().for_each(|item| fill_uri(item, uri)),
         Value::Object(fields) => fields.values_mut().for_each(|field| fill_uri(field, uri)),
         _ => {}

@@ -6,10 +6,12 @@ use std::collections::HashMap;
 
 use lsp_types::{
     ClientCapabilities, ClientInfo, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams,
-    TextDocumentClientCapabilities, TextDocumentContentChangeEvent, TextDocumentIdentifier,
-    TextDocumentItem, TextDocumentSyncCapability, TextDocumentSyncClientCapabilities,
-    TextDocumentSyncKind, Uri, VersionedTextDocumentIdentifier, WorkspaceFolder,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, GotoCapability, GotoDefinitionParams,
+    InitializeParams, PartialResultParams, Position, TextDocumentClientCapabilities,
+    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncClientCapabilities,
+    TextDocumentSyncKind, Uri, VersionedTextDocumentIdentifier, WorkDoneProgressParams,
+    WorkspaceFolder,
 };
 use ropey::Rope;
 use serde::Serialize;
@@ -94,6 +96,10 @@ impl Client {
                     synchronization: Some(TextDocumentSyncClientCapabilities {
                         did_save: Some(true),
                         ..Default::default()
+                    }),
+                    definition: Some(GotoCapability {
+                        dynamic_registration: None,
+                        link_support: Some(true),
                     }),
                     ..Default::default()
                 }),
@@ -287,6 +293,20 @@ impl Client {
         self.notify("textDocument/didSave", to_json(params));
     }
 
+    /// Asks where the symbol at `position` in `uri` is defined. Returns the
+    /// request's id, which the reply will carry.
+    pub fn definition(&mut self, uri: &Uri, position: Position) -> i64 {
+        let params = GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position,
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        self.request("textDocument/definition", to_json(params))
+    }
+
     pub fn did_close(&self, uri: &Uri) {
         let params = DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -423,6 +443,23 @@ mod tests {
         let methods: Vec<Value> = drain(&mut rx).iter().map(|m| m["method"].clone()).collect();
         assert_eq!(methods, [json!("shutdown"), json!("exit")]);
         assert_eq!(client.exited(Some(0)), None);
+    }
+
+    #[test]
+    fn definition_sends_the_position_and_its_reply_is_consumed() {
+        let (mut client, mut rx) = ready(json!(2));
+        let id = client.definition(&uri(), Position::new(3, 7));
+        let sent = drain(&mut rx);
+        assert_eq!(sent[0]["method"], "textDocument/definition");
+        assert_eq!(sent[0]["id"], id);
+        assert_eq!(sent[0]["params"]["textDocument"]["uri"], uri().as_str());
+        assert_eq!(
+            sent[0]["params"]["position"],
+            json!({"line": 3, "character": 7})
+        );
+        let reply = json!({"jsonrpc": "2.0", "id": id, "result": null});
+        assert_eq!(client.handle(reply), None);
+        assert!(client.pending.is_empty());
     }
 
     #[test]
