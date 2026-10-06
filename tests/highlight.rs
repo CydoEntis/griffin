@@ -20,11 +20,15 @@ const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(5);
 
 const SAMPLE: &str = "tests/fixtures/highlight/sample.rs";
+const SAMPLE_TS: &str = "tests/fixtures/highlight/sample.ts";
+const SAMPLE_TSX: &str = "tests/fixtures/highlight/sample.tsx";
+const SAMPLE_JS: &str = "tests/fixtures/highlight/sample.js";
 
 /// hydra's syntax and text colours.
 const KEYWORD: Color = Color::Rgb(0xa5, 0x93, 0xff);
 const STRING: Color = Color::Rgb(0x7f, 0xd9, 0x62);
 const COMMENT: Color = Color::Rgb(0x71, 0x80, 0x8f);
+const TAG: Color = Color::Rgb(0xff, 0x7a, 0xb6);
 const FG: Color = Color::Rgb(0xc9, 0xd1, 0xd9);
 
 /// The file at `path` highlighted as Griffin would: sorted byte ranges with the
@@ -81,6 +85,98 @@ fn rust_roles() {
     // `x:` is a field; plain names are uncoloured.
     assert_eq!(at(6, 5), Some(Role::Property));
     assert_eq!(at(11, 9), None);
+}
+
+#[test]
+fn typescript_roles() {
+    let path = Path::new(SAMPLE_TS);
+    let roles = highlight_roles(path);
+    let at = |line, col| role_at(path, &roles, line, col);
+    assert_eq!(at(1, 1), Some(Role::Comment));
+    // `interface`, `function`, `const`, `return`.
+    assert_eq!(at(2, 1), Some(Role::Keyword));
+    assert_eq!(at(7, 1), Some(Role::Keyword));
+    assert_eq!(at(8, 3), Some(Role::Keyword));
+    assert_eq!(at(9, 3), Some(Role::Keyword));
+    // `Point` declared and used; `number` and `string`.
+    assert_eq!(at(2, 11), Some(Role::Type));
+    assert_eq!(at(7, 22), Some(Role::Type));
+    assert_eq!(at(3, 6), Some(Role::Type));
+    assert_eq!(at(4, 10), Some(Role::Type));
+    // `distance` defined and called; `.sqrt()`.
+    assert_eq!(at(7, 10), Some(Role::Function));
+    assert_eq!(at(13, 13), Some(Role::Function));
+    assert_eq!(at(9, 15), Some(Role::Function));
+    // `"origin"`, first quote to last; `0`.
+    assert_eq!(at(12, 38), Some(Role::String));
+    assert_eq!(at(12, 45), Some(Role::String));
+    assert_eq!(at(12, 28), Some(Role::Number));
+}
+
+#[test]
+fn tsx_roles() {
+    let path = Path::new(SAMPLE_TSX);
+    let roles = highlight_roles(path);
+    let at = |line, col| role_at(path, &roles, line, col);
+    // `import`, `type`, `export`, `return`.
+    assert_eq!(at(2, 1), Some(Role::Keyword));
+    assert_eq!(at(4, 1), Some(Role::Keyword));
+    assert_eq!(at(6, 1), Some(Role::Keyword));
+    assert_eq!(at(8, 3), Some(Role::Keyword));
+    // `"./button"`.
+    assert_eq!(at(2, 24), Some(Role::String));
+    // `Props` declared; `string`.
+    assert_eq!(at(4, 6), Some(Role::Type));
+    assert_eq!(at(4, 23), Some(Role::Type));
+    // `App`, `go = () =>`, `alert(...)`.
+    assert_eq!(at(6, 17), Some(Role::Function));
+    assert_eq!(at(7, 9), Some(Role::Function));
+    assert_eq!(at(7, 20), Some(Role::Function));
+    // `<Button onClick={go}>`: the component is a tag, its prop an attribute;
+    // and the closing `</Button>`.
+    assert_eq!(at(8, 11), Some(Role::Tag));
+    assert_eq!(at(8, 16), Some(Role::Tag));
+    assert_eq!(at(8, 18), Some(Role::Attribute));
+    assert_eq!(at(8, 24), Some(Role::Attribute));
+    assert_eq!(at(8, 40), Some(Role::Tag));
+}
+
+#[test]
+fn javascript_roles() {
+    let path = Path::new(SAMPLE_JS);
+    let roles = highlight_roles(path);
+    let at = |line, col| role_at(path, &roles, line, col);
+    assert_eq!(at(1, 1), Some(Role::Comment));
+    // `import`, `function`, `return`, `const`.
+    assert_eq!(at(2, 1), Some(Role::Keyword));
+    assert_eq!(at(4, 1), Some(Role::Keyword));
+    assert_eq!(at(5, 3), Some(Role::Keyword));
+    assert_eq!(at(8, 1), Some(Role::Keyword));
+    // `"hello "`.
+    assert_eq!(at(5, 10), Some(Role::String));
+    // `greet` defined and called; `render(...)`.
+    assert_eq!(at(4, 10), Some(Role::Function));
+    assert_eq!(at(8, 41), Some(Role::Function));
+    assert_eq!(at(9, 1), Some(Role::Function));
+    // `<div className="greeting">`: tag, attribute, string value.
+    assert_eq!(at(8, 15), Some(Role::Tag));
+    assert_eq!(at(8, 19), Some(Role::Attribute));
+    assert_eq!(at(8, 29), Some(Role::String));
+    assert_eq!(at(9, 14), Some(Role::Number));
+}
+
+#[test]
+fn tsx_shows_tag_colour_on_screen() {
+    let griffin = Griffin::spawn(&[SAMPLE_TSX]);
+    griffin.wait_for_text("<Button onClick", START);
+    let row = 8;
+    let tag = griffin
+        .text_col(row, "Button onClick")
+        .expect("line 8 on row 8");
+    griffin.wait_for_fg_at(tag, row, TAG, WAIT);
+    assert_eq!(griffin.fg_at(tag + 5, row), TAG);
+    // `onClick` is an attribute, not a tag.
+    assert_ne!(griffin.fg_at(tag + 7, row), TAG);
 }
 
 #[test]
