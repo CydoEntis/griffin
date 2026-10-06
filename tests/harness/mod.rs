@@ -78,6 +78,17 @@ impl Griffin {
         Self::spawn_full(dir, "", None, env, args)
     }
 
+    /// Starts griffin in `dir` with `toml` as its config and extra environment
+    /// variables, e.g. where the fake language server writes its log.
+    pub fn spawn_in_with_config_and_env(
+        dir: &Path,
+        toml: &str,
+        env: &[(&str, OsString)],
+        args: &[&str],
+    ) -> Self {
+        Self::spawn_full(dir, toml, None, env, args)
+    }
+
     /// Starts griffin in `dir` with `data` as its data dir, which outlives this run
     /// so a relaunch can find what the last one left there.
     pub fn spawn_in_with_data(dir: &Path, data: &Path, args: &[&str]) -> Self {
