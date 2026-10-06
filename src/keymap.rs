@@ -6,6 +6,7 @@ use std::fmt;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::buffer::movement::Motion;
 use crate::config::KeysConfig;
 
 /// Something a key can trigger. Each feature adds its variant here, a name in
@@ -13,15 +14,44 @@ use crate::config::KeysConfig;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     Quit,
+    Move(Motion),
 }
 
 impl Action {
-    const ALL: &[Action] = &[Action::Quit];
+    const ALL: &[Action] = &[
+        Action::Quit,
+        Action::Move(Motion::Left),
+        Action::Move(Motion::Right),
+        Action::Move(Motion::Up),
+        Action::Move(Motion::Down),
+        Action::Move(Motion::LineStart),
+        Action::Move(Motion::LineEnd),
+        Action::Move(Motion::PageUp),
+        Action::Move(Motion::PageDown),
+        Action::Move(Motion::WordLeft),
+        Action::Move(Motion::WordRight),
+        Action::Move(Motion::DocStart),
+        Action::Move(Motion::DocEnd),
+    ];
 
     /// The name used on the left of `[keys]`.
     pub fn name(self) -> &'static str {
         match self {
             Action::Quit => "quit",
+            Action::Move(motion) => match motion {
+                Motion::Left => "move_left",
+                Motion::Right => "move_right",
+                Motion::Up => "move_up",
+                Motion::Down => "move_down",
+                Motion::LineStart => "line_start",
+                Motion::LineEnd => "line_end",
+                Motion::PageUp => "page_up",
+                Motion::PageDown => "page_down",
+                Motion::WordLeft => "word_left",
+                Motion::WordRight => "word_right",
+                Motion::DocStart => "doc_start",
+                Motion::DocEnd => "doc_end",
+            },
         }
     }
 
@@ -30,8 +60,22 @@ impl Action {
     }
 }
 
-/// The spec's "Default keymap" table, one line per binding.
-const DEFAULT_BINDINGS: &[(Action, &str)] = &[(Action::Quit, "ctrl+q")];
+/// The spec's "Default keymap" table and R4's movement keys, one line per binding.
+const DEFAULT_BINDINGS: &[(Action, &str)] = &[
+    (Action::Quit, "ctrl+q"),
+    (Action::Move(Motion::Left), "left"),
+    (Action::Move(Motion::Right), "right"),
+    (Action::Move(Motion::Up), "up"),
+    (Action::Move(Motion::Down), "down"),
+    (Action::Move(Motion::LineStart), "home"),
+    (Action::Move(Motion::LineEnd), "end"),
+    (Action::Move(Motion::PageUp), "pageup"),
+    (Action::Move(Motion::PageDown), "pagedown"),
+    (Action::Move(Motion::WordLeft), "ctrl+left"),
+    (Action::Move(Motion::WordRight), "ctrl+right"),
+    (Action::Move(Motion::DocStart), "ctrl+home"),
+    (Action::Move(Motion::DocEnd), "ctrl+end"),
+];
 
 /// What a key event means to the editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,6 +367,60 @@ mod tests {
                 "{notation} should match {event:?}"
             );
         }
+    }
+
+    #[test]
+    fn default_bindings_cover_every_action_once() {
+        let mut bound: Vec<Action> = DEFAULT_BINDINGS.iter().map(|&(a, _)| a).collect();
+        bound.sort_by_key(|a| a.name());
+        let mut all = Action::ALL.to_vec();
+        all.sort_by_key(|a| a.name());
+        assert_eq!(bound, all);
+        for &motion in Motion::ALL {
+            assert!(Action::ALL.contains(&Action::Move(motion)), "{motion:?}");
+        }
+    }
+
+    #[test]
+    fn movement_keys_resolve_to_their_motions() {
+        let map = Keymap::default();
+        let none = KeyModifiers::NONE;
+        let ctrl = KeyModifiers::CONTROL;
+        let expected = [
+            (KeyCode::Left, none, Motion::Left),
+            (KeyCode::Right, none, Motion::Right),
+            (KeyCode::Up, none, Motion::Up),
+            (KeyCode::Down, none, Motion::Down),
+            (KeyCode::Home, none, Motion::LineStart),
+            (KeyCode::End, none, Motion::LineEnd),
+            (KeyCode::PageUp, none, Motion::PageUp),
+            (KeyCode::PageDown, none, Motion::PageDown),
+            (KeyCode::Left, ctrl, Motion::WordLeft),
+            (KeyCode::Right, ctrl, Motion::WordRight),
+            (KeyCode::Home, ctrl, Motion::DocStart),
+            (KeyCode::End, ctrl, Motion::DocEnd),
+        ];
+        assert_eq!(expected.len(), Motion::ALL.len());
+        for (code, mods, motion) in expected {
+            assert_eq!(
+                map.resolve(&ev(code, mods)),
+                Input::Action(Action::Move(motion)),
+                "{mods:?} {code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn movement_can_be_remapped_by_name() {
+        let map = Keymap::new(&keys(&[("word_right", one("alt+right"))])).unwrap();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Right, KeyModifiers::ALT)),
+            Input::Action(Action::Move(Motion::WordRight))
+        );
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Right, KeyModifiers::CONTROL)),
+            Input::Ignored
+        );
     }
 
     #[test]

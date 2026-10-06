@@ -4,7 +4,7 @@ use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyEvent};
 use futures_util::StreamExt;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use tokio::sync::mpsc;
 
 use crate::Tui;
@@ -29,6 +29,9 @@ pub struct App {
     /// The one open buffer; tabs arrive in phase 2.
     buffer: Buffer,
     view: View,
+    /// The terminal's size as of the last draw; movement needs the editor pane's
+    /// height for paging and both dimensions for scrolling.
+    screen: Rect,
     /// Shown in the status line, e.g. why the config fell back to defaults.
     message: Option<String>,
     should_quit: bool,
@@ -57,6 +60,7 @@ impl App {
             editor,
             buffer,
             view: View::default(),
+            screen: Rect::default(),
             message,
             should_quit: false,
         }
@@ -76,15 +80,18 @@ impl App {
         terminal: &mut Tui,
         rx: &mut mpsc::UnboundedReceiver<AppEvent>,
     ) -> Result<()> {
-        terminal.draw(|frame| self.render(frame))?;
+        self.screen = terminal.draw(|frame| self.render(frame))?.area;
         while !self.should_quit {
             let Some(event) = rx.recv().await else {
                 // The input task ended (stdin closed or errored); nothing more can
                 // arrive, so stop rather than hang.
                 break;
             };
+            if let AppEvent::Input(Event::Resize(width, height)) = event {
+                self.screen = Rect::new(0, 0, width, height);
+            }
             self.handle_event(event);
-            terminal.draw(|frame| self.render(frame))?;
+            self.screen = terminal.draw(|frame| self.render(frame))?.area;
         }
         Ok(())
     }
@@ -92,6 +99,8 @@ impl App {
     fn handle_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Input(Event::Key(key)) => self.handle_key(key),
+            // A smaller pane can leave the cursor outside it.
+            AppEvent::Input(Event::Resize(..)) => self.follow_cursor(),
             AppEvent::Input(_) => {}
         }
     }
@@ -107,13 +116,25 @@ impl App {
     fn handle_action(&mut self, action: Action) {
         match action {
             Action::Quit => self.should_quit = true,
+            Action::Move(motion) => {
+                let page = usize::from(editor_area(self.screen).height);
+                self.buffer.move_cursor(motion, page, self.editor.tab_width);
+                self.follow_cursor();
+            }
         }
+    }
+
+    fn follow_cursor(&mut self) {
+        self.view.follow(
+            &self.buffer,
+            editor_area(self.screen),
+            self.editor.tab_width,
+        );
     }
 
     /// Draws the whole screen. Pure: reads `self`, never changes it.
     pub fn render(&self, frame: &mut Frame) {
-        let [editor, status] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(frame.area());
+        let [editor, status] = screen_layout(frame.area());
         render_buffer(
             &self.buffer,
             &self.view,
@@ -121,8 +142,23 @@ impl App {
             editor,
             frame,
         );
-        render_status(frame, status, &self.buffer.name(), self.message.as_deref());
+        render_status(
+            frame,
+            status,
+            &self.buffer.name(),
+            self.message.as_deref(),
+            self.buffer.cursor_line_col(),
+        );
     }
+}
+
+/// The editor pane above a one-row status line.
+fn screen_layout(screen: Rect) -> [Rect; 2] {
+    Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(screen)
+}
+
+fn editor_area(screen: Rect) -> Rect {
+    screen_layout(screen)[0]
 }
 
 async fn read_input(tx: mpsc::UnboundedSender<AppEvent>) {
@@ -181,6 +217,28 @@ mod tests {
         app.handle_event(key("alt+q"));
         assert!(app.should_quit);
         Ok(())
+    }
+
+    #[test]
+    fn movement_keys_move_the_cursor_and_scroll_the_view() {
+        let text: String = (1..=100).map(|n| format!("line {n}\n")).collect();
+        let mut app = App {
+            buffer: Buffer {
+                rope: ropey::Rope::from_str(&text),
+                ..Buffer::empty()
+            },
+            screen: Rect::new(0, 0, 100, 30),
+            ..App::default()
+        };
+        app.handle_event(key("pagedown"));
+        assert_eq!(app.buffer.cursor_line_col(), (29, 0));
+        assert_eq!(app.view.scroll_row, 1);
+        app.handle_event(key("ctrl+end"));
+        assert_eq!(app.buffer.cursor_line_col(), (100, 0));
+        assert_eq!(app.view.scroll_row, 72);
+        app.handle_event(key("ctrl+home"));
+        assert_eq!(app.buffer.cursor, 0);
+        assert_eq!(app.view.scroll_row, 0);
     }
 
     #[test]
