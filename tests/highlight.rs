@@ -25,6 +25,8 @@ const SAMPLE_TSX: &str = "tests/fixtures/highlight/sample.tsx";
 const SAMPLE_JS: &str = "tests/fixtures/highlight/sample.js";
 const SAMPLE_HTML: &str = "tests/fixtures/highlight/sample.html";
 const SAMPLE_CSS: &str = "tests/fixtures/highlight/sample.css";
+const SAMPLE_GO: &str = "tests/fixtures/highlight/sample.go";
+const SAMPLE_PY: &str = "tests/fixtures/highlight/sample.py";
 
 /// hydra's syntax and text colours.
 const KEYWORD: Color = Color::Rgb(0xa5, 0x93, 0xff);
@@ -215,6 +217,89 @@ fn html_roles() {
     // Inside `<script>`: `const greeting = "hi";` in the JavaScript grammar.
     assert_eq!(at(11, 5), Some(Role::Keyword));
     assert_eq!(at(11, 22), Some(Role::String));
+}
+
+#[test]
+fn go_roles() {
+    let path = Path::new(SAMPLE_GO);
+    let roles = highlight_roles(path);
+    let at = |line, col| role_at(path, &roles, line, col);
+    assert_eq!(at(1, 1), Some(Role::Comment));
+    assert_eq!(at(1, 20), Some(Role::Comment));
+    // `package`, `import`, `type`, `struct`, `func`, `return`.
+    assert_eq!(at(2, 1), Some(Role::Keyword));
+    assert_eq!(at(4, 1), Some(Role::Keyword));
+    assert_eq!(at(6, 1), Some(Role::Keyword));
+    assert_eq!(at(6, 12), Some(Role::Keyword));
+    assert_eq!(at(11, 1), Some(Role::Keyword));
+    assert_eq!(at(13, 2), Some(Role::Keyword));
+    // `"fmt"`, first quote to last; `"origin"`.
+    assert_eq!(at(4, 8), Some(Role::String));
+    assert_eq!(at(4, 12), Some(Role::String));
+    assert_eq!(at(18, 14), Some(Role::String));
+    // `Point` declared and used; `int` and `float64`.
+    assert_eq!(at(6, 6), Some(Role::Type));
+    assert_eq!(at(11, 17), Some(Role::Type));
+    assert_eq!(at(7, 4), Some(Role::Type));
+    assert_eq!(at(11, 33), Some(Role::Type));
+    // `distance` defined and called; `fmt.Println`.
+    assert_eq!(at(11, 6), Some(Role::Function));
+    assert_eq!(at(18, 24), Some(Role::Function));
+    assert_eq!(at(18, 6), Some(Role::Function));
+    // The field `X`; `2.5`.
+    assert_eq!(at(7, 2), Some(Role::Property));
+    assert_eq!(at(13, 14), Some(Role::Number));
+}
+
+#[test]
+fn python_roles() {
+    let path = Path::new(SAMPLE_PY);
+    let roles = highlight_roles(path);
+    let at = |line, col| role_at(path, &roles, line, col);
+    assert_eq!(at(1, 1), Some(Role::Comment));
+    assert_eq!(at(1, 20), Some(Role::Comment));
+    // `import`, `class`, `def`, `return`.
+    assert_eq!(at(2, 1), Some(Role::Keyword));
+    assert_eq!(at(5, 1), Some(Role::Keyword));
+    assert_eq!(at(6, 5), Some(Role::Keyword));
+    assert_eq!(at(12, 1), Some(Role::Keyword));
+    assert_eq!(at(13, 5), Some(Role::Keyword));
+    // `Point` declared and annotated; `int`.
+    assert_eq!(at(5, 7), Some(Role::Type));
+    assert_eq!(at(12, 17), Some(Role::Type));
+    assert_eq!(at(6, 27), Some(Role::Type));
+    // `__init__` and `distance` defined; `abs(...)` and `print(...)` called.
+    assert_eq!(at(6, 9), Some(Role::Function));
+    assert_eq!(at(12, 5), Some(Role::Function));
+    assert_eq!(at(13, 12), Some(Role::Function));
+    assert_eq!(at(17, 1), Some(Role::Function));
+    assert_eq!(at(13, 29), Some(Role::Number));
+    // The decorator `@functools.cache`, the `@` and both names.
+    assert_eq!(at(11, 1), Some(Role::Attribute));
+    assert_eq!(at(11, 2), Some(Role::Attribute));
+    assert_eq!(at(11, 12), Some(Role::Attribute));
+    // The f-string: prefix, quotes and text are a string; the call inside the
+    // braces is a function.
+    assert_eq!(at(17, 7), Some(Role::String));
+    assert_eq!(at(17, 8), Some(Role::String));
+    assert_eq!(at(17, 10), Some(Role::String));
+    assert_eq!(at(17, 46), Some(Role::String));
+    assert_eq!(at(17, 50), Some(Role::String));
+    assert_eq!(at(17, 20), Some(Role::Function));
+}
+
+#[test]
+fn go_shows_keyword_colour_on_screen() {
+    let griffin = Griffin::spawn(&[SAMPLE_GO]);
+    griffin.wait_for_text("func distance", START);
+    let row = 11;
+    let col = griffin
+        .text_col(row, "func distance")
+        .expect("line 11 is on row 11");
+    griffin.wait_for_fg_at(col, row, KEYWORD, WAIT);
+    assert_eq!(griffin.fg_at(col + 3, row), KEYWORD);
+    // `distance` isn't a keyword.
+    assert_ne!(griffin.fg_at(col + 5, row), KEYWORD);
 }
 
 #[test]
