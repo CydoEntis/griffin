@@ -1785,7 +1785,8 @@ impl App {
     }
 
     /// F5: reads `.griffin.toml` afresh, so edits to it count without a restart,
-    /// then runs its one entry or asks which of several.
+    /// then runs its one entry or asks which of several. Without `[[run]]` it
+    /// offers commands detected from the project files instead.
     fn start_run(&mut self) {
         if let Some(run) = &self.run
             && run.status == RunStatus::Running
@@ -1798,12 +1799,17 @@ impl App {
             self.message = Some(error);
             return;
         }
-        let mut entries = loaded.config.run;
+        let configured = !loaded.config.run.is_empty();
+        let mut entries = crate::run::run_choices(loaded.config.run, self.tree.root());
         match entries.len() {
             0 => {
-                self.message = Some(format!("no [[run]] entries in {}", config::PROJECT_FILE));
+                self.message = Some(format!(
+                    "nothing to run: add a [[run]] entry to {}",
+                    config::PROJECT_FILE
+                ));
             }
-            1 => {
+            // A guessed command is only offered, never started unasked.
+            1 if configured => {
                 // The arm matched a length of one, so index 0 exists.
                 let entry = entries.remove(0);
                 self.run_entry(entry);

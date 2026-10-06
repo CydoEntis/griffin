@@ -1,0 +1,7 @@
+{
+  "name": "fixture",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  }
+}

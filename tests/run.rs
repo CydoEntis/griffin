@@ -166,3 +166,37 @@ fn shift_f5_stops_the_command_and_ctrl_f5_restarts_it() {
         screen.join("\n")
     );
 }
+
+#[test]
+fn f5_in_a_project_with_nothing_to_run_says_how_to_add_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut griffin = Griffin::spawn_in(dir.path(), &[]);
+    griffin.wait_for_text("Ln 1, Col 1", START);
+    griffin.send_keys("f5");
+    griffin.wait_for_screen("the hint in the status line", WAIT, |screen| {
+        screen[usize::from(ROWS) - 1].contains("add a [[run]] entry to .griffin.toml")
+    });
+    assert!(!griffin.screen().join("\n").contains("Run:"));
+}
+
+#[test]
+fn f5_without_run_entries_offers_detected_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("go.mod"), "module example.com/x\n").unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts": {"dev": "vite"}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("pnpm-lock.yaml"), "").unwrap();
+    let mut griffin = Griffin::spawn_in(dir.path(), &[]);
+    griffin.wait_for_text("Ln 1, Col 1", START);
+    griffin.send_keys("f5");
+    griffin.wait_for_text("Run:", WAIT);
+    griffin.wait_for_text("pnpm run dev", WAIT);
+    griffin.wait_for_text("go run .", WAIT);
+    // Offered, not started: nothing runs until one is picked.
+    griffin.send_keys("esc");
+    griffin.wait_for_text_gone("Run:", WAIT);
+    assert!(!griffin.screen().join("\n").contains("running"));
+}
