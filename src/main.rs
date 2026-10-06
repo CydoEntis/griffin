@@ -45,11 +45,19 @@ pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 struct Cli {
     /// File or folder to open.
     path: Option<PathBuf>,
+    /// List each language's server command and whether it is installed, then exit.
+    #[arg(long)]
+    health: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let path = Cli::parse().path;
+    let cli = Cli::parse();
+    if cli.health {
+        print!("{}", health());
+        return Ok(());
+    }
+    let path = cli.path;
 
     // Loaded before the terminal switches screens; a bad config never stops startup.
     let (keymap, editor, theme, lsp, config_error) = load_config();
@@ -90,7 +98,7 @@ fn load_config() -> (Keymap, EditorConfig, Theme, Lsp, Option<String>) {
             Keymap::default(),
             EditorConfig::default(),
             Theme::default(),
-            Lsp::default(),
+            Lsp::new(lsp::servers::with_defaults(Default::default())),
             Some(format!("config error: {err}")),
         );
     }
@@ -102,7 +110,29 @@ fn load_config() -> (Keymap, EditorConfig, Theme, Lsp, Option<String>) {
     };
     let errors: Vec<String> = keys_error.into_iter().chain(theme_error).collect();
     let message = (!errors.is_empty()).then(|| errors.join(" · "));
-    (keymap, config.editor, theme, Lsp::new(config.lsp), message)
+    (
+        keymap,
+        config.editor,
+        theme,
+        Lsp::new(lsp::servers::with_defaults(config.lsp)),
+        message,
+    )
+}
+
+/// The `--health` report. A config that fails to load is reported by the editor
+/// itself; here the defaults stand in for it, as they would at startup.
+fn health() -> String {
+    let loaded = config::load();
+    let tables = if loaded.error.is_some() {
+        Default::default()
+    } else {
+        loaded.config.lsp
+    };
+    lsp::servers::health(
+        &lsp::servers::with_defaults(tables),
+        std::env::var_os("PATH").as_deref(),
+        std::env::var_os("PATHEXT").as_deref(),
+    )
 }
 
 fn setup_terminal() -> Result<Tui> {
@@ -173,6 +203,8 @@ mod tests {
     #[test]
     fn cli_accepts_an_optional_path() {
         assert_eq!(Cli::parse_from(["griffin"]).path, None);
+        assert!(!Cli::parse_from(["griffin"]).health);
+        assert!(Cli::parse_from(["griffin", "--health"]).health);
         assert_eq!(
             Cli::parse_from(["griffin", "notes.txt"]).path,
             Some(PathBuf::from("notes.txt"))
