@@ -125,7 +125,7 @@ fn recover_after_a_crash_loads_the_backup() {
     glyph.wait_for_text_gone(QUESTION, WAIT);
     glyph.wait_for_text("xyhello", WAIT);
     glyph.wait_for_text("a.txt ●", WAIT);
-    assert!(status_line(&glyph).contains("a.txt ●"));
+    assert!(status_line(&glyph).contains("a.txt •"));
     // The backup stays until the recovered text is saved.
     assert_eq!(setup.backup_files().len(), 1);
 

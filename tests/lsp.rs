@@ -228,7 +228,6 @@ fn missing_server_keeps_editing() {
     glyph.wait_for_text("b.rs ●", WAIT);
     let status = status_line(&glyph);
     assert!(!status.contains("server not found"), "{status:?}");
-    assert!(status.contains("saved a.rs"), "{status:?}");
 }
 
 /// npm installs servers as `.cmd` shims; Glyph has to find one through
@@ -373,7 +372,7 @@ const VAR_COL: u16 = 13;
 fn diagnostics_are_underlined_marked_and_counted() {
     let script = format!(r#"{{"notify": {{"textDocument/didOpen": [{}]}}}}"#, both());
     let (_project, glyph) = diag_project(&script);
-    glyph.wait_for_text("⚠ 1  ✕ 1", WAIT);
+    glyph.wait_for_text("✕ 1  ⚠ 1", WAIT);
 
     glyph.wait_for_underlined(Y_ROW, "y", WAIT);
     assert_eq!(glyph.fg_at(VAR_COL, Y_ROW), ERR);
@@ -399,7 +398,7 @@ fn diagnostics_are_underlined_marked_and_counted() {
 
     // The counts on the status line are in the same colours.
     let status = status_line(&glyph);
-    assert!(status.contains("⚠ 1  ✕ 1"), "{status:?}");
+    assert!(status.contains("✕ 1  ⚠ 1"), "{status:?}");
     let status_row = ROWS - 1;
     let warn = glyph.text_col(status_row, "⚠ 1").expect("warning count");
     let err = glyph.text_col(status_row, "✕ 1").expect("error count");
@@ -411,7 +410,7 @@ fn diagnostics_are_underlined_marked_and_counted() {
 fn f8_and_shift_f8_cycle_through_diagnostics() {
     let script = format!(r#"{{"notify": {{"textDocument/didOpen": [{}]}}}}"#, both());
     let (_project, mut glyph) = diag_project(&script);
-    glyph.wait_for_text("⚠ 1  ✕ 1", WAIT);
+    glyph.wait_for_text("✕ 1  ⚠ 1", WAIT);
 
     glyph.send_keys("f8");
     glyph.wait_for_cursor(VAR_COL, X_ROW, WAIT);
@@ -432,19 +431,24 @@ fn f8_and_shift_f8_cycle_through_diagnostics() {
 fn the_diagnostic_under_the_cursor_shows_its_message() {
     let script = format!(r#"{{"notify": {{"textDocument/didOpen": [{}]}}}}"#, both());
     let (_project, mut glyph) = diag_project(&script);
-    glyph.wait_for_text("⚠ 1  ✕ 1", WAIT);
+    glyph.wait_for_text("✕ 1  ⚠ 1", WAIT);
     assert!(!status_line(&glyph).contains("unused variable"));
 
     glyph.send_keys("f8");
-    glyph.wait_for_text("glyph  unused variable: x  c.rs", WAIT);
+    glyph.wait_for_text("⚠ unused variable: x", WAIT);
     glyph.send_keys("f8");
-    glyph.wait_for_text("glyph  mismatched types  c.rs", WAIT);
+    glyph.wait_for_text("✕ mismatched types", WAIT);
     glyph.wait_for_text_gone("unused variable", WAIT);
+    // It holds the path slot, its glyph in the severity's colour.
+    let status_row = ROWS - 1;
+    assert_eq!(glyph.text_col(status_row, "✕ mismatched types"), Some(20));
+    assert_eq!(glyph.fg_at(20, status_row), ERR);
 
-    // Off the diagnostic, the message goes.
+    // Off the diagnostic, the message goes and the path comes back.
     glyph.send_keys("right");
     glyph.wait_for_text("Ln 3, Col 10", WAIT);
     glyph.wait_for_text_gone("mismatched types", WAIT);
+    assert_eq!(glyph.text_col(status_row, "c.rs"), Some(20));
 }
 
 #[test]
@@ -460,13 +464,13 @@ fn a_new_publish_replaces_the_set_and_an_empty_one_clears_it() {
         publish(&[])
     );
     let (project, mut glyph) = diag_project(&script);
-    glyph.wait_for_text("⚠ 1  ✕ 1", WAIT);
+    glyph.wait_for_text("✕ 1  ⚠ 1", WAIT);
     glyph.wait_for_underlined(X_ROW, "x", WAIT);
 
     // Typing on line 1 sends a change; the server's new set has only the error.
     glyph.type_text("z");
     project.wait_for(&glyph, "textDocument/didChange", "c.rs");
-    glyph.wait_for_text("⚠ 0  ✕ 1", WAIT);
+    glyph.wait_for_text("✕ 1  ⚠ 0", WAIT);
     glyph.wait_for_underlined(X_ROW, "", WAIT);
     glyph.wait_for_underlined(Y_ROW, "y", WAIT);
     assert!(glyph.screen()[usize::from(X_ROW)].starts_with(" 2 │ "));
@@ -582,11 +586,13 @@ fn no_definition_says_so() {
     glyph.send_keys("f12");
     project.wait_for(&glyph, "textDocument/definition", "main.rs");
     glyph.wait_for_text("No definition found", WAIT);
-    let status = status_line(&glyph);
-    assert!(
-        status.contains("main.rs") && status.contains("Ln 1, Col 1"),
-        "{status:?}"
+    // The message takes the path slot; the cursor stays where it was.
+    let status_row = ROWS - 1;
+    assert_eq!(
+        glyph.text_col(status_row, "⚠ No definition found"),
+        Some(20)
     );
+    assert!(status_line(&glyph).contains("Ln 1, Col 1"));
     assert!(!glyph.screen()[0].contains("util.rs"));
 }
 
@@ -712,7 +718,11 @@ fn alt_k_shows_the_hover_below_the_cursor() {
     assert_eq!(glyph.bg_at(HOVER_TEXT_COL + 40, HOVER_FIRST_ROW), CARD);
     // The cursor stays in the text, on `greet`.
     glyph.wait_for_cursor(GREET_COL, GREET_ROW, WAIT);
-    assert!(status_line(&glyph).contains("glyph  main.rs  Ln 4, Col 11"));
+    let status = status_line(&glyph);
+    assert!(
+        status.contains("main.rs") && status.contains("Ln 4, Col 11"),
+        "{status:?}"
+    );
 }
 
 #[test]
@@ -750,7 +760,7 @@ fn an_empty_hover_shows_nothing() {
     let before = glyph.screen();
     glyph.send_keys("alt+k");
     project.wait_for(&glyph, "textDocument/hover", "main.rs");
-    glyph.wait_for_text("⚠ 1  ✕ 0", WAIT);
+    glyph.wait_for_text("✕ 0  ⚠ 1", WAIT);
 
     // No card anywhere: the text area is as it was, but for the gutter mark
     // the publish put on line 1.
@@ -762,7 +772,7 @@ fn an_empty_hover_shows_nothing() {
     );
     let status = status_line(&glyph);
     assert!(
-        status.contains("glyph  main.rs  Ln 4, Col 11"),
+        status.contains("main.rs") && status.contains("Ln 4, Col 11"),
         "{status:?}"
     );
 }
@@ -1112,7 +1122,7 @@ fn a_late_answer_after_the_cursor_left_the_word_is_dropped() {
     glyph.send_keys("down");
     glyph.wait_for_text("Ln 3, Col 2", WAIT);
 
-    glyph.wait_for_text("⚠ 1  ✕ 0", WAIT);
+    glyph.wait_for_text("✕ 0  ⚠ 1", WAIT);
     let screen = glyph.screen();
     assert!(
         !screen.iter().any(|r| r.contains("capacity")),

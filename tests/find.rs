@@ -59,7 +59,7 @@ fn ctrl_f_highlights_every_match_as_you_type_and_jumps_to_the_first() {
     wait_for_count(&glyph, "1/3");
     assert!(row(&glyph, BAR_ROW).starts_with("Find: foo"));
     // The bar sits above the status line, which stays on the last row.
-    assert!(row(&glyph, ROWS - 1).starts_with("glyph"));
+    assert!(row(&glyph, ROWS - 1).starts_with(" ✦ glyph"));
     // All three matches have the selection colours, and nothing else does.
     glyph.wait_for_reversed(1, "foo", WAIT);
     glyph.wait_for_reversed(2, "foo", WAIT);

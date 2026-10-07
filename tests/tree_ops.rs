@@ -119,7 +119,9 @@ fn a_creates_a_file_beside_the_selected_file_and_opens_it() {
     glyph.wait_for_screen("the bar closed", WAIT, |screen| {
         !screen[BAR].contains("New file")
     });
-    wait_for_status(&glyph, "notes.md  Ln 1, Col 1");
+    // The message holds the path slot until the next key.
+    wait_for_status(&glyph, "✓ created notes.md");
+    wait_for_status(&glyph, "Ln 1, Col 1");
     let screen = glyph.screen();
     let editor: String = screen[1].chars().skip(TREE + 1).collect();
     assert_eq!(editor.trim_end(), " 1 │", "{screen:#?}");
