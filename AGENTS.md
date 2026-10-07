@@ -82,5 +82,6 @@ Never commit with failing verify, never `--no-verify`.
 
 - `anyhow::Result` in the binary; no `unwrap()`/`expect()` outside tests except on
   invariants, with a comment saying why it holds.
-- No `unsafe`, except Windows job-object calls in `src/run/`.
+- No `unsafe`, except OS process-tree calls in `src/run/` (Windows job objects, Unix
+  process groups).
 - Comments say why, not what.

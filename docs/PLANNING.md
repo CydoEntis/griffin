@@ -2,97 +2,44 @@
 
 Source of truth for scope, order, decisions and rules. Tickets hold the detail.
 Read this before starting work. If work conflicts with it, stop and say so.
-Last reconciled: 2026-10-06 at `(no commits yet)` on `main`.
+Last reconciled: 2026-10-06 at `3e50a61` on `main`.
 Verify: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`
 
 ## Now
 
-Active phase: **1 — Edit**
-Next unblocked: #1 — chore: scaffold the griffin crate with CI
-
-Tickets are filed for every phase at once (decided 2026-10-06, so the build loop
-runs end to end). A ticket in a later phase is picked up only once every ticket in
-the phases before it is closed. Run `/roadmap reconcile` at each phase boundary.
+Phases 1–5 complete. Phase 6 is complete except its person check: open a real
+project in Windows Terminal (inside Hydra) and on Ubuntu, and use every default key
+once (spec Verification).
 
 ## Phases
 
-### 1 — `griffin file.rs` opens, edits and saves one file safely, by keyboard and mouse · active
+### 1 — `griffin file.rs` opens, edits and saves one file safely, by keyboard and mouse · complete 2026-10-06 at `e0effc0`
 
-Exit when:
-- every ticket below is closed and its change is on `main`;
-- the verify command passes on `main`, in CI on Windows and Ubuntu;
-- the PTY harness tests for R1–R11 pass against the real binary.
+#1, #2, #3, #4, #5, #6, #7, #8, #9, #10
 
-1. #1 — chore: scaffold the griffin crate with CI
-2. #2 — test: drive the real binary in a pseudo-terminal · after 1
-3. #3 — feat(keys): config file and remappable keymap · after 2
-4. #4 — feat(editor): open a file and render it · after 3
-5. #5 — feat(editor): move the cursor · after 4
-6. #6 — feat(editor): type and delete text · after 5
-7. #7 — feat(save): atomic save and unsaved-changes guard · after 6
-8. #8 — feat(editor): undo and redo · after 6 · can run alongside 7
-9. #9 — feat(editor): select text and use the clipboard · after 8
-10. #10 — feat(editor): mouse in the editor · after 9
+### 2 — `griffin .` works across a whole project · complete 2026-10-06 at `4ca0ec6`
 
-### 2 — `griffin .` works across a whole project
+#11, #12, #13, #14, #15, #16, #17
 
-Exit when: tickets closed and on `main`; verify green; PTY tests for R12–R19 pass.
+### 3 — Find and replace, in a file and across the project · complete 2026-10-06 at `3c95f84`
 
-1. #11 — feat(backup): back up unsaved edits and offer recovery
-2. #12 — feat(tree): file tree sidebar · after 1
-3. #13 — feat(tree): create, rename and delete from the tree · after 2
-4. #14 — feat(tabs): tabs, new file and save as · after 2 · can run alongside 3
-5. #15 — feat(split): vertical split and focus cycling · after 4
-6. #16 — feat(picker): go to file · after 4
-7. #17 — feat(theme): Hydra's theme set and overrides · after 1 · can run alongside 2–6
+#18, #55, #19, #20, #21
 
-### 3 — Find and replace, in a file and across the project
+### 4 — All 8 languages are highlighted · complete 2026-10-06 at `e4779b4`
 
-Exit when: tickets closed and on `main`; verify green; PTY tests for R20–R23 pass.
+#22, #23, #24, #25, #26
 
-1. #18 — feat(find): find in file
-2. #19 — feat(find): replace in file · after 1
-3. #20 — feat(search): project search · after 1
-4. #21 — feat(search): project replace · after 2 and 3
+### 5 — Start a dev server inside Griffin · complete 2026-10-06 at `6b9c873`
 
-### 4 — All 8 languages are highlighted
+#27, #28, #29
 
-Exit when: tickets closed and on `main`; verify green; snapshot tests for R24 pass.
+### 6 — LSP: diagnostics, definition, hover, completion, format · complete except the person check, at `3e50a61`
 
-1. #22 — feat(highlight): tree-sitter engine with Rust
-2. #23 — feat(highlight): TypeScript, TSX, JavaScript and JSX · after 1
-3. #24 — feat(highlight): HTML and CSS · after 2
-4. #25 — feat(highlight): Go and Python · after 3
-5. #26 — feat(highlight): SQL · after 4
-
-### 5 — Start a dev server inside Griffin
-
-Exit when: tickets closed and on `main`; verify green; PTY tests for R26–R28 pass.
-
-1. #27 — feat(run): run panel from .griffin.toml
-2. #28 — feat(run): stop, restart and kill the process tree · after 1
-3. #29 — feat(run): detect run commands · after 1 · can run alongside 2
-
-### 6 — LSP: diagnostics, definition, hover, completion, format
-
-Exit when: tickets closed and on `main`; verify green; fake-server tests for
-R29–R35 pass; a person has used every default key once in Windows Terminal (inside
-Hydra) and on Ubuntu (see the spec's Verification).
-
-1. #30 — feat(lsp): language server client core
-2. #31 — feat(lsp): diagnostics · after 1
-3. #32 — feat(lsp): go to definition · after 1 · can run alongside 2
-4. #33 — feat(lsp): hover · after 1 · can run alongside 2–3
-5. #34 — feat(lsp): completion · after 4
-6. #35 — feat(lsp): format on save · after 1
-7. #36 — feat(lsp): default servers and griffin --health · after 1
-
-Phases 2–6 touch shared files (`src/app.rs`, `src/keymap.rs`); "can run alongside"
-holds only where noted.
+#30, #31, #32, #33, #34, #35, #36, #75, #76
 
 ## In scope
 
-- Griffin v1 — planned — [intent](features/griffin-v1/intent.md) ·
+- Griffin v1 — shipped — [intent](features/griffin-v1/intent.md) ·
   [spec](features/griffin-v1/spec.md)
 
 ## Out
@@ -111,23 +58,31 @@ holds only where noted.
   is the daily editor.
 - LSP rename, code actions, signature help; soft wrap; more than two splits —
   deferred 2026-10-06. Come back when daily use asks for them.
+- Known v1 limitations — deferred 2026-10-06, each comes back when it bites in daily use:
+  a Tab inside text pasted into the find bar switches fields on Windows (#19);
+  diagnostics are not shifted by edits until the server republishes (#31);
+  expanding a folder reads it on the main task (#12); injected `<style>`/`<script>`
+  regions re-parse in full on every edit (#24); one bad theme override drops all
+  overrides (#17).
 
 ## Decisions
 
 - [ADR-0001](adr/0001-single-binary-core.md) — one binary: ropey buffer,
   compiled-in tree-sitter grammars, one event loop owning all state, tools as child
   processes. Rules out: plugins, runtime grammar loading, bundled language servers,
-  mutating `App` from a background task.
+  mutating `App` from a background task. Highlighting builds each language's queries
+  with `tree-sitter-highlight` and runs them with a `QueryCursor` on the
+  incrementally re-parsed tree (#22).
 
 ## Rules
 
 - Saves write a temp file in the target's folder and rename it over the target —
-  `src/save.rs`, its unit tests — R7 · not yet: #7
+  `src/save.rs`, its unit tests — R7
 - Key events reach actions only through the keymap; nothing outside `src/keymap.rs`
   matches on `KeyCode` — `rg -n "KeyCode::" src --glob '!src/keymap.rs'` prints
-  nothing — R5 · not yet: #3
+  nothing — R5
 - A missing or crashed language server never blocks editing — fake-server test in
-  `tests/` — R29 · not yet: #30
+  `tests/` — R29
 
 ## Records
 
@@ -135,3 +90,8 @@ Glossary: none yet.
 ADRs: `docs/adr/`. Feature docs: `docs/features/`.
 
 ## Rework
+
+- 2026-10-06 #17 → #55: the PTY harness trusted synchronized-update markers that
+  Windows ConPTY sends before the frame is drawn.
+- 2026-10-06 #33 → #76: key-release events closed popups on Windows.
+- 2026-10-06 #36 → #75: server spawning did not resolve `.cmd` shims through PATHEXT.

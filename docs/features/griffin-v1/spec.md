@@ -156,7 +156,7 @@ per language, lsp-types, serde_json, ansi-to-tui, futures-util; windows-sys
 ## Coverage
 
 - R1 → #1, #2, #4
-- R2 → #2
+- R2 → #2, #55
 - R3 → #4
 - R4 → #5
 - R5 → #3
@@ -183,10 +183,10 @@ per language, lsp-types, serde_json, ansi-to-tui, futures-util; windows-sys
 - R26 → #27
 - R27 → #28
 - R28 → #29
-- R29 → #30
+- R29 → #30, #75
 - R30 → #31
 - R31 → #32
-- R32 → #33
+- R32 → #33, #76
 - R33 → #34
 - R34 → #35
-- R35 → #36
+- R35 → #36, #75
