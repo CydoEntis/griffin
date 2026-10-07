@@ -109,9 +109,12 @@ pub enum Action {
 pub enum Scope {
     Global,
     Tree,
-    /// While the find bar or project search is open: its keys win over the
-    /// global ones.
+    /// While the find bar is open: its keys win over the global ones.
     Find,
+    /// While project search is open: like `Find`, with its own keys checked
+    /// first, so Alt+A can replace across the project here and in the find bar
+    /// replace only in the file.
+    Search,
 }
 
 impl Action {
@@ -208,8 +211,8 @@ impl Action {
             | Action::FindPrev
             | Action::FindCase
             | Action::FindRegex
-            | Action::ReplaceAll
-            | Action::ProjectReplace => Scope::Find,
+            | Action::ReplaceAll => Scope::Find,
+            Action::ProjectReplace => Scope::Search,
             _ => Scope::Global,
         }
     }
@@ -388,7 +391,8 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Replace, "ctrl+r"),
     (Action::ReplaceAll, "alt+a"),
     (Action::ProjectSearch, "alt+f"),
-    (Action::ProjectReplace, "alt+enter"),
+    // Not Alt+Enter: Windows Terminal keeps that for full screen.
+    (Action::ProjectReplace, "alt+a"),
     (Action::Run, "f5"),
     (Action::ToggleRunPanel, "f4"),
     (Action::StopRun, "shift+f5"),
@@ -434,8 +438,10 @@ pub struct Keymap {
     bindings: HashMap<Key, Action>,
     /// Checked before `bindings` while the tree has focus.
     tree: HashMap<Key, Action>,
-    /// Checked before `bindings` while the find bar is open.
+    /// Checked before `bindings` while the find bar or project search is open.
     find: HashMap<Key, Action>,
+    /// Checked before `find` while project search is open.
+    search: HashMap<Key, Action>,
 }
 
 impl Default for Keymap {
@@ -466,6 +472,7 @@ impl Keymap {
             bindings: HashMap::new(),
             tree: HashMap::new(),
             find: HashMap::new(),
+            search: HashMap::new(),
         };
         for &(action, notation) in DEFAULT_BINDINGS {
             if overrides.contains_key(&action) {
@@ -489,6 +496,7 @@ impl Keymap {
             Scope::Global => &mut self.bindings,
             Scope::Tree => &mut self.tree,
             Scope::Find => &mut self.find,
+            Scope::Search => &mut self.search,
         }
     }
 
@@ -499,7 +507,8 @@ impl Keymap {
     }
 
     /// What `event` means in `scope`: tree bindings win while the tree has focus,
-    /// find bar bindings while the find bar is open.
+    /// find bar bindings while the find bar is open, and project search's own
+    /// bindings, then the find bar's, while project search is open.
     pub fn resolve_in(&self, event: &KeyEvent, scope: Scope) -> Input {
         if event.kind == KeyEventKind::Release {
             return Input::Ignored;
@@ -509,6 +518,7 @@ impl Keymap {
             Scope::Global => None,
             Scope::Tree => self.tree.get(&key),
             Scope::Find => self.find.get(&key),
+            Scope::Search => self.search.get(&key).or_else(|| self.find.get(&key)),
         };
         if let Some(&action) = scoped {
             return Input::Action(action);
@@ -824,7 +834,7 @@ mod tests {
     fn defaults_build() {
         let map = Keymap::default();
         assert_eq!(
-            map.bindings.len() + map.tree.len() + map.find.len(),
+            map.bindings.len() + map.tree.len() + map.find.len() + map.search.len(),
             DEFAULT_BINDINGS.len()
         );
     }
@@ -1322,20 +1332,41 @@ mod tests {
     }
 
     #[test]
-    fn alt_enter_replaces_across_the_project_only_in_find_scope() {
+    fn alt_a_replaces_across_the_project_in_search_and_in_the_file_in_the_find_bar() {
         let map = Keymap::default();
-        let alt_enter = ev(KeyCode::Enter, KeyModifiers::ALT);
+        let alt_a = ev(KeyCode::Char('a'), KeyModifiers::ALT);
         assert_eq!(
-            map.resolve_in(&alt_enter, Scope::Find),
+            map.resolve_in(&alt_a, Scope::Search),
             Input::Action(Action::ProjectReplace)
         );
+        assert_eq!(
+            map.resolve_in(&alt_a, Scope::Find),
+            Input::Action(Action::ReplaceAll)
+        );
+        assert_eq!(map.resolve(&alt_a), Input::Ignored);
+        // Alt+Enter no longer replaces anything.
+        let alt_enter = ev(KeyCode::Enter, KeyModifiers::ALT);
         assert_ne!(
-            map.resolve(&alt_enter),
+            map.resolve_in(&alt_enter, Scope::Search),
             Input::Action(Action::ProjectReplace)
+        );
+        // Project search still reads the find bar's keys.
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Char('c'), KeyModifiers::ALT), Scope::Search),
+            Input::Action(Action::FindCase)
         );
         assert_eq!(
             Action::from_name("project_replace"),
             Some(Action::ProjectReplace)
+        );
+        let map = Keymap::new(&keys(&[("project_replace", one("alt+enter"))])).unwrap();
+        assert_eq!(
+            map.resolve_in(&alt_enter, Scope::Search),
+            Input::Action(Action::ProjectReplace)
+        );
+        assert_eq!(
+            map.resolve_in(&alt_a, Scope::Search),
+            Input::Action(Action::ReplaceAll)
         );
     }
 
