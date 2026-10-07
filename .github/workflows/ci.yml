@@ -25,21 +25,3 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: cargo test
         run: cargo test
-
-  # Temporary (#76): removed before merge.
-  stress-hover:
-    name: stress hover (windows-latest)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: build tests
-        run: cargo test --test lsp --no-run
-      - name: run the hover test 50 times
-        shell: bash
-        run: |
-          for i in $(seq 1 50); do
-            echo "run $i"
-            cargo test --test lsp esc_movement_and_typing_close_the_hover -- --exact || exit 1
-          done
