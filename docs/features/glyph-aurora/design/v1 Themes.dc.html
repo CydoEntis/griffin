@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>html,body{margin:0;background:#05080c;color:#a7b4c2}*{box-sizing:border-box}a{color:#c3f53c;text-decoration:none}a:hover{color:#f2f6f8}</style>
+</helmet>
+<div ref="{{ rootRef }}" style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;line-height:1.45;padding:28px 32px 48px;display:flex;flex-direction:column;gap:28px">
+  <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:16px">
+    <div style="color:#f2f6f8;font-weight:700;font-size:16px">griffin · themes</div>
+    <div style="color:#71808f;text-wrap:pretty;max-width:760px">The same 100×30 frame in all 11 themes: diagnostics, find matches (current = amber block), dirty marks, a failed run. Below: every role per theme. NEW rows are proposed roles, derived from existing ones so overrides keep working.</div>
+    <a href="Griffin Prototype.dc.html" style="margin-left:auto">← prototype</a>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(480px,1fr));gap:24px 20px">
+    <sc-for list="{{ themes }}" as="t" hint-placeholder-count="11">
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;gap:10px;align-items:baseline"><span style="color:#f2f6f8;font-weight:700">{{ t.name }}</span><span style="color:#71808f">{{ t.kind }}</span></div>
+        <div data-theme="{{ t.name }}" style="width:471px;height:302px;overflow:hidden;position:relative;box-shadow:0 0 0 1px #1f2c3a"></div>
+      </div>
+    </sc-for>
+  </div>
+  <div style="overflow:auto;border:1px solid #1f2c3a">
+    <table style="border-collapse:collapse;font-size:11px;min-width:100%">
+      <thead><tr style="background:#0c131b"><th style="text-align:left;padding:8px 10px;color:#71808f;font-weight:400;position:sticky;left:0;background:#0c131b">role</th>
+        <sc-for list="{{ themes }}" as="t" hint-placeholder-count="11"><th style="text-align:left;padding:8px 10px;color:#f2f6f8;white-space:nowrap">{{ t.name }}</th></sc-for></tr></thead>
+      <tbody>
+        <sc-for list="{{ rows }}" as="r" hint-placeholder-count="30">
+          <tr style="border-top:1px solid #121b24">
+            <td style="padding:5px 10px;position:sticky;left:0;background:#070b10;white-space:nowrap"><div style="color:#f2f6f8">{{ r.role }}</div><div style="color:#71808f">{{ r.desc }}</div></td>
+            <sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="11">
+              <td style="padding:5px 10px;white-space:nowrap"><div style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;flex:none;border:1px solid #2a3a4c;background:{{ c.hex }}"></span><span>{{ c.label }}</span></div></td>
+            </sc-for>
+          </tr>
+        </sc-for>
+      </tbody>
+    </table>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { ready: false };
+  rootRef = React.createRef();
+  componentDidMount() {
+    const load = src => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+    (async () => {
+      if (!window.Griffin) { await load('griffin-themes.js'); await load('griffin-content.js'); await load('griffin-engine.js'); }
+      try { await document.fonts.load('14px "JetBrains Mono"'); } catch (e) {}
+      const ctx = document.createElement('canvas').getContext('2d'); ctx.font = '14px "JetBrains Mono", ui-monospace, monospace';
+      this.cw = ctx.measureText('MMMMMMMMMM').width / 10;
+      this.setState({ ready: true });
+    })();
+  }
+  componentDidUpdate() {
+    if (!this.state.ready || this.painted) return; this.painted = true;
+    const G = window.Griffin, g = G.render(G.showcase(100, 30));
+    this.rootRef.current.querySelectorAll('[data-theme]').forEach(el => {
+      const sc = 471 / (100 * this.cw);
+      el.innerHTML = '<div style="position:absolute;left:0;top:0;width:' + (100 * this.cw) + 'px;transform:scale(' + sc + ');transform-origin:0 0;font-size:14px;font-variant-ligatures:none">' + G.toHTML(g, G.theme(el.dataset.theme), { cw: this.cw, lh: 18 }) + '</div>';
+      el.style.height = Math.ceil(30 * 18 * sc) + 'px';
+    });
+  }
+  renderVals() {
+    if (!this.state.ready) return { rootRef: this.rootRef, themes: [], rows: [] };
+    const T = window.GriffinThemes;
+    const themes = T.NAMES.map(n => ({ name: n, kind: T.DESIGN[n] ? 'Hydra design roles' : T.CLASSIC[n] ? 'classic roles, mixed' : 'terminal colours, weight for syntax' }));
+    const roles = T.ROLES.map(([role, desc]) => ({ role, desc })).concat(T.SYN.map(k => ({ role: k, desc: 'syntax', key: 'syn.' + k })));
+    const rows = roles.map(r => ({ role: r.role, desc: r.desc, cells: T.NAMES.map(n => { const th = T.theme(n), k = r.key || r.role; const hex = th.r[k]; return { hex, label: th.names ? th.names[k] || hex : hex }; }) }));
+    return { rootRef: this.rootRef, themes, rows };
+  }
+}
+</script>
+</body>
+</html>

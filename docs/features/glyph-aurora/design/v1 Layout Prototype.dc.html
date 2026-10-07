@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>html,body{margin:0;height:100%;background:#05080c;color:#a7b4c2}*{box-sizing:border-box}a{color:#c3f53c;text-decoration:none}a:hover{color:#f2f6f8}select,input,button{font:inherit}</style>
+</helmet>
+<div style="display:flex;height:100vh;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;line-height:1.45;background:#05080c;color:#a7b4c2">
+  <div style="width:290px;flex:none;border-right:1px solid #1f2c3a;overflow:auto;padding:16px 0 24px;background:#0c131b">
+    <div style="padding:0 16px 12px;display:flex;flex-direction:column;gap:3px">
+      <div style="color:#f2f6f8;font-weight:700;font-size:15px">griffin</div>
+      <div style="color:#71808f">TUI design spec · cell-grid prototype</div>
+      <div style="display:flex;gap:14px;margin-top:8px"><a href="Griffin Themes.dc.html">Themes sheet →</a><a href="README.md">README spec →</a></div>
+    </div>
+    <sc-for list="{{ groups }}" as="g" hint-placeholder-count="10">
+      <div style="padding:12px 16px 4px;color:#71808f;font-size:11px">{{ g.title }}</div>
+      <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="3">
+        <sc-if value="{{ it.active }}" hint-placeholder-val="{{ false }}">
+          <div onClick="{{ it.pick }}" style="padding:3px 16px;cursor:pointer;display:flex;gap:10px;background:#2a3a4c;color:#f2f6f8"><span style="color:#c3f53c;width:30px;flex:none">{{ it.id }}</span><span>{{ it.label }}</span></div>
+        </sc-if>
+        <sc-if value="{{ it.inactive }}" hint-placeholder-val="{{ true }}">
+          <div onClick="{{ it.pick }}" style="padding:3px 16px;cursor:pointer;display:flex;gap:10px;color:#a7b4c2" style-hover="background:#18242f;color:#f2f6f8"><span style="color:#71808f;width:30px;flex:none">{{ it.id }}</span><span>{{ it.label }}</span></div>
+        </sc-if>
+      </sc-for>
+    </sc-for>
+  </div>
+  <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:16px;padding:10px 20px;border-bottom:1px solid #1f2c3a;background:#0c131b">
+      <div style="display:flex;align-items:center;gap:8px"><span style="color:#71808f">theme</span>
+        <select value="{{ theme }}" onChange="{{ onTheme }}" style="background:#18242f;color:#f2f6f8;border:1px solid #1f2c3a;padding:3px 6px;border-radius:3px">
+          <sc-for list="{{ themes }}" as="t" hint-placeholder-count="11"><option value="{{ t }}">{{ t }}</option></sc-for>
+        </select>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px"><span style="color:#71808f">size</span>
+        <sc-for list="{{ sizes }}" as="z" hint-placeholder-count="3">
+          <sc-if value="{{ z.active }}" hint-placeholder-val="{{ false }}"><button onClick="{{ z.pick }}" style="background:#c3f53c;color:#0a1204;border:0;padding:3px 8px;border-radius:3px;cursor:pointer;font-weight:700">{{ z.label }}</button></sc-if>
+          <sc-if value="{{ z.inactive }}" hint-placeholder-val="{{ true }}"><button onClick="{{ z.pick }}" style="background:#18242f;color:#a7b4c2;border:0;padding:3px 8px;border-radius:3px;cursor:pointer">{{ z.label }}</button></sc-if>
+        </sc-for>
+        <input type="number" value="{{ W }}" onChange="{{ onW }}" style="width:58px;background:#18242f;color:#f2f6f8;border:1px solid #1f2c3a;padding:2px 4px;border-radius:3px">
+        <span style="color:#71808f">×</span>
+        <input type="number" value="{{ H }}" onChange="{{ onH }}" style="width:52px;background:#18242f;color:#f2f6f8;border:1px solid #1f2c3a;padding:2px 4px;border-radius:3px">
+      </div>
+      <button onClick="{{ toggleFit }}" style="background:#18242f;color:#a7b4c2;border:0;padding:3px 8px;border-radius:3px;cursor:pointer">{{ fitLabel }}</button>
+      <button onClick="{{ reset }}" style="background:#18242f;color:#a7b4c2;border:0;padding:3px 8px;border-radius:3px;cursor:pointer">reset scenario</button>
+      <span style="color:#71808f;margin-left:auto">{{ focusHint }}</span>
+    </div>
+    <div ref="{{ boxRef }}" tabIndex="0" onKeyDown="{{ onKey }}" onMouseDown="{{ onDown }}" onMouseMove="{{ onMove }}" onWheel="{{ onWheel }}" onFocus="{{ onFocus }}" onBlur="{{ onBlur }}" style="flex:1;min-height:0;overflow:auto;padding:20px;outline:none">
+      <div ref="{{ sizerRef }}" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1f2c3a,0 12px 40px rgba(0,0,0,.5)">
+        <div ref="{{ gridRef }}" style="position:absolute;left:0;top:0;transform-origin:0 0;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:14px;font-variant-ligatures:none;cursor:text"></div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:24px;padding:12px 20px 14px;border-top:1px solid #1f2c3a;background:#0c131b">
+      <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+        <div style="display:flex;gap:10px;align-items:baseline"><span style="color:#c3f53c;font-weight:700">{{ scId }}</span><span style="color:#f2f6f8;font-weight:700">{{ scLabel }}</span><span style="color:#71808f">{{ dims }}</span></div>
+        <div style="color:#a7b4c2;text-wrap:pretty">{{ scNote }}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+        <div style="color:#71808f">cell inspector — hover the grid</div>
+        <div style="color:#f2f6f8">{{ inspA }}</div>
+        <div style="display:flex;gap:8px;align-items:center"><span style="width:12px;height:12px;flex:none;border:1px solid #1f2c3a;background:{{ inspFgHex }}"></span><span>{{ inspFg }}</span></div>
+        <div style="display:flex;gap:8px;align-items:center"><span style="width:12px;height:12px;flex:none;border:1px solid #1f2c3a;background:{{ inspBgHex }}"></span><span>{{ inspBg }}</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;hydra&quot;,&quot;papercolor-dark&quot;,&quot;tango-dark&quot;,&quot;monokai&quot;,&quot;tokyo-night&quot;,&quot;catppuccin-mocha&quot;,&quot;catppuccin-latte&quot;,&quot;gruvbox&quot;,&quot;nord&quot;,&quot;dracula&quot;,&quot;mono&quot;],&quot;default&quot;:&quot;hydra&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;startScenario&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;1a&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  state = { sc: null, theme: 'hydra', W: 160, H: 45, fit: true, insp: null, focused: false, ready: false, ver: 0 };
+  boxRef = React.createRef(); gridRef = React.createRef(); sizerRef = React.createRef();
+  componentDidMount() {
+    const load = src => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+    (async () => {
+      if (!window.Griffin) { await load('griffin-themes.js'); await load('griffin-content.js'); await load('griffin-engine.js'); }
+      try { await document.fonts.load('14px "JetBrains Mono"'); await document.fonts.load('bold 14px "JetBrains Mono"'); } catch (e) {}
+      const ctx = document.createElement('canvas').getContext('2d'); ctx.font = '14px "JetBrains Mono", ui-monospace, monospace';
+      this.cw = ctx.measureText('MMMMMMMMMM').width / 10; this.lh = 18; this.G = window.Griffin;
+      let saved = {}; try { saved = JSON.parse(localStorage.getItem('griffin-proto') || '{}'); } catch (e) {}
+      const sc = saved.sc && this.G.scenario(saved.sc) ? saved.sc : (this.props.startScenario || '1a');
+      const theme = saved.theme || this.props.theme || 'hydra';
+      this.setState({ ready: true, theme }, () => this.load(sc, saved.W && saved.H ? [saved.W, saved.H] : null));
+      this.timer = setInterval(() => { if (this.gs && this.G.tick(this.gs)) this.bump(); }, 700);
+      this.ro = new ResizeObserver(() => this.paint(true)); this.ro.observe(this.boxRef.current);
+    })();
+  }
+  componentWillUnmount() { clearInterval(this.timer); if (this.ro) this.ro.disconnect(); }
+  componentDidUpdate() {
+    this.paint(false);
+    if (this.state.sc) try { localStorage.setItem('griffin-proto', JSON.stringify({ sc: this.state.sc, theme: this.state.theme, W: this.state.W, H: this.state.H })); } catch (e) {}
+  }
+  bump() { this.setState(s => ({ ver: s.ver + 1 })); }
+  load(id, size) {
+    const sc = this.G.scenario(id); const [W, H] = sc.size || size || [this.state.W, this.state.H];
+    this.gs = sc.make(W, H); this.setState(s => ({ sc: id, W, H, ver: s.ver + 1 }), () => requestAnimationFrame(() => requestAnimationFrame(() => this.paint(true))));
+  }
+  setSize(W, H) {
+    W = Math.max(40, Math.min(300, W | 0)); H = Math.max(12, Math.min(100, H | 0));
+    if (this.gs) { this.gs.W = W; this.gs.H = H; this.G.follow(this.gs); }
+    this.setState(s => ({ W, H, ver: s.ver + 1 }));
+  }
+  paint(force) {
+    if (!this.gs || !this.gridRef.current) return;
+    const box = this.boxRef.current, st = this.state;
+    if (box.clientWidth < 100 || box.clientHeight < 60) { requestAnimationFrame(() => this.paint(true)); return; }
+    const key = [st.ver, st.theme, st.W, st.H, st.fit, box.clientWidth, box.clientHeight].join('|');
+    if (!force && key === this.painted) return; this.painted = key;
+    const g = this.G.render(this.gs); this.g = g;
+    const grid = this.gridRef.current, w = st.W * this.cw, h = st.H * this.lh;
+    grid.innerHTML = this.G.toHTML(g, this.G.theme(st.theme), { cw: this.cw, lh: this.lh });
+    grid.style.width = w + 'px';
+    const sc = st.fit ? Math.min(1, (box.clientWidth - 40) / w, (box.clientHeight - 40) / h) : 1;
+    this.scale = Math.max(.2, sc);
+    grid.style.transform = 'scale(' + this.scale + ')';
+    this.sizerRef.current.style.width = w * this.scale + 'px';
+    this.sizerRef.current.style.height = h * this.scale + 'px';
+  }
+  cellAt(e) {
+    if (!this.g) return null;
+    const r = this.gridRef.current.getBoundingClientRect();
+    const x = Math.floor((e.clientX - r.left) / (this.cw * this.scale)), y = Math.floor((e.clientY - r.top) / (this.lh * this.scale));
+    return x >= 0 && y >= 0 && x < this.g.W && y < this.g.H ? { x, y } : null;
+  }
+  inspect(p) {
+    const c = this.g.at(p.x, p.y), th = this.G.theme(this.state.theme);
+    const res = k => !k ? '' : th.r[k] || k;
+    const nm = k => th.names && th.names[k] ? ' (' + th.names[k] + ')' : '';
+    const m = th.mods[c.fg] || {};
+    const mods = [(c.b || m.b) && 'bold', (c.d || m.d) && 'dim', c.u === 'c' && 'curly underline ' + c.uc, c.u === 'l' && 'underline', c.dim && 'scrim-dimmed', c.cur && 'cursor'].filter(Boolean).join(', ');
+    return { a: 'x ' + p.x + '  y ' + p.y + '  ·  ' + c.reg + '  ·  "' + c.c + '"' + (mods ? '  ·  ' + mods : ''), fg: 'fg  ' + c.fg + nm(c.fg) + '  ' + res(c.fg), bg: 'bg  ' + c.bg + nm(c.bg) + '  ' + res(c.bg), fgHex: res(c.fg), bgHex: res(c.bg), key: p.x + ',' + p.y };
+  }
+  renderVals() {
+    const st = this.state, G = this.G;
+    const groups = st.ready ? G.scenarios.map(([gid, name, items]) => ({ title: gid + ' · ' + name.toUpperCase(), items: items.map(([id, label]) => ({ id, label, active: id === st.sc, inactive: id !== st.sc, pick: () => { this.load(id); this.boxRef.current.focus(); } })) })) : [];
+    const sc = st.ready && st.sc ? G.scenario(st.sc) : null;
+    const sizes = [[100, 30], [160, 45], [220, 60]].map(([W, H]) => ({ label: W + '×' + H, active: W === st.W && H === st.H, inactive: !(W === st.W && H === st.H), pick: () => this.setSize(W, H) }));
+    const i = st.insp;
+    return {
+      boxRef: this.boxRef, gridRef: this.gridRef, sizerRef: this.sizerRef, groups, sizes,
+      themes: st.ready ? G.themes : [], theme: st.theme, W: st.W, H: st.H,
+      onTheme: e => this.setState(s => ({ theme: e.target.value, ver: s.ver + 1 })),
+      onW: e => this.setSize(+e.target.value, st.H), onH: e => this.setSize(st.W, +e.target.value),
+      fitLabel: st.fit ? 'fit ✓' : '1:1', toggleFit: () => this.setState(s => ({ fit: !s.fit })),
+      reset: () => st.sc && this.load(st.sc),
+      focusHint: st.focused ? 'keys go to griffin · Ctrl+W/N/T may be kept by the browser' : 'click the terminal to send it keys',
+      scId: sc ? sc.id : '', scLabel: sc ? sc.label : 'loading…', scNote: sc ? sc.note : '', dims: st.W + '×' + st.H + ' · ' + st.theme,
+      inspA: i ? i.a : '—', inspFg: i ? i.fg : '', inspBg: i ? i.bg : '', inspFgHex: i ? i.fgHex : 'transparent', inspBgHex: i ? i.bgHex : 'transparent',
+      onFocus: () => this.setState({ focused: true }), onBlur: () => this.setState({ focused: false }),
+      onKey: e => {
+        if (!this.gs) return;
+        const handled = G.key(this.gs, e.nativeEvent || e);
+        if (handled || e.ctrlKey || e.altKey || /^F\d+$/.test(e.key) || e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); }
+        if (handled) this.bump();
+      },
+      onDown: e => {
+        const p = this.cellAt(e); if (!p) return;
+        e.preventDefault(); this.boxRef.current.focus();
+        if (G.mouse(this.gs, this.g, p.x, p.y, 'down', e.button)) this.bump();
+      },
+      onMove: e => {
+        const p = this.cellAt(e); if (!p) return;
+        const moved = G.mouse(this.gs, this.g, p.x, p.y, 'move');
+        if (moved) { this.bump(); }
+        if (!st.insp || st.insp.key !== p.x + ',' + p.y || moved) setTimeout(() => this.g && this.setState({ insp: this.inspect(p) }), 0);
+      },
+      onWheel: e => { const p = this.cellAt(e); if (p && G.mouse(this.gs, this.g, p.x, p.y, 'wheel', e.deltaY)) this.bump(); },
+    };
+  }
+}
+</script>
+</body>
+</html>
