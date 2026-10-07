@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{
-    Event, EventStream, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, EventStream, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
@@ -1043,6 +1044,12 @@ impl App {
                 Scope::Global
             };
         let input = self.keymap.resolve_in(&key, scope);
+        // A release is no key: on Windows every press is followed by one, and a
+        // hover reply landing between Alt+K's press and release would otherwise
+        // close the popup before it was ever drawn.
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
         // Any key closes the hover popup; Esc does nothing else, the rest still
         // do what they do.
         if self.hover.take().is_some() && input == Input::Action(Action::Cancel) {
@@ -3069,7 +3076,6 @@ mod tests {
     use crate::clipboard::FakeClipboard;
     use crate::config::{KeyBinding, KeysConfig};
     use crate::keymap::key_event;
-    use crossterm::event::KeyEventKind;
 
     fn key(notation: &str) -> AppEvent {
         AppEvent::Input(Event::Key(key_event(notation)))
@@ -3149,6 +3155,20 @@ mod tests {
         release.kind = KeyEventKind::Release;
         app.handle_event(AppEvent::Input(Event::Key(release)));
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn a_key_release_leaves_the_hover_open() {
+        let mut app = App {
+            hover: Some("pub fn greet()".into()),
+            ..App::default()
+        };
+        let mut release = key_event("alt+k");
+        release.kind = KeyEventKind::Release;
+        app.handle_event(AppEvent::Input(Event::Key(release)));
+        assert_eq!(app.hover.as_deref(), Some("pub fn greet()"));
+        app.handle_event(key("esc"));
+        assert_eq!(app.hover, None);
     }
 
     #[test]
