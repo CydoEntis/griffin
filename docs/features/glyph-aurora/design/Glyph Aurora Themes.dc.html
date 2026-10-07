@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,700;1,400&amp;display=swap" rel="stylesheet">
+<style>html,body{margin:0;background:#060509;color:#a6a2bb}*{box-sizing:border-box}a{color:#b69cff;text-decoration:none}a:hover{color:#f4f2fb}</style>
+</helmet>
+<section style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:15px;line-height:1.55;padding:48px;display:flex;flex-direction:column;gap:40px;background:#060509">
+  <div style="display:flex;flex-direction:column;gap:8px;max-width:1200px">
+    <div style="display:flex;gap:14px;align-items:baseline"><span style="color:#6ee7d8;font-size:22px">✦</span><span style="color:#f4f2fb;font-weight:700;font-size:24px">glyph · aurora</span><span style="color:#67627d">2a + 2b's status bar · two signature themes + the pack · 160×45 at 1:1</span></div>
+    <div style="color:#a6a2bb;text-wrap:pretty">Each Hydra theme drives the aurora from its own palette. The light runs from the theme's accent to whichever of its syntax hues is furthest from that accent, so every theme gets a two-colour glow without a new colour table. The cursor-line and tree glows mix the accent into the background; the dialog dim uses the theme's scrim.</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px 18px">
+      <sc-for list="{{ list }}" as="t" hint-placeholder-count="9"><a href="#{{ t.id }}">{{ t.name }}</a></sc-for>
+    </div>
+  </div>
+  <sc-for list="{{ list }}" as="t" hint-placeholder-count="9">
+    <div id="{{ t.id }}" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:14px;align-items:baseline"><span style="color:#f4f2fb;font-weight:700;font-size:18px">{{ t.name }}</span><span style="color:#67627d">{{ t.kind }}</span></div>
+      <div style="display:flex;flex-wrap:wrap;gap:24px"><div data-frame="main" data-theme="{{ t.name }}" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1f1c2b"></div><div data-frame="pal" data-theme="{{ t.name }}" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1f1c2b"></div></div>
+    </div>
+  </sc-for>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  componentDidMount() {
+    const load = src => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+    (async () => {
+      if (!window.Griffin) { await load('griffin-themes.js'); await load('griffin-content.js'); await load('griffin-engine.js'); }
+      if (!window.GlyphDirections) await load('glyph-directions.js');
+      if (!window.GlyphMagic) await load('glyph-magic.js');
+      try { await document.fonts.load('14px "JetBrains Mono"'); await document.fonts.load('bold 14px "JetBrains Mono"'); await document.fonts.load('italic 14px "JetBrains Mono"'); } catch (e) {}
+      const ctx = document.createElement('canvas').getContext('2d'); ctx.font = '14px "JetBrains Mono", ui-monospace, monospace';
+      const cw = ctx.measureText('MMMMMMMMMM').width / 10, lh = 18, W = 160, H = 45, M = window.GlyphMagic;
+      const paint = () => {
+        const els = document.querySelectorAll('[data-frame][data-theme]');
+        if (!els.length) return requestAnimationFrame(paint);
+        els.forEach(el => {
+          const n = el.dataset.theme, th = n === 'aurora' ? M.TH.a : n === 'moonlit' ? M.TH.m : M.fromHydra(n);
+          const g = (el.dataset.frame === 'pal' ? M.floatPalette : M.floatMain)(W, H, th);
+          el.innerHTML = '<div style="position:absolute;left:0;top:0;width:' + (W * cw) + 'px;font-size:14px;font-variant-ligatures:none;font-family:\'JetBrains Mono\',monospace">' + window.Griffin.toHTML(g, th, { cw, lh }) + '</div>';
+          el.style.width = W * cw + 'px'; el.style.height = H * lh + 'px';
+        });
+      };
+      paint();
+    })();
+  }
+  renderVals() {
+    const names = [['aurora', 'Glyph signature · violet → teal'], ['moonlit', 'Glyph signature · moon → gold'], ['hydra', 'pack'], ['tokyo-night', 'pack'], ['catppuccin-mocha', 'pack'], ['dracula', 'pack'], ['gruvbox', 'pack'], ['nord', 'pack'], ['monokai', 'pack'], ['catppuccin-latte', 'pack · light']];
+    return { list: names.map(([name, kind]) => ({ name, kind, id: 't-' + name })) };
+  }
+}
+</script>
+</body>
+</html>

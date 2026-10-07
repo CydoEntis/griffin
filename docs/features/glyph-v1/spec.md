@@ -40,14 +40,14 @@ Phase 2, Workspace
 - **R15.** Delete moves to the OS trash after a confirm — checked by test with the trash call behind a trait.
 - **R16.** Tabs: each open buffer has a tab; Alt+, / Alt+. move between tabs, Alt+1..9 jump, Ctrl+W closes (dirty guard), Ctrl+N new untitled, Alt+S save as; click selects, middle-click closes — checked by PTY tests.
 - **R17.** Alt+V toggles a vertical split showing two tabs side by side; F6 cycles focus tree → left → right → run panel; click focuses a split — checked by PTY test.
-- **R18.** Ctrl+P opens a fuzzy file picker over the project (respecting `.gitignore`); typing filters, Enter opens — checked by PTY test; picker lists 50k files in under 1 s (bench test, ignored by default).
+- **R18.** Ctrl+P opens a fuzzy file picker over the project (respecting `.gitignore`); typing filters, Enter opens — checked by PTY test; picker lists 50k files in under 1 s (bench test, ignored by default). Since Phase 7 the picker is the cast palette ([Aurora R11](../glyph-aurora/spec.md)).
 - **R19.** `theme` selects one of Hydra's 11 themes by name; `[theme_overrides]` sets any color — checked by unit test parsing every theme and an override.
 
 Phase 3, Search
 - **R20.** Ctrl+F opens a find bar; matches highlight as you type; Enter / Shift+Enter next / previous; Alt+C case, Alt+R regex, Esc closes — checked by PTY test.
 - **R21.** Ctrl+R opens find + replace; Replace and Replace All; Replace All is one undo step — checked by unit + PTY tests.
 - **R22.** Alt+F searches the project (respecting `.gitignore`), listing file:line:text; Enter opens the hit — checked by PTY test.
-- **R23.** In project search, Tab to the replace field and Alt+Enter replaces in every listed file (open buffers are edited in place, others saved atomically per R7) — checked by test.
+- **R23.** In project search, Tab to the replace field and Alt+A (was Alt+Enter, which Windows Terminal takes; changed 2026-10-07, [Aurora R14](../glyph-aurora/spec.md)) replaces in every listed file (open buffers are edited in place, others saved atomically per R7) — checked by test.
 
 Phase 4, Highlight
 - **R24.** Files are colored by tree-sitter by extension: `.rs`; `.ts` `.mts` `.cts`; `.tsx`; `.js` `.mjs` `.cjs` `.jsx`; `.html` `.htm` (with `<style>`/`<script>` injected); `.css`; `.go`; `.py` `.pyi`; `.sql`. Highlight capture names map to theme colors — checked by snapshot test per language.
@@ -70,6 +70,8 @@ Phase 6, LSP
 ## Design
 
 **Screen** (Hydra's look: no boxes, `│` dividers, chrome on `sidebar_bg`):
+
+The look below is superseded by [Glyph Aurora](../glyph-aurora/spec.md); the regions and behaviour still hold.
 
 ```
 row 0      tab bar (per split)                       ● dirty marks

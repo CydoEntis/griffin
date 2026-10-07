@@ -7,9 +7,9 @@ Verify: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo
 
 ## Now
 
-Phases 1–5 complete. Phase 6 is complete except its person check: open a real
-project in Windows Terminal (inside Hydra) and on Ubuntu, and use every default key
-once (spec Verification).
+Active phase: **7 — Glyph wears the Aurora look.** Phase 6's person check is still open.
+Next unblocked: #80 — feat(theme): Aurora roles and the aurora and moonlit themes;
+#81 — feat(search): project replace all on Alt+A.
 
 ## Phases
 
@@ -37,10 +37,48 @@ once (spec Verification).
 
 #30, #31, #32, #33, #34, #35, #36, #75, #76
 
+### 7 — Glyph wears the Aurora look · active
+
+Exit when:
+- every ticket below is closed and its change is on `main`;
+- `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` passes on `main`;
+- the spec's person check passes (main frame and cast match the design at 160×45).
+
+[Glyph Aurora](features/glyph-aurora/intent.md) · [spec](features/glyph-aurora/spec.md)
+
+1. #80 — feat(theme): Aurora roles and the aurora and moonlit themes
+2. #81 — feat(search): project replace all on Alt+A · can run alongside 1
+3. #82 — feat(tree): Aurora tree panel · after 1
+4. #83 — feat(tabs): tab pills and the aurora thread · after 3
+5. #84 — feat(status): Aurora status bar · after 1
+6. #85 — feat(status): language and language server state · after 5
+7. #86 — feat(editor): gutter without a divider and cursor-line glow · after 4
+8. #87 — feat(editor): diagnostic marks, curly underlines and inline lens · after 7
+9. #88 — feat(editor): find matches apart from the selection · after 7
+10. #89 — feat(ui): dimmed dialogs with a lit edge, starting with project search · after 1, 2
+11. #90 — feat(palette): cast palette for files on Ctrl+P · after 10
+12. #91 — feat(palette): commands, go to line and project text in cast · after 11
+13. #92 — feat(confirm): confirm cards with buttons · after 10
+14. #93 — feat(find): Aurora find, replace and prompt bars · after 9
+15. #94 — feat(lsp): rounded hover and completion popups · after 8
+16. #95 — feat(run): Aurora run panel and run picker · after 10
+
+### 8 — The v1 layout behaviours from the Aurora handoff
+
+Work: [SPEC_V1_LAYOUT.md](features/glyph-aurora/design/SPEC_V1_LAYOUT.md) §1–§11 and §14
+items not in Phase 7: minimum-size message, tree width and hiding while split, tab overflow
+`‹N` and duplicate names, completion anchor shift, run panel scrollback, `‹ ›` scroll
+markers, empty-editor key list, rename preselects the stem, an unmodified run-stop key.
+Open decisions:
+- Does the tree scale with width (SPEC_V1_LAYOUT §1) or stay 28 (design README §2.1)?
+- Which of §14's items are in, and which go to Later?
+
 ## In scope
 
 - Glyph v1 — shipped — [intent](features/glyph-v1/intent.md) ·
   [spec](features/glyph-v1/spec.md)
+- Glyph Aurora — active — [intent](features/glyph-aurora/intent.md) ·
+  [spec](features/glyph-aurora/spec.md)
 
 ## Out
 
@@ -64,6 +102,10 @@ once (spec Verification).
   expanding a folder reads it on the main task (#12); injected `<style>`/`<script>`
   regions re-parse in full on every edit (#24); one bad theme override drops all
   overrides (#17).
+
+- `@` symbol search in the cast palette — deferred 2026-10-07: needs LSP document
+  symbols. Comes back with LSP rename / code actions, or when files and text search
+  aren't enough.
 
 ## Decisions
 

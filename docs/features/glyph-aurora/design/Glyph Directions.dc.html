@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,700;1,400&amp;display=swap" rel="stylesheet">
+<style>html,body{margin:0;background:#060509;color:#a6a2bb}*{box-sizing:border-box}a{color:#b69cff;text-decoration:none}a:hover{color:#f4f2fb}</style>
+</helmet>
+<section style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:15px;line-height:1.55;padding:48px;display:flex;flex-direction:column;gap:32px;background:#060509">
+  <div style="display:flex;flex-direction:column;gap:8px;max-width:1200px">
+    <div style="display:flex;gap:14px;align-items:baseline"><span style="color:#6ee7d8;font-size:22px">✦</span><span style="color:#f4f2fb;font-weight:700;font-size:24px">glyph</span><span style="color:#67627d">turn 2 · enchanted · 160×45 at 1:1 terminal size</span></div>
+    <div style="color:#a6a2bb;text-wrap:pretty">The three chromes again, this time lit. The magic is made the way a terminal can make it: 24-bit colour ramps per cell for glows and auroras, star glyphs (✦ ⋆ ·) in the empty space, and a violet / spectral-teal / moon-gold palette in place of the flat blue. Each is shown at 1:1 terminal size; zoom the canvas to look closer.</div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:56px;align-items:flex-start">
+    <div id="2a" style="display:flex;flex-direction:column;gap:16px">
+      <div style="display:flex;gap:12px;align-items:baseline"><span style="background:#b69cff;color:#120a24;font-weight:700;padding:1px 8px;border-radius:3px">2a</span><span style="color:#f4f2fb;font-weight:700;font-size:18px">Aurora · Float</span><span style="color:#67627d">violet → teal</span></div>
+      <div style="color:#a6a2bb;text-wrap:pretty;max-width:1100px">A thread of aurora light runs under the tabs, brightest under the active pill. The cursor line glows out of the gutter and fades to the right; the active file in the tree glows the same way. Errors print at the line end behind a ◈. The palette, titled cast, has a lit top edge.</div>
+      <div style="display:flex;flex-wrap:wrap;gap:24px"><div data-frame="a2-main" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1f1c2b"></div><div data-frame="a2-pal" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1f1c2b"></div></div>
+    </div>
+    <div id="2b" style="display:flex;flex-direction:column;gap:16px">
+      <div style="display:flex;gap:12px;align-items:baseline"><span style="background:#6ee7d8;color:#04201c;font-weight:700;padding:1px 8px;border-radius:3px">2b</span><span style="color:#f4f2fb;font-weight:700;font-size:18px">Spectral · Rail</span><span style="color:#67627d">teal → violet</span></div>
+      <div style="color:#a6a2bb;text-wrap:pretty;max-width:1100px">The rail uses sigils (◈ files, ✧ search, ▷ run, ◇ problems), and the active one is lit. The active tab is written in gradient ink with a light rule under it. The status line opens on a glowing ✦ glyph block that fades into the bar. The palette is tabbed, and commands are called Spells.</div>
+      <div style="display:flex;flex-wrap:wrap;gap:24px"><div data-frame="b2-main" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1f1c2b"></div><div data-frame="b2-pal" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1f1c2b"></div></div>
+    </div>
+    <div id="2c" style="display:flex;flex-direction:column;gap:16px">
+      <div style="display:flex;gap:12px;align-items:baseline"><span style="background:#a9c6ff;color:#0b1426;font-weight:700;padding:1px 8px;border-radius:3px">2c</span><span style="color:#f4f2fb;font-weight:700;font-size:18px">Starlit · Zen</span><span style="color:#67627d">moon → gold</span></div>
+      <div style="color:#a6a2bb;text-wrap:pretty;max-width:1100px">The empty space on either side of the centred code column holds a faint, fixed star field. It's seeded, so it never flickers, and it disappears below 140 columns. A ✦ marks the active tab. The spotlight palette has a rounded border lit around its whole edge.</div>
+      <div style="display:flex;flex-wrap:wrap;gap:24px"><div data-frame="c2-main" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1f1c2b"></div><div data-frame="c2-pal" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1f1c2b"></div></div>
+    </div>
+  </div>
+</section>
+<section style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:13px;line-height:1.5;padding:40px 48px 64px;display:flex;flex-direction:column;gap:28px;background:#060708;border-top:1px solid #1d2125">
+  <div style="display:flex;flex-direction:column;gap:6px;max-width:1100px">
+    <div style="display:flex;gap:12px;align-items:baseline"><span style="color:#8cc8ff;font-size:18px">◆</span><span style="color:#eef1f4;font-weight:700;font-size:20px">glyph</span><span style="color:#5d6670">turn 1 · three chrome directions · Obsidian palette</span></div>
+    <div style="color:#9aa3ac;text-wrap:pretty">Same file, same cursor, same diagnostics in all three; only the chrome differs.</div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:40px;align-items:flex-start">
+    <div id="1a" style="display:flex;flex-direction:column;gap:14px;width:760px">
+      <div style="display:flex;gap:10px;align-items:baseline"><span style="background:#8cc8ff;color:#06121e;font-weight:700;padding:1px 7px;border-radius:3px">1a</span><span style="color:#eef1f4;font-weight:700;font-size:15px">Float</span></div>
+      <div style="color:#9aa3ac;text-wrap:pretty">Tab pills float on the editor ground. The tree sits on a raised surface with indent guides. Errors print inline at the line end. The status line has no bar. The palette drops from the top.</div>
+      <div data-frame="a-main" data-scale="760" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1d2125"></div>
+      <div data-frame="a-pal" data-scale="760" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1d2125"></div>
+    </div>
+    <div id="1b" style="display:flex;flex-direction:column;gap:14px;width:760px">
+      <div style="display:flex;gap:10px;align-items:baseline"><span style="background:#8cc8ff;color:#06121e;font-weight:700;padding:1px 7px;border-radius:3px">1b</span><span style="color:#eef1f4;font-weight:700;font-size:15px">Rail</span></div>
+      <div style="color:#9aa3ac;text-wrap:pretty">Activity rail plus tree, flat tabs with breadcrumbs, a solid status bar, and a tabbed palette.</div>
+      <div data-frame="b-main" data-scale="760" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1d2125"></div>
+      <div data-frame="b-pal" data-scale="760" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1d2125"></div>
+    </div>
+    <div id="1c" style="display:flex;flex-direction:column;gap:14px;width:760px">
+      <div style="display:flex;gap:10px;align-items:baseline"><span style="background:#8cc8ff;color:#06121e;font-weight:700;padding:1px 7px;border-radius:3px">1c</span><span style="color:#eef1f4;font-weight:700;font-size:15px">Zen</span></div>
+      <div style="color:#9aa3ac;text-wrap:pretty">A tree drawer, a centred code column, status in the corners, and a spotlight palette.</div>
+      <div data-frame="c-main" data-scale="760" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1d2125"></div>
+      <div data-frame="c-pal" data-scale="760" style="position:relative;overflow:hidden;box-shadow:0 0 0 1px #1d2125"></div>
+    </div>
+  </div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  componentDidMount() {
+    const load = src => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+    (async () => {
+      if (!window.Griffin) { await load('griffin-themes.js'); await load('griffin-content.js'); await load('griffin-engine.js'); }
+      if (!window.GlyphDirections) await load('glyph-directions.js');
+      if (!window.GlyphMagic) await load('glyph-magic.js');
+      try { await document.fonts.load('14px "JetBrains Mono"'); await document.fonts.load('bold 14px "JetBrains Mono"'); await document.fonts.load('italic 14px "JetBrains Mono"'); } catch (e) {}
+      const ctx = document.createElement('canvas').getContext('2d'); ctx.font = '14px "JetBrains Mono", ui-monospace, monospace';
+      const cw = ctx.measureText('MMMMMMMMMM').width / 10, lh = 18, W = 160, H = 45;
+      const D = window.GlyphDirections, M = window.GlyphMagic;
+      document.querySelectorAll('[data-frame]').forEach(el => {
+        const k = el.dataset.frame; let g, th;
+        if (M.frames[k]) { g = M.frames[k][0](W, H); th = M.TH[M.frames[k][1]]; } else { g = D.frames[k](W, H); th = D.THEME; }
+        const fw = el.dataset.scale ? +el.dataset.scale : W * cw, sc = fw / (W * cw);
+        el.innerHTML = '<div style="position:absolute;left:0;top:0;width:' + (W * cw) + 'px;transform:scale(' + sc + ');transform-origin:0 0;font-size:14px;font-variant-ligatures:none;font-family:\'JetBrains Mono\',monospace">' + window.Griffin.toHTML(g, th, { cw, lh }) + '</div>';
+        el.style.width = fw + 'px'; el.style.height = Math.ceil(H * lh * sc) + 'px';
+      });
+    })();
+  }
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
