@@ -11,10 +11,14 @@ const WAIT: Duration = Duration::from_secs(5);
 /// With the tree hidden the two splits share 100 columns: 0..50, the `│` in
 /// column 50, then 51..100.
 const DIVIDER: usize = 50;
-/// With the tree showing they share the 69 columns right of it: 31..65, the `│` in
-/// column 65, then 66..100.
-const TREE_DIVIDER: usize = 65;
-const LEFT_X: u16 = 31;
+/// With the tree showing they share the 71 columns right of it and the blank
+/// column after it: 29..64, the `│` in column 64, then 65..100.
+const TREE_DIVIDER: usize = 64;
+const LEFT_X: u16 = 29;
+const LEFT: usize = LEFT_X as usize;
+/// The tree rows of `a.txt` and `b.txt`, below its brand row.
+const A_ROW: u16 = 3;
+const B_ROW: u16 = 4;
 
 /// A temp folder holding `a.txt` ("alpha") and `b.txt` ("bravo").
 fn project() -> TempDir {
@@ -35,7 +39,7 @@ fn open_file(dir: &TempDir) -> Glyph {
 fn open_folder(dir: &TempDir) -> Glyph {
     let mut glyph = Glyph::spawn_in(dir.path(), &["."]);
     glyph.wait_for_text("b.txt", START);
-    glyph.click(3, 1);
+    glyph.click(3, A_ROW);
     glyph.wait_for_text("1 │ alpha", WAIT);
     glyph
 }
@@ -120,13 +124,13 @@ fn f6_cycles_tree_left_right_and_skips_the_hidden_tree() {
     let mut glyph = open_folder(&dir);
     glyph.send_keys("alt+v");
     // b.txt opens in the focused right split, which then shows it.
-    glyph.click(3, 2);
-    wait_for_bars(&glyph, 31, TREE_DIVIDER, " a.txt", " a.txt  b.txt");
+    glyph.click(3, B_ROW);
+    wait_for_bars(&glyph, LEFT, TREE_DIVIDER, " a.txt", " a.txt  b.txt");
     glyph.wait_for_text("1 │ bravo", WAIT);
 
     // From the right split F6 wraps to the tree, where typing edits nothing...
     glyph.send_keys("f6");
-    glyph.wait_for_cursor(0, 2, WAIT);
+    glyph.wait_for_cursor(2, B_ROW, WAIT);
     glyph.type_text("0");
     // ...then the left split, then the right one.
     glyph.send_keys("f6");
@@ -136,7 +140,7 @@ fn f6_cycles_tree_left_right_and_skips_the_hidden_tree() {
     glyph.type_text("2");
     glyph.wait_for_text("1 │ 2bravo", WAIT);
     glyph.send_keys("f6");
-    glyph.wait_for_cursor(0, 2, WAIT);
+    glyph.wait_for_cursor(2, B_ROW, WAIT);
 
     // With the tree hidden F6 goes left, right, left.
     glyph.send_keys("ctrl+b");
@@ -158,21 +162,21 @@ fn a_click_focuses_its_split_and_tab_and_open_actions_go_there() {
     let dir = project();
     let mut glyph = open_folder(&dir);
     glyph.send_keys("alt+v");
-    wait_for_bars(&glyph, 31, TREE_DIVIDER, " a.txt", " a.txt");
+    wait_for_bars(&glyph, LEFT, TREE_DIVIDER, " a.txt", " a.txt");
 
     // A click in the left editor focuses it: a new tab opens there.
     glyph.click(LEFT_X + 10, 5);
     glyph.send_keys("ctrl+n");
-    wait_for_bars(&glyph, 31, TREE_DIVIDER, " a.txt  untitled", " a.txt");
+    wait_for_bars(&glyph, LEFT, TREE_DIVIDER, " a.txt  untitled", " a.txt");
     glyph.wait_for_reversed(0, " untitled ", WAIT);
 
     // A click in the right editor focuses that one: the tree opens b.txt there.
     glyph.click(80, 5);
     glyph.wait_for_reversed(0, " a.txt ", WAIT);
-    glyph.click(3, 2);
+    glyph.click(3, B_ROW);
     wait_for_bars(
         &glyph,
-        31,
+        LEFT,
         TREE_DIVIDER,
         " a.txt  untitled",
         " a.txt  b.txt",
@@ -183,11 +187,11 @@ fn a_click_focuses_its_split_and_tab_and_open_actions_go_there() {
     glyph.send_keys("alt+,");
     glyph.wait_for_reversed(0, " a.txt ", WAIT);
     glyph.wait_for_screen("right split back on a.txt", WAIT, |screen| {
-        halves(screen, 1, 31, TREE_DIVIDER) == (" 1 │".into(), " 1 │ alpha".into())
+        halves(screen, 1, LEFT, TREE_DIVIDER) == (" 1 │".into(), " 1 │ alpha".into())
     });
     // Ctrl+W closes the right split's tab; the left split keeps its own a.txt tab.
     glyph.send_keys("ctrl+w");
-    wait_for_bars(&glyph, 31, TREE_DIVIDER, " a.txt  untitled", " b.txt");
+    wait_for_bars(&glyph, LEFT, TREE_DIVIDER, " a.txt  untitled", " b.txt");
 
     // A click on the left tab bar focuses the left split too.
     let a = glyph.text_col(0, "a.txt").expect("left a.txt tab");
@@ -197,7 +201,7 @@ fn a_click_focuses_its_split_and_tab_and_open_actions_go_there() {
     // left it on the last line.
     glyph.type_text("z");
     glyph.wait_for_text("2 │ z", WAIT);
-    wait_for_bars(&glyph, 31, TREE_DIVIDER, " a.txt ●  untitled", " b.txt");
+    wait_for_bars(&glyph, LEFT, TREE_DIVIDER, " a.txt ●  untitled", " b.txt");
 }
 
 #[test]

@@ -47,7 +47,9 @@ use crate::ui::run::{RunStatus, RunView, render_run_panel};
 use crate::ui::search::{ProjectSearch, Searched};
 use crate::ui::status::{Status, Tone, render_status};
 use crate::ui::tabs::{TabLabel, render_tabs, tab_at};
-use crate::ui::tree::{TREE_WIDTH, render_divider, render_tree};
+use crate::ui::tree::{
+    TREE_WIDTH, TreeMarks, nodes_area, project_label, render_divider, render_tree,
+};
 use crate::view::{Marks, View, cursor_cell, render_buffer};
 use crate::workspace::ops::{self, Trash};
 use crate::workspace::walk::{list_files, relative_name};
@@ -689,6 +691,9 @@ pub struct App {
     prompt: Option<Prompt>,
     /// The project's file tree, read from disk as folders expand.
     tree: Tree,
+    /// The tree's root as its brand row names it; worked out once, as it reads
+    /// the home folder from the environment.
+    project: String,
     tree_visible: bool,
     focus: Focus,
     /// The prompt bar, while it's asking for a name; it takes every key.
@@ -793,6 +798,7 @@ impl App {
             // Startup only has something to say when a config or file failed.
             message_tone: Tone::Err,
             tree: Tree::new(&launch.root),
+            project: project_label(&launch.root, std::env::home_dir().as_deref()),
             tree_visible: launch.show_tree,
             // With only a folder open there's nothing to edit yet.
             focus: if launch.show_tree {
@@ -1474,7 +1480,7 @@ impl App {
 
     fn follow_tree(&mut self) {
         if let Some(area) = self.panes().tree {
-            self.tree.follow(usize::from(area.height));
+            self.tree.follow(usize::from(nodes_area(area).height));
         }
     }
 
@@ -2425,12 +2431,14 @@ impl App {
     fn handle_tree_mouse(&mut self, mouse: MouseEvent, area: Rect) {
         // Whatever the editor was tracking for a drag or double-click is over.
         self.reset_mouse();
-        let height = usize::from(area.height);
+        let nodes = nodes_area(area);
+        let height = usize::from(nodes.height);
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.focus = Focus::Tree;
-                let line = usize::from(mouse.row.saturating_sub(area.y));
-                if let Some(index) = self.tree.row_at(line) {
+                // The brand rows above the nodes only take focus.
+                let row = (mouse.row >= nodes.y).then(|| usize::from(mouse.row - nodes.y));
+                if let Some(index) = row.and_then(|line| self.tree.row_at(line)) {
                     self.tree.select(index);
                     self.activate_tree_row();
                     self.follow_tree();
@@ -2888,10 +2896,22 @@ impl App {
         if let Some(divider) = panes.split_divider {
             render_divider(theme, divider, frame);
         }
-        if let (Some(tree), Some(divider)) = (panes.tree, panes.divider) {
+        if let Some(tree) = panes.tree {
             let focused = self.focus == Focus::Tree;
-            let selected = render_tree(theme, &self.tree, focused, tree, frame);
-            render_divider(theme, divider, frame);
+            let active = self.buffer().path.as_deref().map(absolute);
+            let dirty: Vec<PathBuf> = self
+                .tabs
+                .docs
+                .iter()
+                .filter(|doc| doc.buffer.dirty)
+                .filter_map(|doc| doc.buffer.path.as_deref().map(absolute))
+                .collect();
+            let marks = TreeMarks {
+                project: &self.project,
+                active: active.as_deref(),
+                dirty: &dirty,
+            };
+            let selected = render_tree(theme, &self.tree, &marks, focused, tree, frame);
             // The cursor marks the focused pane; `render_buffer` put it in the editor.
             if focused && let Some(at) = selected {
                 frame.set_cursor_position(at);
@@ -3009,15 +3029,15 @@ struct SplitArea {
     editor: Rect,
 }
 
-/// Where each part of the screen goes: the tree (when shown) from row 1 down, a
-/// `│` divider, then the editor splits, each with its tab bar on row 0 and a `│`
+/// Where each part of the screen goes: the tree (when shown) from row 0 down, a
+/// blank column, then the editor splits, each with its tab bar on row 0 and a `│`
 /// between the two; below them the run panel (while shown, the full width and
 /// about 30% of the height), the prompt bar (while open) and a one-row status
 /// line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Panes {
+    /// The whole column, brand rows included (see `nodes_area`).
     tree: Option<Rect>,
-    divider: Option<Rect>,
     /// One per split, left to right.
     splits: Vec<SplitArea>,
     /// Between the two splits, while there are two.
@@ -3049,19 +3069,18 @@ impl Panes {
         .areas(screen);
         let run = run_visible.then_some(run);
         let bar = bar_open.then_some(bar);
-        let (tree, divider, right) = if tree_visible {
-            let [tree, divider, right] = Layout::horizontal([
+        let (tree, right) = if tree_visible {
+            // No divider: the column after the tree is editor ground, which the
+            // tree's `surface` stands out against (README §2).
+            let [tree, _, right] = Layout::horizontal([
                 Constraint::Length(TREE_WIDTH),
                 Constraint::Length(1),
                 Constraint::Min(0),
             ])
             .areas(main);
-            // The tree starts below the tab bar's row; the divider runs through it.
-            let [_, tree] =
-                Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(tree);
-            (Some(tree), Some(divider), right)
+            (Some(tree), right)
         } else {
-            (None, None, main)
+            (None, main)
         };
         let (columns, split_divider) = if splits > 1 {
             let [left, divider, right] = Layout::horizontal([
@@ -3084,7 +3103,6 @@ impl Panes {
             .collect();
         Panes {
             tree,
-            divider,
             splits,
             split_divider,
             run,
@@ -4065,12 +4083,11 @@ world",
     }
 
     #[test]
-    fn the_tree_takes_31_columns_from_the_editor_while_shown() -> Result<()> {
+    fn the_tree_takes_29_columns_from_the_editor_while_shown() -> Result<()> {
         let (_dir, mut app) = project()?;
-        assert_eq!(app.panes().splits[0].editor, Rect::new(31, 1, 69, 28));
-        assert_eq!(app.panes().splits[0].tabs, Rect::new(31, 0, 69, 1));
-        assert_eq!(app.panes().tree, Some(Rect::new(0, 1, 30, 28)));
-        assert_eq!(app.panes().divider, Some(Rect::new(30, 0, 1, 29)));
+        assert_eq!(app.panes().splits[0].editor, Rect::new(29, 1, 71, 28));
+        assert_eq!(app.panes().splits[0].tabs, Rect::new(29, 0, 71, 1));
+        assert_eq!(app.panes().tree, Some(Rect::new(0, 0, 28, 29)));
         press(&mut app, &["ctrl+b"]);
         assert_eq!(app.panes().splits[0].editor, Rect::new(0, 1, 100, 28));
         assert_eq!(app.panes().tree, None);
