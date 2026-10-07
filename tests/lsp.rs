@@ -231,6 +231,49 @@ fn missing_server_keeps_editing() {
     assert!(status.contains("saved a.rs"), "{status:?}");
 }
 
+/// npm installs servers as `.cmd` shims; Griffin has to find one through
+/// `PATHEXT` and start it, as `--health` already finds it.
+#[cfg(windows)]
+#[test]
+fn a_cmd_server_on_path_starts() {
+    let project = Project::new(None);
+    let bin = tempfile::tempdir().expect("create shim dir");
+    fs::write(
+        bin.path().join("griffin-cmd-server.cmd"),
+        format!(
+            "@\"{}\" %*
+",
+            fake()
+        ),
+    )
+    .expect("write shim");
+    let mut path = OsString::from(bin.path());
+    if let Some(rest) = std::env::var_os("PATH") {
+        path.push(";");
+        path.push(rest);
+    }
+    let mut env = project.env();
+    env.push(("PATH", path));
+    let mut griffin = Griffin::spawn_in_with_config_and_env(
+        project.dir.path(),
+        &rust_server("griffin-cmd-server"),
+        &env,
+        &["a.rs"],
+    );
+    griffin.wait_for_text("Ln 1, Col 1", START);
+    project.wait_for(&griffin, "textDocument/didOpen", "a.rs");
+    let log = project.log();
+    assert!(
+        log.iter().any(|(_, m)| method(m) == "initialize"),
+        "{log:#?}"
+    );
+    let status = status_line(&griffin);
+    assert!(!status.contains("server not found"), "{status:?}");
+    // Quit cleanly so the fake behind the shim exits too.
+    griffin.send_keys("ctrl+q");
+    griffin.wait_exit(WAIT);
+}
+
 #[test]
 fn crashed_server_keeps_editing() {
     let project = Project::new(Some(r#"{"exit_on": "textDocument/didChange"}"#));

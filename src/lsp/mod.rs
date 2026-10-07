@@ -616,7 +616,8 @@ impl Lsp {
         let events = self.events.clone()?;
         let id = self.next_server;
         self.next_server += 1;
-        let client = match transport::spawn(id, &command, &config.args, root, events) {
+        let program = servers::program(&command);
+        let client = match transport::spawn(id, &program, &config.args, root, events) {
             Ok(connection) => {
                 let name = root.file_name().map_or_else(
                     || root.display().to_string(),
