@@ -1,7 +1,7 @@
 //! The project search panel: a centred card with a query line, the case and regex
 //! toggles, and every line in the project the last search found, as
 //! `path:line: text`. Enter searches; once the hits are in, Enter opens one. Tab
-//! moves to the Replace field beside the query, and Alt+Enter replaces the hits
+//! moves to the Replace field beside the query, and Alt+A replaces the hits
 //! in every listed file.
 
 use ratatui::Frame;
@@ -27,7 +27,7 @@ pub enum Searched {
     Start(Query),
     /// Open this hit's file at its line and column.
     Open(Hit),
-    /// Alt+Enter: replace the listed hits' query with `with` in these files, the
+    /// Alt+A: replace the listed hits' query with `with` in these files, the
     /// listed ones, by the paths the list shows.
     Replace {
         query: Query,
@@ -41,7 +41,7 @@ pub enum Searched {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectSearch {
     query: PromptBar,
-    /// What Alt+Enter puts in place of each match.
+    /// What Alt+A puts in place of each match.
     replace: PromptBar,
     /// Keys go to the Replace field instead of the query; Tab moves between them.
     in_replace: bool,
@@ -157,7 +157,7 @@ impl ProjectSearch {
     /// Up and Down move through the hits, Alt+C and Alt+R toggle case and regex
     /// (searching again once a search has run), Enter searches or, when the hits
     /// listed are for what's typed, opens the selected one; Tab moves between the
-    /// query and the Replace field; Alt+Enter replaces; Esc closes.
+    /// query and the Replace field; Alt+A replaces; Esc closes.
     pub fn handle(&mut self, input: Input) -> Option<Searched> {
         match input {
             Input::Action(Action::Move(Motion::Up)) => {
@@ -220,7 +220,7 @@ impl ProjectSearch {
         None
     }
 
-    /// Alt+Enter: once a search has finished with hits, replace them in every
+    /// Alt+A: once a search has finished with hits, replace them in every
     /// file listed, with what the Replace field holds.
     fn replace_all(&self) -> Option<Searched> {
         let query = self.searched.clone()?;
@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_moves_to_replace_and_alt_enter_asks_for_the_listed_files() {
+    fn tab_moves_to_replace_and_alt_a_asks_for_the_listed_files() {
         let mut search = ProjectSearch::new();
         let replace = Input::Action(Action::ProjectReplace);
         type_query(&mut search, "TODO");

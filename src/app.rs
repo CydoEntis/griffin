@@ -1031,18 +1031,19 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) {
         // Tree letters are only actions when nothing else is reading keys as text.
-        let scope =
-            if (self.find.is_some() || self.project_search.is_some()) && self.prompt.is_none() {
-                Scope::Find
-            } else if self.focus == Focus::Tree
-                && self.prompt.is_none()
-                && self.name_prompt.is_none()
-                && self.picker.is_none()
-            {
-                Scope::Tree
-            } else {
-                Scope::Global
-            };
+        let scope = if self.project_search.is_some() && self.prompt.is_none() {
+            Scope::Search
+        } else if self.find.is_some() && self.prompt.is_none() {
+            Scope::Find
+        } else if self.focus == Focus::Tree
+            && self.prompt.is_none()
+            && self.name_prompt.is_none()
+            && self.picker.is_none()
+        {
+            Scope::Tree
+        } else {
+            Scope::Global
+        };
         let input = self.keymap.resolve_in(&key, scope);
         // A release is no key: on Windows every press is followed by one, and a
         // hover reply landing between Alt+K's press and release would otherwise
@@ -1854,7 +1855,7 @@ impl App {
         }
     }
 
-    /// Alt+Enter in project search: counts what would change and asks first.
+    /// Alt+A in project search: counts what would change and asks first.
     fn ask_project_replace(&mut self, query: Query, with: String, files: Vec<String>) {
         let mut matches = 0;
         let mut kept = Vec::new();
@@ -4392,7 +4393,7 @@ needle
     fn replace_todo(app: &mut App) {
         press(app, &["alt+f", "t", "o", "d", "o", "enter"]);
         assert_eq!(panel(app).status(), "3 hits");
-        press(app, &["tab", "d", "o", "n", "e", "alt+enter"]);
+        press(app, &["tab", "d", "o", "n", "e", "alt+a"]);
     }
 
     #[test]

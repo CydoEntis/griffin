@@ -70,7 +70,7 @@ fn search(glyph: &mut Glyph, query: &str) {
     glyph.send_keys("enter");
 }
 
-/// Searches for `todo`, Tab, `done` in the Replace field, then Alt+Enter.
+/// Searches for `todo`, Tab, `done` in the Replace field, then Alt+A.
 fn replace_todo(glyph: &mut Glyph) {
     search(glyph, "todo");
     wait_for_status(glyph, "3 hits");
@@ -80,7 +80,7 @@ fn replace_todo(glyph: &mut Glyph) {
     glyph.wait_for_cursor(REPLACE_X + 9, QUERY_ROW, WAIT);
     glyph.type_text("done");
     glyph.wait_for_text("Replace: done", WAIT);
-    glyph.send_keys("alt+enter");
+    glyph.send_keys("alt+a");
     glyph.wait_for_text("Replace 4 matches in 2 files? y / n", WAIT);
 }
 
