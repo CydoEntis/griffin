@@ -78,7 +78,7 @@ pub enum Action {
     ProjectSearch,
     /// Project search only: asks, then replaces the matches in every listed file.
     ProjectReplace,
-    /// Runs a `[[run]]` command from `.griffin.toml`, asking which when several.
+    /// Runs a `[[run]]` command from `.glyph.toml`, asking which when several.
     Run,
     /// Shows or hides the run panel.
     ToggleRunPanel,

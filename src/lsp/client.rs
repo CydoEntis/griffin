@@ -1,4 +1,4 @@
-//! One language server, seen from Griffin: its lifecycle, request ids, and the
+//! One language server, seen from Glyph: its lifecycle, request ids, and the
 //! document notifications it is sent. Nothing here waits on the server; replies
 //! arrive later through `handle` (ADR-0001).
 
@@ -45,7 +45,7 @@ pub struct Client {
     next_id: i64,
     /// Requests sent and not yet answered, by id, with their method.
     pending: HashMap<i64, String>,
-    /// Griffin asked it to stop, so its exit is no news.
+    /// Glyph asked it to stop, so its exit is no news.
     shutting_down: bool,
     /// The characters that open completion when typed, from the server's
     /// `completionProvider`; empty until it's initialized, or when it has none.
@@ -116,7 +116,7 @@ impl Client {
                         content_format: Some(vec![MarkupKind::PlainText, MarkupKind::Markdown]),
                     }),
                     // No snippets: tab stops aren't supported, so plain insert
-                    // text is what Griffin wants (snippets sent anyway are
+                    // text is what Glyph wants (snippets sent anyway are
                     // flattened).
                     completion: Some(CompletionClientCapabilities {
                         completion_item: Some(CompletionItemCapability {
@@ -139,7 +139,7 @@ impl Client {
                 }]
             }),
             client_info: Some(ClientInfo {
-                name: "griffin".into(),
+                name: "glyph".into(),
                 version: Some(env!("CARGO_PKG_VERSION").into()),
             }),
             ..Default::default()
@@ -252,7 +252,7 @@ impl Client {
         None
     }
 
-    /// The process is gone. Unless Griffin stopped it, that's a crash worth a
+    /// The process is gone. Unless Glyph stopped it, that's a crash worth a
     /// status line.
     pub fn exited(&mut self, code: Option<i32>) -> Option<String> {
         let was_failed = self.state == State::Failed;

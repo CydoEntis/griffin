@@ -125,7 +125,7 @@ pub fn render_run_panel(theme: &Theme, run: Option<&RunView>, area: Rect, frame:
             out.set_stringn(
                 body.x + 1,
                 body.y,
-                "F5 runs a command from .griffin.toml",
+                "F5 runs a command from .glyph.toml",
                 width.saturating_sub(1),
                 Style::new().fg(theme.muted),
             );

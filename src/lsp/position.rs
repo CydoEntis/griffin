@@ -1,4 +1,4 @@
-//! Where Griffin's char indices meet the protocol: LSP positions count UTF-16 code
+//! Where Glyph's char indices meet the protocol: LSP positions count UTF-16 code
 //! units within a line, and documents are named by `file://` URIs.
 
 use std::path::{Path, PathBuf};

@@ -1,11 +1,11 @@
 [package]
-name = "griffin"
+name = "glyph"
 version = "0.1.0"
 edition = "2024"
 description = "A non-modal TUI text editor"
 
 [[bin]]
-name = "griffin"
+name = "glyph"
 path = "src/main.rs"
 
 [dependencies]

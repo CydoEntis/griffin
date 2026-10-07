@@ -1,4 +1,4 @@
-//! A scripted language server for Griffin's LSP tests. It speaks JSON-RPC over
+//! A scripted language server for Glyph's LSP tests. It speaks JSON-RPC over
 //! stdio with `Content-Length` framing, like a real server, and:
 //!
 //! - appends every message it receives to the file named by `FAKE_LSP_LOG`, one

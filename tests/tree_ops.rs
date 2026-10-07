@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use harness::{Griffin, ROWS};
+use harness::{Glyph, ROWS};
 
 const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(5);
@@ -38,15 +38,15 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-/// A temp copy of `tests/fixtures/project` with griffin open on it, cwd inside it
+/// A temp copy of `tests/fixtures/project` with glyph open on it, cwd inside it
 /// so paths stay short.
-fn open_copy() -> (tempfile::TempDir, Griffin) {
+fn open_copy() -> (tempfile::TempDir, Glyph) {
     let dir = tempfile::tempdir().expect("create temp dir");
     copy_dir(Path::new("tests/fixtures/project"), dir.path());
-    let griffin = Griffin::spawn_in(dir.path(), &["."]);
-    griffin.wait_for_text("README.md", START);
-    wait_for_tree(&griffin, TOP);
-    (dir, griffin)
+    let glyph = Glyph::spawn_in(dir.path(), &["."]);
+    glyph.wait_for_text("README.md", START);
+    wait_for_tree(&glyph, TOP);
+    (dir, glyph)
 }
 
 /// The tree pane's rows from row 1 (row 0 belongs to the tab bar) down to the first
@@ -66,45 +66,45 @@ fn tree_rows(screen: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn wait_for_tree(griffin: &Griffin, expected: &[&str]) {
-    griffin.wait_for_screen(&format!("tree rows {expected:?}"), WAIT, |screen| {
+fn wait_for_tree(glyph: &Glyph, expected: &[&str]) {
+    glyph.wait_for_screen(&format!("tree rows {expected:?}"), WAIT, |screen| {
         tree_rows(screen) == expected
     });
 }
 
-fn wait_for_selected(griffin: &Griffin, row: u16, text: &str) {
-    griffin.wait_for_reversed(row, &format!("{text:<TREE$}"), WAIT);
+fn wait_for_selected(glyph: &Glyph, row: u16, text: &str) {
+    glyph.wait_for_reversed(row, &format!("{text:<TREE$}"), WAIT);
 }
 
-fn wait_for_bar(griffin: &Griffin, text: &str) {
-    griffin.wait_for_screen(&format!("prompt bar {text:?}"), WAIT, |screen| {
+fn wait_for_bar(glyph: &Glyph, text: &str) {
+    glyph.wait_for_screen(&format!("prompt bar {text:?}"), WAIT, |screen| {
         screen[BAR].trim_end() == text
     });
 }
 
-fn wait_for_status(griffin: &Griffin, text: &str) {
-    griffin.wait_for_screen(&format!("status with {text:?}"), WAIT, |screen| {
+fn wait_for_status(glyph: &Glyph, text: &str) {
+    glyph.wait_for_screen(&format!("status with {text:?}"), WAIT, |screen| {
         screen[STATUS].contains(text)
     });
 }
 
 #[test]
 fn a_creates_a_file_beside_the_selected_file_and_opens_it() {
-    let (dir, mut griffin) = open_copy();
+    let (dir, mut glyph) = open_copy();
     for _ in 0..4 {
-        griffin.send_keys("down");
+        glyph.send_keys("down");
     }
-    wait_for_selected(&griffin, 5, "  README.md");
+    wait_for_selected(&glyph, 5, "  README.md");
 
-    griffin.send_keys("a");
-    wait_for_bar(&griffin, "New file:");
-    griffin.wait_for_cursor(10, BAR as u16, WAIT);
-    griffin.type_text("notes.md");
-    wait_for_bar(&griffin, "New file: notes.md");
-    griffin.send_keys("enter");
+    glyph.send_keys("a");
+    wait_for_bar(&glyph, "New file:");
+    glyph.wait_for_cursor(10, BAR as u16, WAIT);
+    glyph.type_text("notes.md");
+    wait_for_bar(&glyph, "New file: notes.md");
+    glyph.send_keys("enter");
 
     wait_for_tree(
-        &griffin,
+        &glyph,
         &[
             "▸ docs",
             "▸ src",
@@ -114,13 +114,13 @@ fn a_creates_a_file_beside_the_selected_file_and_opens_it() {
             "  README.md",
         ],
     );
-    wait_for_selected(&griffin, 4, "  notes.md");
+    wait_for_selected(&glyph, 4, "  notes.md");
     // The bar is gone and the editor shows the new, empty file.
-    griffin.wait_for_screen("the bar closed", WAIT, |screen| {
+    glyph.wait_for_screen("the bar closed", WAIT, |screen| {
         !screen[BAR].contains("New file")
     });
-    wait_for_status(&griffin, "notes.md  Ln 1, Col 1");
-    let screen = griffin.screen();
+    wait_for_status(&glyph, "notes.md  Ln 1, Col 1");
+    let screen = glyph.screen();
     let editor: String = screen[1].chars().skip(TREE + 1).collect();
     assert_eq!(editor.trim_end(), " 1 │", "{screen:#?}");
     assert_eq!(
@@ -129,25 +129,25 @@ fn a_creates_a_file_beside_the_selected_file_and_opens_it() {
     );
 
     // Typing goes into the new file.
-    griffin.type_text("hi");
-    griffin.send_keys("ctrl+s");
-    griffin.wait_for_files("notes.md saved", WAIT, || {
+    glyph.type_text("hi");
+    glyph.send_keys("ctrl+s");
+    glyph.wait_for_files("notes.md saved", WAIT, || {
         fs::read_to_string(dir.path().join("notes.md")).is_ok_and(|text| text == "hi")
     });
 }
 
 #[test]
 fn a_and_shift_a_create_inside_the_selected_folder() {
-    let (dir, mut griffin) = open_copy();
-    wait_for_selected(&griffin, 1, "▸ docs");
+    let (dir, mut glyph) = open_copy();
+    wait_for_selected(&glyph, 1, "▸ docs");
 
-    griffin.send_keys("a");
-    wait_for_bar(&griffin, "New file:");
-    griffin.type_text("new.md");
-    griffin.send_keys("enter");
+    glyph.send_keys("a");
+    wait_for_bar(&glyph, "New file:");
+    glyph.type_text("new.md");
+    glyph.send_keys("enter");
     // The folder opens to show the new file, which is selected.
     wait_for_tree(
-        &griffin,
+        &glyph,
         &[
             "▾ docs",
             "    guide.md",
@@ -158,17 +158,17 @@ fn a_and_shift_a_create_inside_the_selected_folder() {
             "  README.md",
         ],
     );
-    wait_for_selected(&griffin, 3, "    new.md");
+    wait_for_selected(&glyph, 3, "    new.md");
     assert!(dir.path().join("docs").join("new.md").is_file());
 
     // Back in the tree, Shift+A makes a folder next to the selected file.
-    griffin.send_keys("ctrl+e");
-    griffin.send_keys("shift+a");
-    wait_for_bar(&griffin, "New folder:");
-    griffin.type_text("drafts");
-    griffin.send_keys("enter");
+    glyph.send_keys("ctrl+e");
+    glyph.send_keys("shift+a");
+    wait_for_bar(&glyph, "New folder:");
+    glyph.type_text("drafts");
+    glyph.send_keys("enter");
     wait_for_tree(
-        &griffin,
+        &glyph,
         &[
             "▾ docs",
             "  ▸ drafts",
@@ -180,31 +180,31 @@ fn a_and_shift_a_create_inside_the_selected_folder() {
             "  README.md",
         ],
     );
-    wait_for_selected(&griffin, 2, "  ▸ drafts");
+    wait_for_selected(&glyph, 2, "  ▸ drafts");
     assert!(dir.path().join("docs").join("drafts").is_dir());
 }
 
 #[test]
 fn r_renames_and_the_open_buffer_follows() {
-    let (dir, mut griffin) = open_copy();
+    let (dir, mut glyph) = open_copy();
     for _ in 0..3 {
-        griffin.send_keys("down");
+        glyph.send_keys("down");
     }
-    griffin.send_keys("enter");
-    griffin.wait_for_text("notes for the tree test", WAIT);
+    glyph.send_keys("enter");
+    glyph.wait_for_text("notes for the tree test", WAIT);
 
-    griffin.send_keys("ctrl+e");
-    griffin.send_keys("r");
-    wait_for_bar(&griffin, "Rename: notes.txt");
+    glyph.send_keys("ctrl+e");
+    glyph.send_keys("r");
+    wait_for_bar(&glyph, "Rename: notes.txt");
     for _ in 0..3 {
-        griffin.send_keys("backspace");
+        glyph.send_keys("backspace");
     }
-    griffin.type_text("md");
-    wait_for_bar(&griffin, "Rename: notes.md");
-    griffin.send_keys("enter");
+    glyph.type_text("md");
+    wait_for_bar(&glyph, "Rename: notes.md");
+    glyph.send_keys("enter");
 
     wait_for_tree(
-        &griffin,
+        &glyph,
         &[
             "▸ docs",
             "▸ src",
@@ -213,15 +213,15 @@ fn r_renames_and_the_open_buffer_follows() {
             "  README.md",
         ],
     );
-    wait_for_selected(&griffin, 4, "  notes.md");
-    wait_for_status(&griffin, "renamed to notes.md");
+    wait_for_selected(&glyph, 4, "  notes.md");
+    wait_for_status(&glyph, "renamed to notes.md");
     assert!(!dir.path().join("notes.txt").exists());
 
     // The buffer now belongs to notes.md: saving writes there.
-    griffin.send_keys("ctrl+e");
-    griffin.type_text("x");
-    griffin.send_keys("ctrl+s");
-    griffin.wait_for_files("notes.md saved", WAIT, || {
+    glyph.send_keys("ctrl+e");
+    glyph.type_text("x");
+    glyph.send_keys("ctrl+s");
+    glyph.wait_for_files("notes.md saved", WAIT, || {
         fs::read_to_string(dir.path().join("notes.md"))
             .is_ok_and(|text| text.starts_with("xnotes for the tree test"))
     });
@@ -230,42 +230,42 @@ fn r_renames_and_the_open_buffer_follows() {
 
 #[test]
 fn an_existing_or_invalid_name_changes_nothing() {
-    let (dir, mut griffin) = open_copy();
+    let (dir, mut glyph) = open_copy();
     let notes = fs::read(dir.path().join("notes.txt")).expect("read notes");
     for _ in 0..4 {
-        griffin.send_keys("down");
+        glyph.send_keys("down");
     }
-    wait_for_selected(&griffin, 5, "  README.md");
+    wait_for_selected(&glyph, 5, "  README.md");
 
-    griffin.send_keys("a");
-    wait_for_bar(&griffin, "New file:");
-    griffin.type_text("notes.txt");
-    griffin.send_keys("enter");
-    wait_for_status(&griffin, "notes.txt already exists");
-    wait_for_tree(&griffin, TOP);
-    wait_for_selected(&griffin, 5, "  README.md");
+    glyph.send_keys("a");
+    wait_for_bar(&glyph, "New file:");
+    glyph.type_text("notes.txt");
+    glyph.send_keys("enter");
+    wait_for_status(&glyph, "notes.txt already exists");
+    wait_for_tree(&glyph, TOP);
+    wait_for_selected(&glyph, 5, "  README.md");
     assert_eq!(
         fs::read(dir.path().join("notes.txt")).expect("read notes"),
         notes
     );
 
-    griffin.send_keys("a");
-    wait_for_bar(&griffin, "New file:");
-    griffin.type_text("bad/name");
-    griffin.send_keys("enter");
-    wait_for_status(&griffin, "invalid name");
-    wait_for_tree(&griffin, TOP);
+    glyph.send_keys("a");
+    wait_for_bar(&glyph, "New file:");
+    glyph.type_text("bad/name");
+    glyph.send_keys("enter");
+    wait_for_status(&glyph, "invalid name");
+    wait_for_tree(&glyph, TOP);
 
     // Renaming onto another entry is refused too.
-    griffin.send_keys("r");
-    wait_for_bar(&griffin, "Rename: README.md");
+    glyph.send_keys("r");
+    wait_for_bar(&glyph, "Rename: README.md");
     for _ in 0.."README.md".len() {
-        griffin.send_keys("backspace");
+        glyph.send_keys("backspace");
     }
-    griffin.type_text("notes.txt");
-    griffin.send_keys("enter");
-    wait_for_status(&griffin, "notes.txt already exists");
-    wait_for_tree(&griffin, TOP);
+    glyph.type_text("notes.txt");
+    glyph.send_keys("enter");
+    wait_for_status(&glyph, "notes.txt already exists");
+    wait_for_tree(&glyph, TOP);
     assert_eq!(
         fs::read(dir.path().join("notes.txt")).expect("read notes"),
         notes
@@ -273,11 +273,11 @@ fn an_existing_or_invalid_name_changes_nothing() {
     assert!(dir.path().join("README.md").exists());
 
     // Esc closes the bar without doing anything.
-    griffin.send_keys("a");
-    wait_for_bar(&griffin, "New file:");
-    griffin.type_text("never.md");
-    griffin.send_keys("esc");
-    griffin.wait_for_screen("the bar closed", WAIT, |screen| {
+    glyph.send_keys("a");
+    wait_for_bar(&glyph, "New file:");
+    glyph.type_text("never.md");
+    glyph.send_keys("esc");
+    glyph.wait_for_screen("the bar closed", WAIT, |screen| {
         !screen[BAR].contains("New file")
     });
     assert!(!dir.path().join("never.md").exists());

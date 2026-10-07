@@ -1,4 +1,4 @@
-# Spec: Griffin v1
+# Spec: Glyph v1
 
 Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-06
 
@@ -21,8 +21,8 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-06
 ## Requirements
 
 Phase 1, Edit
-- **R1.** `griffin <file>` opens the file; `griffin` alone opens an empty untitled buffer; Ctrl+Q quits and restores the terminal, also after a panic — checked by PTY harness tests.
-- **R2.** The PTY harness launches the real `griffin` binary in a pseudo-terminal, sends keys and mouse input, and asserts on the parsed screen — checked by `cargo test --test harness_smoke`.
+- **R1.** `glyph <file>` opens the file; `glyph` alone opens an empty untitled buffer; Ctrl+Q quits and restores the terminal, also after a panic — checked by PTY harness tests.
+- **R2.** The PTY harness launches the real `glyph` binary in a pseudo-terminal, sends keys and mouse input, and asserts on the parsed screen — checked by `cargo test --test harness_smoke`.
 - **R3.** The buffer shows line numbers, wraps nothing (horizontal scroll instead), renders tabs at `tab_width` and wide characters at width 2 — checked by PTY test against a fixture with tabs, CJK and emoji.
 - **R4.** Arrows, Home/End, PageUp/PageDown, Ctrl+Left/Right (word), Ctrl+Home/End move the cursor; the viewport follows it — checked by PTY tests.
 - **R5.** Every action is dispatched through one keymap table loaded from defaults + `[keys]` in config; remapping an action in config changes its key without a rebuild — checked by a test that remaps `save` and drives it.
@@ -35,7 +35,7 @@ Phase 1, Edit
 
 Phase 2, Workspace
 - **R12.** Unsaved changes are backed up to the data dir within 2 s of the last edit; reopening a file with a newer backup offers Recover / Discard; saving or closing clean removes the backup — checked by tests.
-- **R13.** `griffin <dir>` opens the folder with a file tree on the left (Ctrl+B toggles, Ctrl+E switches focus); folders expand/collapse; Enter or click opens a file; `.gitignore`d files are hidden — checked by PTY test on a fixture folder.
+- **R13.** `glyph <dir>` opens the folder with a file tree on the left (Ctrl+B toggles, Ctrl+E switches focus); folders expand/collapse; Enter or click opens a file; `.gitignore`d files are hidden — checked by PTY test on a fixture folder.
 - **R14.** In the tree: `a` new file, `A` new folder, `r` rename, `d` delete, each through a prompt; the tree refreshes; a new file opens in a tab — checked by PTY test.
 - **R15.** Delete moves to the OS trash after a confirm — checked by test with the trash call behind a trait.
 - **R16.** Tabs: each open buffer has a tab; Alt+, / Alt+. move between tabs, Alt+1..9 jump, Ctrl+W closes (dirty guard), Ctrl+N new untitled, Alt+S save as; click selects, middle-click closes — checked by PTY tests.
@@ -54,7 +54,7 @@ Phase 4, Highlight
 - **R25.** Highlighting updates incrementally on edit; typing in a 10k-line file keeps a frame under 16 ms (bench test, ignored by default) — checked by bench.
 
 Phase 5, Run
-- **R26.** F5 runs a command from `.griffin.toml` `[[run]]` (a picker if several) in a bottom panel; stdout/stderr stream in with ANSI colors; F4 toggles the panel — checked by PTY test with a fixture command.
+- **R26.** F5 runs a command from `.glyph.toml` `[[run]]` (a picker if several) in a bottom panel; stdout/stderr stream in with ANSI colors; F4 toggles the panel — checked by PTY test with a fixture command.
 - **R27.** Shift+F5 stops, Ctrl+F5 restarts; stopping or quitting kills the whole process tree (Windows job object, Unix process group) — checked by test that the child's child is gone.
 - **R28.** With no `[[run]]`, the picker offers detected commands: `package.json` scripts (via the lockfile's package manager), `cargo run`, `go run .` — checked by unit tests on fixture folders.
 
@@ -65,7 +65,7 @@ Phase 6, LSP
 - **R32.** Alt+K shows hover info in a popup — checked by test with the fake server.
 - **R33.** Completion pops up after trigger characters or Alt+/; ↑↓ select, Enter/Tab accept, Esc dismisses — checked by test with the fake server.
 - **R34.** With `format_on_save = true` for a language, save formats through the server first — checked by test with the fake server.
-- **R35.** Default server commands exist for all 8 languages and `griffin --health` prints, per language, the server command and whether it was found — checked by CLI output test.
+- **R35.** Default server commands exist for all 8 languages and `glyph --health` prints, per language, the server command and whether it was found — checked by CLI output test.
 
 ## Design
 
@@ -100,8 +100,8 @@ flipping above or shifting left near the screen edges), with no dimming
 | definition / back | F12 / Alt+Left | next / prev diagnostic | F8 / Shift+F8 |
 | hover | Alt+K | complete | Alt+/ |
 
-**Config** at the OS config dir (`%APPDATA%\griffin\config.toml`,
-`~/.config/griffin/config.toml`; `GRIFFIN_CONFIG` overrides):
+**Config** at the OS config dir (`%APPDATA%\glyph\config.toml`,
+`~/.config/glyph/config.toml`; `GLYPH_CONFIG` overrides):
 
 ```toml
 theme = "hydra"
@@ -117,7 +117,7 @@ args = ["--stdio"]
 format_on_save = false
 ```
 
-Project file `.griffin.toml` at the project root:
+Project file `.glyph.toml` at the project root:
 
 ```toml
 [[run]]
