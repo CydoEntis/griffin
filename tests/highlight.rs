@@ -11,7 +11,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use harness::Griffin;
+use harness::Glyph;
 use highlight::{Highlighter, Role, input_edit};
 use ropey::Rope;
 use vt100::Color;
@@ -37,7 +37,7 @@ const TAG: Color = Color::Rgb(0xff, 0x7a, 0xb6);
 const PROPERTY: Color = Color::Rgb(0xe8, 0xc5, 0x65);
 const FG: Color = Color::Rgb(0xc9, 0xd1, 0xd9);
 
-/// The file at `path` highlighted as Griffin would: sorted byte ranges with the
+/// The file at `path` highlighted as Glyph would: sorted byte ranges with the
 /// role each is drawn in.
 fn highlight_roles(path: &Path) -> Vec<(Range<usize>, Role)> {
     let text = fs::read_to_string(path).expect("read fixture");
@@ -337,100 +337,96 @@ fn sql_roles() {
 
 #[test]
 fn go_shows_keyword_colour_on_screen() {
-    let griffin = Griffin::spawn(&[SAMPLE_GO]);
-    griffin.wait_for_text("func distance", START);
+    let glyph = Glyph::spawn(&[SAMPLE_GO]);
+    glyph.wait_for_text("func distance", START);
     let row = 11;
-    let col = griffin
+    let col = glyph
         .text_col(row, "func distance")
         .expect("line 11 is on row 11");
-    griffin.wait_for_fg_at(col, row, KEYWORD, WAIT);
-    assert_eq!(griffin.fg_at(col + 3, row), KEYWORD);
+    glyph.wait_for_fg_at(col, row, KEYWORD, WAIT);
+    assert_eq!(glyph.fg_at(col + 3, row), KEYWORD);
     // `distance` isn't a keyword.
-    assert_ne!(griffin.fg_at(col + 5, row), KEYWORD);
+    assert_ne!(glyph.fg_at(col + 5, row), KEYWORD);
 }
 
 #[test]
 fn sql_shows_keyword_colour_on_screen() {
-    let griffin = Griffin::spawn(&[SAMPLE_SQL]);
-    griffin.wait_for_text("SELECT label", START);
+    let glyph = Glyph::spawn(&[SAMPLE_SQL]);
+    glyph.wait_for_text("SELECT label", START);
     let row = 8;
-    let col = griffin
+    let col = glyph
         .text_col(row, "SELECT label")
         .expect("line 8 is on row 8");
-    griffin.wait_for_fg_at(col, row, KEYWORD, WAIT);
-    assert_eq!(griffin.fg_at(col + 5, row), KEYWORD);
+    glyph.wait_for_fg_at(col, row, KEYWORD, WAIT);
+    assert_eq!(glyph.fg_at(col + 5, row), KEYWORD);
     // `label` is a column, not a keyword.
-    assert_ne!(griffin.fg_at(col + 7, row), KEYWORD);
+    assert_ne!(glyph.fg_at(col + 7, row), KEYWORD);
     // The line that doesn't parse still shows its text.
-    griffin.wait_for_text("this is not ) valid sql at all (;", WAIT);
+    glyph.wait_for_text("this is not ) valid sql at all (;", WAIT);
 }
 
 #[test]
 fn html_injections_show_on_screen() {
-    let griffin = Griffin::spawn(&[SAMPLE_HTML]);
-    griffin.wait_for_text("const greeting", START);
-    let property = griffin.text_col(5, "color: red").expect("line 5 on row 5");
-    griffin.wait_for_fg_at(property, 5, PROPERTY, WAIT);
-    assert_eq!(griffin.fg_at(property + 4, 5), PROPERTY);
-    let keyword = griffin
+    let glyph = Glyph::spawn(&[SAMPLE_HTML]);
+    glyph.wait_for_text("const greeting", START);
+    let property = glyph.text_col(5, "color: red").expect("line 5 on row 5");
+    glyph.wait_for_fg_at(property, 5, PROPERTY, WAIT);
+    assert_eq!(glyph.fg_at(property + 4, 5), PROPERTY);
+    let keyword = glyph
         .text_col(11, "const greeting")
         .expect("line 11 on row 11");
-    griffin.wait_for_fg_at(keyword, 11, KEYWORD, WAIT);
-    assert_eq!(griffin.fg_at(keyword + 4, 11), KEYWORD);
+    glyph.wait_for_fg_at(keyword, 11, KEYWORD, WAIT);
+    assert_eq!(glyph.fg_at(keyword + 4, 11), KEYWORD);
     // `greeting` is a plain name, not a keyword.
-    assert_ne!(griffin.fg_at(keyword + 6, 11), KEYWORD);
+    assert_ne!(glyph.fg_at(keyword + 6, 11), KEYWORD);
 }
 
 #[test]
 fn tsx_shows_tag_colour_on_screen() {
-    let griffin = Griffin::spawn(&[SAMPLE_TSX]);
-    griffin.wait_for_text("<Button onClick", START);
+    let glyph = Glyph::spawn(&[SAMPLE_TSX]);
+    glyph.wait_for_text("<Button onClick", START);
     let row = 8;
-    let tag = griffin
+    let tag = glyph
         .text_col(row, "Button onClick")
         .expect("line 8 on row 8");
-    griffin.wait_for_fg_at(tag, row, TAG, WAIT);
-    assert_eq!(griffin.fg_at(tag + 5, row), TAG);
+    glyph.wait_for_fg_at(tag, row, TAG, WAIT);
+    assert_eq!(glyph.fg_at(tag + 5, row), TAG);
     // `onClick` is an attribute, not a tag.
-    assert_ne!(griffin.fg_at(tag + 7, row), TAG);
+    assert_ne!(glyph.fg_at(tag + 7, row), TAG);
 }
 
 #[test]
 fn rust_shows_theme_colours_on_screen() {
-    let griffin = Griffin::spawn(&[SAMPLE]);
-    griffin.wait_for_text("fn distance", START);
+    let glyph = Glyph::spawn(&[SAMPLE]);
+    glyph.wait_for_text("fn distance", START);
     let row = 10;
-    let col = griffin
+    let col = glyph
         .text_col(row, "fn distance")
         .expect("line 10 is on row 10");
-    griffin.wait_for_fg_at(col, row, KEYWORD, WAIT);
-    assert_eq!(griffin.fg_at(col + 1, row), KEYWORD);
+    glyph.wait_for_fg_at(col, row, KEYWORD, WAIT);
+    assert_eq!(glyph.fg_at(col + 1, row), KEYWORD);
     // `distance` itself isn't a keyword.
-    assert_ne!(griffin.fg_at(col + 3, row), KEYWORD);
-    let comment = griffin
-        .text_col(1, "// A sample")
-        .expect("comment on row 1");
-    assert_eq!(griffin.fg_at(comment, 1), COMMENT);
-    assert_eq!(griffin.fg_at(comment + 5, 1), COMMENT);
-    let string = griffin
-        .text_col(18, "\"origin\"")
-        .expect("string on row 18");
-    assert_eq!(griffin.fg_at(string, 18), STRING);
+    assert_ne!(glyph.fg_at(col + 3, row), KEYWORD);
+    let comment = glyph.text_col(1, "// A sample").expect("comment on row 1");
+    assert_eq!(glyph.fg_at(comment, 1), COMMENT);
+    assert_eq!(glyph.fg_at(comment + 5, 1), COMMENT);
+    let string = glyph.text_col(18, "\"origin\"").expect("string on row 18");
+    assert_eq!(glyph.fg_at(string, 18), STRING);
 }
 
 #[test]
 fn files_without_a_grammar_are_uncoloured() {
-    let griffin = Griffin::spawn(&["tests/fixtures/plain.txt"]);
-    griffin.wait_for_text("fn plain text", START);
-    griffin.wait_for_text("// slashes", WAIT);
+    let glyph = Glyph::spawn(&["tests/fixtures/plain.txt"]);
+    glyph.wait_for_text("fn plain text", START);
+    glyph.wait_for_text("// slashes", WAIT);
     for (row, text) in [
         (1, "fn plain text is never coloured"),
         (2, "\"even with quotes\" and // slashes"),
     ] {
-        let start = griffin.text_col(row, text).expect("line on its row");
+        let start = glyph.text_col(row, text).expect("line on its row");
         let end = start + u16::try_from(text.len()).expect("short line");
         for col in start..end {
-            assert_eq!(griffin.fg_at(col, row), FG, "row {row}, column {col}");
+            assert_eq!(glyph.fg_at(col, row), FG, "row {row}, column {col}");
         }
     }
 }
@@ -440,25 +436,25 @@ fn rust_retypes_on_edit() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("edit.rs");
     fs::write(&path, "fn main() {\n    let a = b + c;\n}\n").expect("write file");
-    let mut griffin = Griffin::spawn_in(dir.path(), &["edit.rs"]);
-    griffin.wait_for_text("let a = b + c;", START);
+    let mut glyph = Glyph::spawn_in(dir.path(), &["edit.rs"]);
+    glyph.wait_for_text("let a = b + c;", START);
 
     let row = 2;
-    let b = griffin.text_col(row, "b + c").expect("line 2 on row 2");
+    let b = glyph.text_col(row, "b + c").expect("line 2 on row 2");
     let c = b + 4;
     let semicolon = b + 5;
-    let keyword = griffin.text_col(row, "let").expect("`let` on row 2");
-    griffin.wait_for_fg_at(keyword, row, KEYWORD, WAIT);
-    assert_eq!(griffin.fg_at(c, row), FG);
+    let keyword = glyph.text_col(row, "let").expect("`let` on row 2");
+    glyph.wait_for_fg_at(keyword, row, KEYWORD, WAIT);
+    assert_eq!(glyph.fg_at(c, row), FG);
 
-    griffin.click(b, row);
-    griffin.type_text("\"");
-    griffin.wait_for_text("let a = \"b + c;", WAIT);
+    glyph.click(b, row);
+    glyph.type_text("\"");
+    glyph.wait_for_text("let a = \"b + c;", WAIT);
     // Everything from the quote to the line's end now reads as a string.
     for col in b..=semicolon + 1 {
-        griffin.wait_for_fg_at(col, row, STRING, WAIT);
+        glyph.wait_for_fg_at(col, row, STRING, WAIT);
     }
-    assert_eq!(griffin.fg_at(keyword, row), KEYWORD);
+    assert_eq!(glyph.fg_at(keyword, row), KEYWORD);
 }
 
 #[test]

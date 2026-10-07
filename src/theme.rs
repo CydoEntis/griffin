@@ -1,4 +1,4 @@
-//! Hydra's 11 themes and `[theme_overrides]`. A theme paints Griffin's chrome (tab
+//! Hydra's 11 themes and `[theme_overrides]`. A theme paints Glyph's chrome (tab
 //! bar, tree, status line, popups) and the editor ground, and carries the syntax
 //! colours highlighting will use. Palettes are Hydra's, reused under the MIT
 //! licence both projects share.
@@ -456,7 +456,7 @@ impl Theme {
     }
 
     /// The role an override key names. Takes the canonical names, `-` for `_`,
-    /// and Hydra's names for the roles Griffin renamed or folded together.
+    /// and Hydra's names for the roles Glyph renamed or folded together.
     fn slot(&mut self, key: &str) -> Option<Slot<'_>> {
         let ui = match key.replace('-', "_").as_str() {
             "bg" => &mut self.bg,

@@ -39,9 +39,9 @@ use crate::theme::Theme;
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
-/// Griffin, a non-modal terminal text editor.
+/// Glyph, a non-modal terminal text editor.
 #[derive(Debug, Parser)]
-#[command(name = "griffin", version, about)]
+#[command(name = "glyph", version, about)]
 struct Cli {
     /// File or folder to open.
     path: Option<PathBuf>,
@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let backups = Backups::new(backup::data_dir(std::env::var_os("GRIFFIN_DATA_DIR")));
+    let backups = Backups::new(backup::data_dir(std::env::var_os("GLYPH_DATA_DIR")));
     let result = App::new(keymap, editor, path, config_error)
         .with_theme(theme)
         .with_lsp(lsp)
@@ -202,11 +202,11 @@ mod tests {
 
     #[test]
     fn cli_accepts_an_optional_path() {
-        assert_eq!(Cli::parse_from(["griffin"]).path, None);
-        assert!(!Cli::parse_from(["griffin"]).health);
-        assert!(Cli::parse_from(["griffin", "--health"]).health);
+        assert_eq!(Cli::parse_from(["glyph"]).path, None);
+        assert!(!Cli::parse_from(["glyph"]).health);
+        assert!(Cli::parse_from(["glyph", "--health"]).health);
         assert_eq!(
-            Cli::parse_from(["griffin", "notes.txt"]).path,
+            Cli::parse_from(["glyph", "notes.txt"]).path,
             Some(PathBuf::from("notes.txt"))
         );
     }

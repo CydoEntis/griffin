@@ -33,8 +33,8 @@ pub fn render_status(frame: &mut Frame, theme: &Theme, area: Rect, status: &Stat
         status.name.to_string()
     };
     let text = match status.message {
-        Some(message) => format!("griffin  {message}  {name}  {position}"),
-        None => format!("griffin  {name}  {position}"),
+        Some(message) => format!("glyph  {message}  {name}  {position}"),
+        None => format!("glyph  {name}  {position}"),
     };
     let mut spans = vec![Span::raw(text)];
     if status.warnings + status.errors > 0 {

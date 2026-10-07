@@ -1,5 +1,5 @@
 //! Which server each language uses: the spec's defaults, with `[lsp.<lang>]`
-//! tables laid over them, and the PATH lookup behind `griffin --health`.
+//! tables laid over them, and the PATH lookup behind `glyph --health`.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -57,7 +57,7 @@ pub fn with_defaults(mut config: BTreeMap<String, LspServer>) -> BTreeMap<String
     config
 }
 
-/// One line per language for `griffin --health`: the language padded to 11, the
+/// One line per language for `glyph --health`: the language padded to 11, the
 /// command line, and whether the program was found. `path` and `pathext` are the
 /// `PATH` and `PATHEXT` values to search.
 pub fn health(

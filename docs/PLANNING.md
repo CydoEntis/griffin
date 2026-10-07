@@ -1,4 +1,4 @@
-# Plan: Griffin
+# Plan: Glyph
 
 Source of truth for scope, order, decisions and rules. Tickets hold the detail.
 Read this before starting work. If work conflicts with it, stop and say so.
@@ -13,11 +13,11 @@ once (spec Verification).
 
 ## Phases
 
-### 1 — `griffin file.rs` opens, edits and saves one file safely, by keyboard and mouse · complete 2026-10-06 at `e0effc0`
+### 1 — `glyph file.rs` opens, edits and saves one file safely, by keyboard and mouse · complete 2026-10-06 at `e0effc0`
 
 #1, #2, #3, #4, #5, #6, #7, #8, #9, #10
 
-### 2 — `griffin .` works across a whole project · complete 2026-10-06 at `4ca0ec6`
+### 2 — `glyph .` works across a whole project · complete 2026-10-06 at `4ca0ec6`
 
 #11, #12, #13, #14, #15, #16, #17
 
@@ -29,7 +29,7 @@ once (spec Verification).
 
 #22, #23, #24, #25, #26
 
-### 5 — Start a dev server inside Griffin · complete 2026-10-06 at `6b9c873`
+### 5 — Start a dev server inside Glyph · complete 2026-10-06 at `6b9c873`
 
 #27, #28, #29
 
@@ -39,13 +39,13 @@ once (spec Verification).
 
 ## In scope
 
-- Griffin v1 — shipped — [intent](features/griffin-v1/intent.md) ·
-  [spec](features/griffin-v1/spec.md)
+- Glyph v1 — shipped — [intent](features/glyph-v1/intent.md) ·
+  [spec](features/glyph-v1/spec.md)
 
 ## Out
 
-- Plugin / scripting system — declined 2026-10-06: Griffin is extended by changing
-  Griffin ([ADR-0001](adr/0001-single-binary-core.md)). Bringing it back needs a new
+- Plugin / scripting system — declined 2026-10-06: Glyph is extended by changing
+  Glyph ([ADR-0001](adr/0001-single-binary-core.md)). Bringing it back needs a new
   decision.
 
 ## Later

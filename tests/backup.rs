@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use harness::{COLS, Griffin, ROWS};
+use harness::{COLS, Glyph, ROWS};
 use tempfile::TempDir;
 
 const START: Duration = Duration::from_secs(10);
@@ -26,10 +26,10 @@ impl Setup {
         Self { files, data }
     }
 
-    fn launch(&self) -> Griffin {
-        let griffin = Griffin::spawn_in_with_data(self.files.path(), self.data.path(), &["a.txt"]);
-        griffin.wait_for_text("a.txt", START);
-        griffin
+    fn launch(&self) -> Glyph {
+        let glyph = Glyph::spawn_in_with_data(self.files.path(), self.data.path(), &["a.txt"]);
+        glyph.wait_for_text("a.txt", START);
+        glyph
     }
 
     fn backups(&self) -> PathBuf {
@@ -56,19 +56,19 @@ fn backup_files(dir: &Path) -> Vec<PathBuf> {
     }
 }
 
-fn status_line(griffin: &Griffin) -> String {
-    griffin.screen()[usize::from(ROWS - 1)].clone()
+fn status_line(glyph: &Glyph) -> String {
+    glyph.screen()[usize::from(ROWS - 1)].clone()
 }
 
-/// Edits `a.txt`, waits for its backup to land, then kills griffin without
+/// Edits `a.txt`, waits for its backup to land, then kills glyph without
 /// letting it clean up.
 fn edit_and_crash(setup: &Setup) {
-    let mut griffin = setup.launch();
-    griffin.wait_for_text("Ln 1, Col 1", START);
-    griffin.type_text("xy");
-    griffin.wait_for_text("xyhello", WAIT);
+    let mut glyph = setup.launch();
+    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.type_text("xy");
+    glyph.wait_for_text("xyhello", WAIT);
     let typed = Instant::now();
-    griffin.wait_for_files("a backup file", WAIT, || {
+    glyph.wait_for_files("a backup file", WAIT, || {
         setup
             .backup_files()
             .iter()
@@ -89,14 +89,14 @@ fn edit_and_crash(setup: &Setup) {
         name.len() == 20 && name[..16].chars().all(|c| c.is_ascii_hexdigit()),
         "{name}"
     );
-    griffin.kill();
+    glyph.kill();
     assert_eq!(setup.read_a(), "hello\n", "nothing was saved");
 }
 
 /// Waits for the recover card and checks it sits in the middle of the screen.
-fn wait_for_card(griffin: &Griffin) {
-    griffin.wait_for_text(QUESTION, START);
-    let screen = griffin.screen();
+fn wait_for_card(glyph: &Glyph) {
+    glyph.wait_for_text(QUESTION, START);
+    let screen = glyph.screen();
     let row = screen
         .iter()
         .position(|line| line.contains(CARD))
@@ -107,7 +107,7 @@ fn wait_for_card(griffin: &Griffin) {
         line.contains("Recover") && line.contains("Discard"),
         "{line}"
     );
-    let col = griffin
+    let col = glyph
         .text_col(row as u16, CARD)
         .unwrap_or_else(|| panic!("{screen:#?}"));
     let right = COLS - (col + CARD.len() as u16);
@@ -119,22 +119,22 @@ fn recover_after_a_crash_loads_the_backup() {
     let setup = Setup::new("hello\n");
     edit_and_crash(&setup);
 
-    let mut griffin = setup.launch();
-    wait_for_card(&griffin);
-    griffin.type_text("r");
-    griffin.wait_for_text_gone(QUESTION, WAIT);
-    griffin.wait_for_text("xyhello", WAIT);
-    griffin.wait_for_text("a.txt ●", WAIT);
-    assert!(status_line(&griffin).contains("a.txt ●"));
+    let mut glyph = setup.launch();
+    wait_for_card(&glyph);
+    glyph.type_text("r");
+    glyph.wait_for_text_gone(QUESTION, WAIT);
+    glyph.wait_for_text("xyhello", WAIT);
+    glyph.wait_for_text("a.txt ●", WAIT);
+    assert!(status_line(&glyph).contains("a.txt ●"));
     // The backup stays until the recovered text is saved.
     assert_eq!(setup.backup_files().len(), 1);
 
-    griffin.send_keys("ctrl+s");
-    griffin.wait_for_text("saved a.txt", WAIT);
+    glyph.send_keys("ctrl+s");
+    glyph.wait_for_text("saved a.txt", WAIT);
     assert_eq!(setup.read_a(), "xyhello\n");
-    griffin.wait_for_files("the backup to go", WAIT, || setup.backup_files().is_empty());
-    griffin.send_keys("ctrl+q");
-    assert!(griffin.wait_exit(WAIT).success());
+    glyph.wait_for_files("the backup to go", WAIT, || setup.backup_files().is_empty());
+    glyph.send_keys("ctrl+q");
+    assert!(glyph.wait_exit(WAIT).success());
 }
 
 #[test]
@@ -142,39 +142,39 @@ fn discard_after_a_crash_deletes_the_backup() {
     let setup = Setup::new("hello\n");
     edit_and_crash(&setup);
 
-    let mut griffin = setup.launch();
-    wait_for_card(&griffin);
-    griffin.type_text("d");
-    griffin.wait_for_text_gone(QUESTION, WAIT);
-    griffin.wait_for_text("hello", WAIT);
-    let status = status_line(&griffin);
+    let mut glyph = setup.launch();
+    wait_for_card(&glyph);
+    glyph.type_text("d");
+    glyph.wait_for_text_gone(QUESTION, WAIT);
+    glyph.wait_for_text("hello", WAIT);
+    let status = status_line(&glyph);
     assert!(!status.contains('●'), "dirty after discard: {status:?}");
-    assert!(!griffin.screen().iter().any(|l| l.contains("xyhello")));
-    griffin.wait_for_files("the backup to go", WAIT, || setup.backup_files().is_empty());
+    assert!(!glyph.screen().iter().any(|l| l.contains("xyhello")));
+    glyph.wait_for_files("the backup to go", WAIT, || setup.backup_files().is_empty());
 
     // Nothing is offered the next time.
-    griffin.send_keys("ctrl+q");
-    assert!(griffin.wait_exit(WAIT).success());
-    let mut griffin = setup.launch();
-    griffin.wait_for_text("Ln 1, Col 1", START);
-    griffin.assert_running_for(Duration::from_millis(300));
-    assert!(!griffin.screen().iter().any(|l| l.contains(QUESTION)));
-    griffin.send_keys("ctrl+q");
-    assert!(griffin.wait_exit(WAIT).success());
+    glyph.send_keys("ctrl+q");
+    assert!(glyph.wait_exit(WAIT).success());
+    let mut glyph = setup.launch();
+    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.assert_running_for(Duration::from_millis(300));
+    assert!(!glyph.screen().iter().any(|l| l.contains(QUESTION)));
+    glyph.send_keys("ctrl+q");
+    assert!(glyph.wait_exit(WAIT).success());
 }
 
 #[test]
 fn quitting_cleanly_deletes_the_backup() {
     let setup = Setup::new("hello\n");
-    let mut griffin = setup.launch();
-    griffin.wait_for_text("Ln 1, Col 1", START);
-    griffin.type_text("x");
-    griffin.wait_for_text("a.txt ●", WAIT);
-    griffin.wait_for_files("a backup file", WAIT, || !setup.backup_files().is_empty());
-    griffin.send_keys("ctrl+q");
-    griffin.wait_for_text("Unsaved changes", WAIT);
-    griffin.type_text("d");
-    assert!(griffin.wait_exit(WAIT).success());
+    let mut glyph = setup.launch();
+    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.type_text("x");
+    glyph.wait_for_text("a.txt ●", WAIT);
+    glyph.wait_for_files("a backup file", WAIT, || !setup.backup_files().is_empty());
+    glyph.send_keys("ctrl+q");
+    glyph.wait_for_text("Unsaved changes", WAIT);
+    glyph.type_text("d");
+    assert!(glyph.wait_exit(WAIT).success());
     assert!(setup.backup_files().is_empty());
     assert_eq!(setup.read_a(), "hello\n");
 }

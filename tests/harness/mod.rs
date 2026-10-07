@@ -1,4 +1,4 @@
-//! PTY harness: runs the real `griffin` binary in a 100x30 pseudo-terminal, sends
+//! PTY harness: runs the real `glyph` binary in a 100x30 pseudo-terminal, sends
 //! keys and mouse input as terminal bytes, and reads the screen back through vt100.
 //!
 //! Integration tests include it with `mod harness;`.
@@ -33,8 +33,8 @@ struct Shared {
     changed: Condvar,
 }
 
-/// A running `griffin` inside a pseudo-terminal. Dropping it kills the process.
-pub struct Griffin {
+/// A running `glyph` inside a pseudo-terminal. Dropping it kills the process.
+pub struct Glyph {
     shared: Arc<Shared>,
     writer: SharedWriter,
     killer: Box<dyn ChildKiller + Send + Sync>,
@@ -42,43 +42,43 @@ pub struct Griffin {
     exited: Option<ExitStatus>,
     // Kept alive so the PTY stays open for the reader and the child.
     _master: Box<dyn MasterPty + Send>,
-    // Kept alive so `GRIFFIN_CONFIG` points at a real file until the end.
+    // Kept alive so `GLYPH_CONFIG` points at a real file until the end.
     _config: NamedTempFile,
-    // The run's own `GRIFFIN_DATA_DIR` when the test didn't pick one, so backups
+    // The run's own `GLYPH_DATA_DIR` when the test didn't pick one, so backups
     // never land in the real data dir.
     _data: Option<TempDir>,
 }
 
-impl Griffin {
-    /// Starts griffin in the current directory (the crate root under `cargo test`).
+impl Glyph {
+    /// Starts glyph in the current directory (the crate root under `cargo test`).
     pub fn spawn(args: &[&str]) -> Self {
         let dir = std::env::current_dir().expect("test process has a current directory");
         Self::spawn_in(&dir, args)
     }
 
-    /// Starts griffin with `dir` as its working directory.
+    /// Starts glyph with `dir` as its working directory.
     pub fn spawn_in(dir: &Path, args: &[&str]) -> Self {
         Self::spawn_in_with_config(dir, "", args)
     }
 
-    /// Starts griffin in the current directory with `toml` as its `config.toml`.
+    /// Starts glyph in the current directory with `toml` as its `config.toml`.
     pub fn spawn_with_config(toml: &str, args: &[&str]) -> Self {
         let dir = std::env::current_dir().expect("test process has a current directory");
         Self::spawn_in_with_config(&dir, toml, args)
     }
 
-    /// Starts griffin with `dir` as its working directory and `toml` as its config.
+    /// Starts glyph with `dir` as its working directory and `toml` as its config.
     pub fn spawn_in_with_config(dir: &Path, toml: &str, args: &[&str]) -> Self {
         Self::spawn_full(dir, toml, None, &[], args)
     }
 
-    /// Starts griffin in `dir` with extra environment variables, e.g. a `PATH`
+    /// Starts glyph in `dir` with extra environment variables, e.g. a `PATH`
     /// that holds a fixture's commands.
     pub fn spawn_in_with_env(dir: &Path, env: &[(&str, OsString)], args: &[&str]) -> Self {
         Self::spawn_full(dir, "", None, env, args)
     }
 
-    /// Starts griffin in `dir` with `toml` as its config and extra environment
+    /// Starts glyph in `dir` with `toml` as its config and extra environment
     /// variables, e.g. where the fake language server writes its log.
     pub fn spawn_in_with_config_and_env(
         dir: &Path,
@@ -89,7 +89,7 @@ impl Griffin {
         Self::spawn_full(dir, toml, None, env, args)
     }
 
-    /// Starts griffin in `dir` with `data` as its data dir, which outlives this run
+    /// Starts glyph in `dir` with `data` as its data dir, which outlives this run
     /// so a relaunch can find what the last one left there.
     pub fn spawn_in_with_data(dir: &Path, data: &Path, args: &[&str]) -> Self {
         Self::spawn_full(dir, "", Some(data.to_path_buf()), &[], args)
@@ -124,17 +124,17 @@ impl Griffin {
             })
             .expect("open pseudo-terminal");
 
-        let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_griffin"));
+        let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_glyph"));
         cmd.args(args);
         cmd.cwd(dir);
-        cmd.env("GRIFFIN_CONFIG", config.path());
-        cmd.env("GRIFFIN_DATA_DIR", &data);
+        cmd.env("GLYPH_CONFIG", config.path());
+        cmd.env("GLYPH_DATA_DIR", &data);
         cmd.env("TERM", "xterm-256color");
         for (key, value) in env {
             cmd.env(key, value);
         }
 
-        let mut child = pair.slave.spawn_command(cmd).expect("spawn griffin");
+        let mut child = pair.slave.spawn_command(cmd).expect("spawn glyph");
         // The child holds its own handle; ours would keep the PTY open after it exits.
         drop(pair.slave);
 
@@ -180,7 +180,7 @@ impl Griffin {
         }
     }
 
-    /// Kills griffin without letting it clean up, as a crash would, and waits for
+    /// Kills glyph without letting it clean up, as a crash would, and waits for
     /// it to be gone.
     pub fn kill(&mut self) {
         if self.exited.is_none() {
@@ -544,12 +544,12 @@ impl Griffin {
         }
     }
 
-    /// Checks griffin is still running after `grace`. Proving a key did nothing
-    /// needs some window to wait in; this returns early if griffin exits.
+    /// Checks glyph is still running after `grace`. Proving a key did nothing
+    /// needs some window to wait in; this returns early if glyph exits.
     pub fn assert_running_for(&mut self, grace: Duration) {
         if self.exited.is_some() {
             panic!(
-                "griffin already exited
+                "glyph already exited
 {}",
                 dump(&self.screen())
             );
@@ -557,15 +557,15 @@ impl Griffin {
         match self.exit.recv_timeout(grace) {
             Err(RecvTimeoutError::Timeout) => {}
             Ok(status) => panic!(
-                "griffin exited unexpectedly with {status:?}
+                "glyph exited unexpectedly with {status:?}
 {}",
                 dump(&self.screen())
             ),
-            Err(RecvTimeoutError::Disconnected) => panic!("griffin's wait thread vanished"),
+            Err(RecvTimeoutError::Disconnected) => panic!("glyph's wait thread vanished"),
         }
     }
 
-    /// Waits for griffin to exit and returns its status. Panics with the screen on timeout.
+    /// Waits for glyph to exit and returns its status. Panics with the screen on timeout.
     pub fn wait_exit(&mut self, timeout: Duration) -> ExitStatus {
         if let Some(status) = &self.exited {
             return status.clone();
@@ -575,12 +575,12 @@ impl Griffin {
                 self.exited = Some(status.clone());
                 status
             }
-            Ok(Err(err)) => panic!("waiting for griffin failed: {err}"),
+            Ok(Err(err)) => panic!("waiting for glyph failed: {err}"),
             Err(RecvTimeoutError::Timeout) => panic!(
-                "griffin did not exit within {timeout:?}\n{}",
+                "glyph did not exit within {timeout:?}\n{}",
                 dump(&self.screen())
             ),
-            Err(RecvTimeoutError::Disconnected) => panic!("griffin's wait thread vanished"),
+            Err(RecvTimeoutError::Disconnected) => panic!("glyph's wait thread vanished"),
         }
     }
 
@@ -605,7 +605,7 @@ impl Griffin {
     }
 }
 
-impl Drop for Griffin {
+impl Drop for Glyph {
     fn drop(&mut self) {
         if self.exited.is_none() && self.exit.try_recv().is_err() {
             let _ = self.killer.kill();
@@ -723,7 +723,7 @@ fn wait_for_contents(shared: &Shared, text: &str, timeout: Duration) -> Result<(
     }
 }
 
-/// Begin and end synchronized update (DEC mode 2026), which griffin wraps around
+/// Begin and end synchronized update (DEC mode 2026), which glyph wraps around
 /// each frame.
 const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
 const SYNC_END: &[u8] = b"\x1b[?2026l";

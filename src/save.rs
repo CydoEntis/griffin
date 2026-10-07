@@ -52,7 +52,7 @@ fn create_temp(path: &Path) -> io::Result<(PathBuf, File)> {
         .to_string_lossy();
     loop {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let temp = dir.join(format!(".{name}.griffin-{}-{n}.tmp", std::process::id()));
+        let temp = dir.join(format!(".{name}.glyph-{}-{n}.tmp", std::process::id()));
         match OpenOptions::new().write(true).create_new(true).open(&temp) {
             Ok(file) => return Ok((temp, file)),
             // Left over from a crashed run with the same pid; try the next name.
@@ -139,7 +139,7 @@ mod tests {
             file.write_all(bytes)
         })?;
         assert_eq!(seen.len(), 2, "{seen:?}");
-        assert!(seen[0].starts_with(".a.txt.griffin-"), "{seen:?}");
+        assert!(seen[0].starts_with(".a.txt.glyph-"), "{seen:?}");
         assert!(seen[0].ends_with(".tmp"), "{seen:?}");
         assert_eq!(fs::read_to_string(&path)?, "new");
         Ok(())

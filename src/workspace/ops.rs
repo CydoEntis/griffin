@@ -30,7 +30,7 @@ impl Default for Box<dyn Trash> {
     }
 }
 
-/// Characters no file name may hold on at least one of the OSes Griffin runs on;
+/// Characters no file name may hold on at least one of the OSes Glyph runs on;
 /// refusing them everywhere keeps a project portable.
 const FORBIDDEN: &[char] = &['/', '\\', '<', '>', ':', '"', '|', '?', '*'];
 

@@ -1,4 +1,4 @@
-//! Keeps a run's whole process tree together so stopping it, or quitting Griffin,
+//! Keeps a run's whole process tree together so stopping it, or quitting Glyph,
 //! takes down everything the command started, not only the shell (R27).
 //!
 //! Windows: the child starts suspended, joins a job object that kills every
@@ -25,7 +25,7 @@ pub fn prepare(cmd: &mut Command) {
     {
         use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
         // CREATE_NO_WINDOW: a console of the child's own, hidden, so nothing it
-        // runs can write to Griffin's console behind the screen. CREATE_SUSPENDED:
+        // runs can write to Glyph's console behind the screen. CREATE_SUSPENDED:
         // the child must not run, or start anything, before it's in the job.
         cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
     }
@@ -129,7 +129,7 @@ impl ProcessTree {
 
 impl Drop for ProcessTree {
     // Windows needs nothing here: closing the job's last handle kills the tree.
-    // Unix has no such handle, so a dropped tree, or Griffin quitting, kills it.
+    // Unix has no such handle, so a dropped tree, or Glyph quitting, kills it.
     fn drop(&mut self) {
         #[cfg(unix)]
         self.kill();

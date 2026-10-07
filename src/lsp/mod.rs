@@ -467,7 +467,7 @@ struct Attached {
     saves: u64,
 }
 
-/// Every language server Griffin has started, and which buffers each one follows.
+/// Every language server Glyph has started, and which buffers each one follows.
 #[derive(Debug, Default)]
 pub struct Lsp {
     config: BTreeMap<String, LspServer>,
@@ -914,7 +914,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_server_is_reported_once_for_every_file_of_its_language() {
         let dir = tempfile::tempdir().unwrap();
-        let mut lsp = Lsp::new(config("griffin-no-such-server"));
+        let mut lsp = Lsp::new(config("glyph-no-such-server"));
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         lsp.connect(tx);
         let (a, b) = (
@@ -927,7 +927,7 @@ mod tests {
         };
 
         let first = lsp.sync(dir.path(), &[(1, &a), (2, &notes)]);
-        assert_eq!(first, ["rust: server not found (griffin-no-such-server)"]);
+        assert_eq!(first, ["rust: server not found (glyph-no-such-server)"]);
         assert!(
             lsp.sync(dir.path(), &[(1, &a), (2, &notes), (3, &b)])
                 .is_empty()
@@ -1192,7 +1192,7 @@ mod tests {
     #[test]
     fn without_an_app_channel_nothing_starts() {
         let dir = tempfile::tempdir().unwrap();
-        let mut lsp = Lsp::new(config("griffin-no-such-server"));
+        let mut lsp = Lsp::new(config("glyph-no-such-server"));
         let a = rust_buffer(dir.path(), "a.rs");
         assert!(lsp.sync(dir.path(), &[(1, &a)]).is_empty());
         assert!(lsp.servers.is_empty());

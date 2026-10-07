@@ -2055,7 +2055,7 @@ impl App {
         }
     }
 
-    /// F5: reads `.griffin.toml` afresh, so edits to it count without a restart,
+    /// F5: reads `.glyph.toml` afresh, so edits to it count without a restart,
     /// then runs its one entry or asks which of several. Without `[[run]]` it
     /// offers commands detected from the project files instead.
     fn start_run(&mut self) {
@@ -4207,7 +4207,7 @@ world",
         terminal.draw(|frame| app.render(frame))?;
         let buffer = terminal.backend().buffer();
         let last: String = (0..100).map(|x| buffer[(x, 29)].symbol()).collect();
-        assert!(last.starts_with("griffin"), "{last}");
+        assert!(last.starts_with("glyph"), "{last}");
         assert!(last.contains("config error: boom"), "{last}");
         assert!(last.contains("untitled"), "{last}");
         Ok(())
@@ -4227,7 +4227,7 @@ world",
         for y in 2..29 {
             assert_eq!(row(y).trim(), "", "row {y} should be blank");
         }
-        assert!(row(29).starts_with("griffin"));
+        assert!(row(29).starts_with("glyph"));
         Ok(())
     }
 

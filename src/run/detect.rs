@@ -1,4 +1,4 @@
-//! Commands F5 offers when `.griffin.toml` has no `[[run]]`: guessed from the
+//! Commands F5 offers when `.glyph.toml` has no `[[run]]`: guessed from the
 //! project files at the root, never written back anywhere.
 
 use std::path::Path;
@@ -137,7 +137,7 @@ mod tests {
             commands(&run_choices(Vec::new(), &root)),
             ["npm run test", "cargo run", "go run ."]
         );
-        // The fixture's own `.griffin.toml` has an entry, so only it is listed.
+        // The fixture's own `.glyph.toml` has an entry, so only it is listed.
         let loaded = config::load_project(&root);
         assert_eq!(loaded.error, None);
         let choices = run_choices(loaded.config.run, &root);

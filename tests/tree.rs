@@ -3,7 +3,7 @@ mod harness;
 use std::fs;
 use std::time::Duration;
 
-use harness::{Griffin, ROWS};
+use harness::{Glyph, ROWS};
 
 const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(5);
@@ -31,22 +31,22 @@ fn tree_rows(screen: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn wait_for_tree(griffin: &Griffin, expected: &[&str]) {
-    griffin.wait_for_screen(&format!("tree rows {expected:?}"), WAIT, |screen| {
+fn wait_for_tree(glyph: &Glyph, expected: &[&str]) {
+    glyph.wait_for_screen(&format!("tree rows {expected:?}"), WAIT, |screen| {
         tree_rows(screen) == expected
     });
 }
 
 /// The tree's selected row as the harness reads it: the reversed cells on `row`,
 /// which span the whole pane.
-fn wait_for_selected(griffin: &Griffin, row: u16, text: &str) {
-    griffin.wait_for_reversed(row, &format!("{text:<TREE$}"), WAIT);
+fn wait_for_selected(glyph: &Glyph, row: u16, text: &str) {
+    glyph.wait_for_reversed(row, &format!("{text:<TREE$}"), WAIT);
 }
 
-fn open_project() -> Griffin {
-    let griffin = Griffin::spawn(&[PROJECT]);
-    griffin.wait_for_text("README.md", START);
-    griffin
+fn open_project() -> Glyph {
+    let glyph = Glyph::spawn(&[PROJECT]);
+    glyph.wait_for_text("README.md", START);
+    glyph
 }
 
 const TOP: &[&str] = &[
@@ -59,12 +59,12 @@ const TOP: &[&str] = &[
 
 #[test]
 fn folder_opens_with_a_30_column_tree_folders_first() {
-    let griffin = open_project();
-    wait_for_tree(&griffin, TOP);
+    let glyph = open_project();
+    wait_for_tree(&glyph, TOP);
     // The first row starts selected, highlighted across the pane.
-    wait_for_selected(&griffin, 1, "▸ docs");
+    wait_for_selected(&glyph, 1, "▸ docs");
 
-    let screen = griffin.screen();
+    let screen = glyph.screen();
     for (y, line) in screen.iter().enumerate().take(usize::from(ROWS - 1)) {
         assert_eq!(
             line.chars().nth(TREE),
@@ -89,9 +89,9 @@ fn gitignored_files_are_hidden() {
     // The fixture's `.gitignore` names `*.log` and `build/`, both present on disk.
     assert!(fs::metadata(format!("{PROJECT}/debug.log")).is_ok());
     assert!(fs::metadata(format!("{PROJECT}/build/out.txt")).is_ok());
-    let griffin = open_project();
-    wait_for_tree(&griffin, TOP);
-    let contents = griffin.screen().join("\n");
+    let glyph = open_project();
+    wait_for_tree(&glyph, TOP);
+    let contents = glyph.screen().join("\n");
     assert!(!contents.contains("debug.log"), "{contents}");
     assert!(!contents.contains("build"), "{contents}");
 }
@@ -110,26 +110,26 @@ fn dot_git_and_nested_ignores_are_hidden() {
     fs::write(root.join("lib").join("mod.rs"), "").expect("write mod.rs");
 
     let path = root.to_str().expect("temp path is UTF-8");
-    let mut griffin = Griffin::spawn(&[path]);
-    griffin.wait_for_text("visible.txt", START);
-    wait_for_tree(&griffin, &["▸ lib", "  .gitignore", "  visible.txt"]);
-    griffin.send_keys("enter");
+    let mut glyph = Glyph::spawn(&[path]);
+    glyph.wait_for_text("visible.txt", START);
+    wait_for_tree(&glyph, &["▸ lib", "  .gitignore", "  visible.txt"]);
+    glyph.send_keys("enter");
     wait_for_tree(
-        &griffin,
+        &glyph,
         &["▾ lib", "    mod.rs", "  .gitignore", "  visible.txt"],
     );
 }
 
 #[test]
 fn arrows_browse_and_enter_opens_a_file() {
-    let mut griffin = open_project();
-    wait_for_selected(&griffin, 1, "▸ docs");
+    let mut glyph = open_project();
+    wait_for_selected(&glyph, 1, "▸ docs");
 
-    griffin.send_keys("down");
-    wait_for_selected(&griffin, 2, "▸ src");
-    griffin.send_keys("right");
+    glyph.send_keys("down");
+    wait_for_selected(&glyph, 2, "▸ src");
+    glyph.send_keys("right");
     wait_for_tree(
-        &griffin,
+        &glyph,
         &[
             "▸ docs",
             "▾ src",
@@ -141,11 +141,11 @@ fn arrows_browse_and_enter_opens_a_file() {
         ],
     );
     // ← collapses, Enter expands again.
-    griffin.send_keys("left");
-    wait_for_tree(&griffin, TOP);
-    griffin.send_keys("enter");
+    glyph.send_keys("left");
+    wait_for_tree(&glyph, TOP);
+    glyph.send_keys("enter");
     wait_for_tree(
-        &griffin,
+        &glyph,
         &[
             "▸ docs",
             "▾ src",
@@ -156,39 +156,39 @@ fn arrows_browse_and_enter_opens_a_file() {
             "  README.md",
         ],
     );
-    griffin.send_keys("down");
-    wait_for_selected(&griffin, 3, "  ▸ util");
-    griffin.send_keys("down");
-    wait_for_selected(&griffin, 4, "    main.rs");
-    griffin.send_keys("up");
-    wait_for_selected(&griffin, 3, "  ▸ util");
-    griffin.send_keys("down");
-    wait_for_selected(&griffin, 4, "    main.rs");
+    glyph.send_keys("down");
+    wait_for_selected(&glyph, 3, "  ▸ util");
+    glyph.send_keys("down");
+    wait_for_selected(&glyph, 4, "    main.rs");
+    glyph.send_keys("up");
+    wait_for_selected(&glyph, 3, "  ▸ util");
+    glyph.send_keys("down");
+    wait_for_selected(&glyph, 4, "    main.rs");
 
-    griffin.send_keys("enter");
-    griffin.wait_for_text("hello from main", WAIT);
-    let status = griffin.screen()[usize::from(ROWS - 1)].clone();
+    glyph.send_keys("enter");
+    glyph.wait_for_text("hello from main", WAIT);
+    let status = glyph.screen()[usize::from(ROWS - 1)].clone();
     assert!(status.contains("main.rs"), "{status:?}");
     // The editor has focus now: arrows move its cursor, not the tree selection.
-    griffin.send_keys("down");
-    griffin.wait_for_text("Ln 2, Col 1", WAIT);
-    wait_for_selected(&griffin, 4, "    main.rs");
+    glyph.send_keys("down");
+    glyph.wait_for_text("Ln 2, Col 1", WAIT);
+    wait_for_selected(&glyph, 4, "    main.rs");
 }
 
 #[test]
 fn clicking_selects_rows_and_opens_files() {
-    let mut griffin = open_project();
-    wait_for_tree(&griffin, TOP);
+    let mut glyph = open_project();
+    wait_for_tree(&glyph, TOP);
 
     // A file row: selected and opened.
-    griffin.click(5, 4);
-    griffin.wait_for_text("notes for the tree test", WAIT);
-    wait_for_selected(&griffin, 4, "  notes.txt");
+    glyph.click(5, 4);
+    glyph.wait_for_text("notes for the tree test", WAIT);
+    wait_for_selected(&glyph, 4, "  notes.txt");
 
     // A folder row: selected and expanded.
-    griffin.click(3, 2);
+    glyph.click(3, 2);
     wait_for_tree(
-        &griffin,
+        &glyph,
         &[
             "▸ docs",
             "▾ src",
@@ -199,38 +199,38 @@ fn clicking_selects_rows_and_opens_files() {
             "  README.md",
         ],
     );
-    wait_for_selected(&griffin, 2, "▾ src");
+    wait_for_selected(&glyph, 2, "▾ src");
 
-    griffin.click(10, 4);
-    griffin.wait_for_text("hello from main", WAIT);
-    wait_for_selected(&griffin, 4, "    main.rs");
+    glyph.click(10, 4);
+    glyph.wait_for_text("hello from main", WAIT);
+    wait_for_selected(&glyph, 4, "    main.rs");
 
     // Clicking the editor gives it focus back: typing edits the file.
-    let x = griffin
+    let x = glyph
         .text_col(1, "fn main")
         .expect("main.rs is showing on row 0");
-    griffin.click(x, 1);
-    griffin.type_text("x");
-    griffin.wait_for_text("xfn main", WAIT);
+    glyph.click(x, 1);
+    glyph.type_text("x");
+    glyph.wait_for_text("xfn main", WAIT);
 }
 
 #[test]
 fn opening_another_file_keeps_unsaved_changes_in_their_tab() {
     let notes_path = format!("{PROJECT}/notes.txt");
     let before = fs::read(&notes_path).expect("read notes");
-    let mut griffin = open_project();
-    wait_for_tree(&griffin, TOP);
-    griffin.click(5, 4);
-    griffin.wait_for_text("notes for the tree test", WAIT);
-    griffin.type_text("x");
-    griffin.wait_for_text("xnotes for the tree test", WAIT);
+    let mut glyph = open_project();
+    wait_for_tree(&glyph, TOP);
+    glyph.click(5, 4);
+    glyph.wait_for_text("notes for the tree test", WAIT);
+    glyph.type_text("x");
+    glyph.wait_for_text("xnotes for the tree test", WAIT);
 
     // The other file opens in a tab of its own, without asking.
-    griffin.click(5, 5);
-    griffin.wait_for_text("# Project fixture", WAIT);
-    griffin.wait_for_text(" notes.txt ●  README.md ", WAIT);
+    glyph.click(5, 5);
+    glyph.wait_for_text("# Project fixture", WAIT);
+    glyph.wait_for_text(" notes.txt ●  README.md ", WAIT);
     assert!(
-        !griffin
+        !glyph
             .screen()
             .join(
                 "
@@ -239,62 +239,62 @@ fn opening_another_file_keeps_unsaved_changes_in_their_tab() {
             .contains("Unsaved changes")
     );
     // Back on the first tab, the edit is still there and still unsaved.
-    griffin.click(5, 4);
-    griffin.wait_for_text("xnotes for the tree test", WAIT);
+    glyph.click(5, 4);
+    glyph.wait_for_text("xnotes for the tree test", WAIT);
     assert_eq!(fs::read(&notes_path).expect("read notes"), before);
 }
 
 #[test]
 fn ctrl_b_toggles_the_tree_and_ctrl_e_switches_focus() {
-    let mut griffin = open_project();
-    wait_for_tree(&griffin, TOP);
-    griffin.click(5, 5);
-    griffin.wait_for_text("# Project fixture", WAIT);
-    let editor_x = griffin
+    let mut glyph = open_project();
+    wait_for_tree(&glyph, TOP);
+    glyph.click(5, 5);
+    glyph.wait_for_text("# Project fixture", WAIT);
+    let editor_x = glyph
         .text_col(1, "# Project")
         .expect("README.md is showing on row 0");
     assert!(usize::from(editor_x) > TREE, "editor at column {editor_x}");
 
     // Ctrl+B hides the tree: the editor starts at column 0.
-    griffin.send_keys("ctrl+b");
-    griffin.wait_for_screen("the editor at column 0", WAIT, |screen| {
+    glyph.send_keys("ctrl+b");
+    glyph.wait_for_screen("the editor at column 0", WAIT, |screen| {
         screen[1].starts_with(" 1 │ # Project fixture")
     });
-    griffin.send_keys("ctrl+b");
-    wait_for_tree(&griffin, TOP);
+    glyph.send_keys("ctrl+b");
+    wait_for_tree(&glyph, TOP);
 
     // Ctrl+E moves focus to the tree: the cursor sits on the selected row and
     // arrows move the selection.
-    griffin.send_keys("ctrl+e");
-    griffin.wait_for_cursor(0, 5, WAIT);
-    griffin.send_keys("up");
-    wait_for_selected(&griffin, 4, "  notes.txt");
+    glyph.send_keys("ctrl+e");
+    glyph.wait_for_cursor(0, 5, WAIT);
+    glyph.send_keys("up");
+    wait_for_selected(&glyph, 4, "  notes.txt");
     // And back to the editor, where typing edits.
-    griffin.send_keys("ctrl+e");
-    griffin.type_text("y");
-    griffin.wait_for_text("y# Project fixture", WAIT);
+    glyph.send_keys("ctrl+e");
+    glyph.type_text("y");
+    glyph.wait_for_text("y# Project fixture", WAIT);
 
     // With the tree hidden, Ctrl+E brings it back focused.
-    griffin.send_keys("ctrl+b");
-    griffin.wait_for_screen("the editor at column 0", WAIT, |screen| {
+    glyph.send_keys("ctrl+b");
+    glyph.wait_for_screen("the editor at column 0", WAIT, |screen| {
         screen[1].starts_with(" 1 │ y# Project fixture")
     });
-    griffin.send_keys("ctrl+e");
-    wait_for_tree(&griffin, TOP);
-    griffin.wait_for_cursor(0, 4, WAIT);
+    glyph.send_keys("ctrl+e");
+    wait_for_tree(&glyph, TOP);
+    glyph.wait_for_cursor(0, 4, WAIT);
 }
 
 #[test]
 fn tree_keys_are_remappable_by_name() {
     let toml = "[keys]\ntoggle_tree = \"alt+b\"\nfocus_tree = \"alt+e\"\n";
-    let mut griffin = Griffin::spawn_with_config(toml, &[PROJECT]);
-    griffin.wait_for_text("README.md", START);
-    griffin.send_keys("alt+b");
-    griffin.wait_for_text_gone("README.md", WAIT);
-    griffin.send_keys("alt+e");
-    wait_for_tree(&griffin, TOP);
-    griffin.send_keys("ctrl+b");
+    let mut glyph = Glyph::spawn_with_config(toml, &[PROJECT]);
+    glyph.wait_for_text("README.md", START);
+    glyph.send_keys("alt+b");
+    glyph.wait_for_text_gone("README.md", WAIT);
+    glyph.send_keys("alt+e");
+    wait_for_tree(&glyph, TOP);
+    glyph.send_keys("ctrl+b");
     // Ctrl+B is no longer bound: the tree stays.
-    griffin.assert_running_for(Duration::from_millis(300));
-    wait_for_tree(&griffin, TOP);
+    glyph.assert_running_for(Duration::from_millis(300));
+    wait_for_tree(&glyph, TOP);
 }

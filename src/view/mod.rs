@@ -114,7 +114,7 @@ fn text_width(buf: &Buffer, area: Rect) -> usize {
 }
 
 /// Draws `buf` into `area`: a right-aligned line-number gutter, then each line cut
-/// at the right edge (Griffin never wraps), and puts the terminal cursor on the
+/// at the right edge (Glyph never wraps), and puts the terminal cursor on the
 /// buffer cursor when it's in view. Diagnostics are underlined in their colour and
 /// mark the gutter with the most severe one on the line; the selection and every
 /// highlight get the selection colours on top. Pure: reads its inputs only.

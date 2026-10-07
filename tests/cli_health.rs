@@ -1,4 +1,4 @@
-//! `griffin --health`: run the real binary with a PATH holding only a fake
+//! `glyph --health`: run the real binary with a PATH holding only a fake
 //! `rust-analyzer` and check the report word for word.
 
 use std::fs;
@@ -23,12 +23,12 @@ fn health(path: &Path, config: &str) -> std::process::Output {
     let config_dir = tempfile::tempdir().expect("create config dir");
     let config_file = config_dir.path().join("config.toml");
     fs::write(&config_file, config).expect("write config");
-    Command::new(env!("CARGO_BIN_EXE_griffin"))
+    Command::new(env!("CARGO_BIN_EXE_glyph"))
         .arg("--health")
         .env("PATH", path)
-        .env("GRIFFIN_CONFIG", &config_file)
+        .env("GLYPH_CONFIG", &config_file)
         .output()
-        .expect("run griffin --health")
+        .expect("run glyph --health")
 }
 
 #[test]

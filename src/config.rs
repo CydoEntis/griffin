@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// The user's `config.toml`. Sections Griffin doesn't know yet are ignored rather
+/// The user's `config.toml`. Sections Glyph doesn't know yet are ignored rather
 /// than rejected, so later tickets can add theirs without breaking old files.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default)]
@@ -82,21 +82,21 @@ pub struct Loaded {
     pub error: Option<String>,
 }
 
-/// Loads `config.toml` from `GRIFFIN_CONFIG` or the OS config dir.
+/// Loads `config.toml` from `GLYPH_CONFIG` or the OS config dir.
 pub fn load() -> Loaded {
-    match config_path(std::env::var_os("GRIFFIN_CONFIG")) {
+    match config_path(std::env::var_os("GLYPH_CONFIG")) {
         Some(path) => load_from(&path),
         None => Loaded::default(),
     }
 }
 
-/// `GRIFFIN_CONFIG` wins when set and non-empty; otherwise `%APPDATA%\griffin\` or
-/// `~/.config/griffin/`. `None` only when the OS has no config dir at all.
+/// `GLYPH_CONFIG` wins when set and non-empty; otherwise `%APPDATA%\glyph\` or
+/// `~/.config/glyph/`. `None` only when the OS has no config dir at all.
 pub fn config_path(env_override: Option<OsString>) -> Option<PathBuf> {
     if let Some(path) = env_override.filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(path));
     }
-    directories::BaseDirs::new().map(|dirs| dirs.config_dir().join("griffin").join("config.toml"))
+    directories::BaseDirs::new().map(|dirs| dirs.config_dir().join("glyph").join("config.toml"))
 }
 
 /// A missing file means defaults; an unreadable or malformed one means defaults
@@ -142,10 +142,10 @@ fn describe(err: &toml::de::Error, text: &str) -> String {
     }
 }
 
-/// The project's `.griffin.toml`, at the project root.
-pub const PROJECT_FILE: &str = ".griffin.toml";
+/// The project's `.glyph.toml`, at the project root.
+pub const PROJECT_FILE: &str = ".glyph.toml";
 
-/// `.griffin.toml`. Like `config.toml`, unknown sections are ignored.
+/// `.glyph.toml`. Like `config.toml`, unknown sections are ignored.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct ProjectConfig {
@@ -162,7 +162,7 @@ pub struct RunEntry {
     pub cwd: Option<String>,
 }
 
-/// What loading `.griffin.toml` produced: always a usable (maybe empty) config,
+/// What loading `.glyph.toml` produced: always a usable (maybe empty) config,
 /// plus why it fell back to empty, if it did.
 #[derive(Debug, Default)]
 pub struct LoadedProject {
@@ -170,7 +170,7 @@ pub struct LoadedProject {
     pub error: Option<String>,
 }
 
-/// Reads `.griffin.toml` from `root`. A missing file means no entries; an
+/// Reads `.glyph.toml` from `root`. A missing file means no entries; an
 /// unreadable or malformed one means no entries plus a one-line error.
 pub fn load_project(root: &Path) -> LoadedProject {
     let path = root.join(PROJECT_FILE);
@@ -370,9 +370,9 @@ mod tests {
     }
 
     #[test]
-    fn default_path_is_griffin_config_toml_in_the_os_config_dir() {
+    fn default_path_is_glyph_config_toml_in_the_os_config_dir() {
         let path = config_path(None).expect("test machines have a config dir");
-        assert!(path.ends_with(Path::new("griffin").join("config.toml")));
+        assert!(path.ends_with(Path::new("glyph").join("config.toml")));
         let base = directories::BaseDirs::new().unwrap();
         assert!(path.starts_with(base.config_dir()));
         assert!(config_path(Some(OsString::new())) == Some(path));
@@ -435,7 +435,7 @@ mod tests {
         let loaded = parse_project("[[run]]\nname = \"dev\"\ncommand = = 1\n");
         assert!(loaded.config.run.is_empty());
         let error = loaded.error.expect("malformed toml is an error");
-        assert!(error.starts_with(".griffin.toml line 3:"), "{error}");
+        assert!(error.starts_with(".glyph.toml line 3:"), "{error}");
         assert!(!error.contains('\n'), "{error}");
     }
 
