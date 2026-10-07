@@ -447,6 +447,29 @@ impl Glyph {
         }
     }
 
+    /// Whether the cell at (`col`, `row`) has the DIM attribute.
+    pub fn dim_at(&self, col: u16, row: u16) -> bool {
+        self.parser()
+            .screen()
+            .cell(row, col)
+            .is_some_and(vt100::Cell::dim)
+    }
+
+    /// The text of the cells on `row` whose background is `color`, in order. A
+    /// blank cell counts as a space.
+    pub fn bg_text(&self, row: u16, color: vt100::Color) -> String {
+        let parser = self.parser();
+        let screen = parser.screen();
+        (0..COLS)
+            .filter_map(|col| screen.cell(row, col))
+            .filter(|cell| cell.bgcolor() == color && !cell.is_wide_continuation())
+            .map(|cell| match cell.contents() {
+                "" => " ".to_string(),
+                text => text.to_string(),
+            })
+            .collect()
+    }
+
     /// The background colour of the cell at (`col`, `row`).
     pub fn bg_at(&self, col: u16, row: u16) -> vt100::Color {
         self.parser()

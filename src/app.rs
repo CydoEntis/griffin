@@ -940,6 +940,18 @@ impl App {
                 // Windows Terminal's own Ctrl+V paste arrives this way too.
                 self.edit(|buffer| buffer.paste(&text));
             }
+            // A click outside a dialog is Esc (SPEC_V1_LAYOUT §7); its confirm
+            // prompt, when open, takes the keys instead.
+            AppEvent::Input(Event::Mouse(mouse))
+                if self.project_search.is_some() && self.prompt.is_none() =>
+            {
+                let card = ProjectSearch::card(self.screen);
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                    && !card.contains(Position::new(mouse.column, mouse.row))
+                {
+                    self.close_project_search();
+                }
+            }
             // The mouse bypasses the keymap too: only keys are remappable.
             AppEvent::Input(Event::Mouse(mouse)) if !self.modal_open() => {
                 if mouse.kind != MouseEventKind::Moved {
@@ -4281,7 +4293,7 @@ world",
         press(&mut app, &["alt+f", "a", "enter"]);
         // `a.txt` shows once, as the buffer has it, not again as the disk does.
         assert_eq!(hit_rows(&app), ["a.txt:1: ax", "sub/c.txt:2: two a"]);
-        assert_eq!(panel(&app).status(), "2 hits");
+        assert_eq!(panel(&app).status(), "2 matches in 2 files");
         press(&mut app, &["down", "enter"]);
         assert!(app.project_search.is_none());
         assert_eq!(
@@ -4300,7 +4312,7 @@ world",
         assert_eq!(hit_rows(&app), ["a.txt:1: a"]);
         press(&mut app, &["alt+c"]);
         assert!(hit_rows(&app).is_empty());
-        assert_eq!(panel(&app).status(), "no hits");
+        assert_eq!(panel(&app).status(), "no matches");
         press(&mut app, &["alt+c", "alt+r", "backspace", "("]);
         press(&mut app, &["enter"]);
         assert_eq!(panel(&app).status(), "invalid regex");
@@ -4353,7 +4365,7 @@ needle
         }
         assert!(batches > 1, "every hit came in one batch");
         assert_eq!(panel(&app).hits().len(), 2000);
-        assert_eq!(panel(&app).status(), "2000 hits");
+        assert_eq!(panel(&app).status(), "2000 matches in 2000 files");
         Ok(())
     }
 
@@ -4392,7 +4404,7 @@ needle
     /// Searches for `todo`, then asks to replace it with `done`.
     fn replace_todo(app: &mut App) {
         press(app, &["alt+f", "t", "o", "d", "o", "enter"]);
-        assert_eq!(panel(app).status(), "3 hits");
+        assert_eq!(panel(app).status(), "4 matches in 2 files");
         press(app, &["tab", "d", "o", "n", "e", "alt+a"]);
     }
 
@@ -4430,7 +4442,7 @@ needle
         );
         assert!(app.buffer().dirty);
         // The list was searched again: nothing is left to find.
-        assert_eq!(panel(&app).status(), "no hits");
+        assert_eq!(panel(&app).status(), "no matches");
         // One undo step takes the buffer's whole replace back.
         press(&mut app, &["esc", "ctrl+z"]);
         assert_eq!(
@@ -4469,7 +4481,7 @@ needle
             "fn main() {\n    // done tidy\n}\n"
         );
         // What's left is what the failed file still holds.
-        assert_eq!(panel(&app).status(), "2 hits");
+        assert_eq!(panel(&app).status(), "3 matches in 1 file");
         Ok(())
     }
 
@@ -4483,7 +4495,7 @@ needle
         assert_eq!(app.prompt, None);
         assert_eq!(app.pending_replace, None);
         assert_eq!(std::fs::read(&notes)?, before);
-        assert_eq!(panel(&app).status(), "3 hits");
+        assert_eq!(panel(&app).status(), "4 matches in 2 files");
         Ok(())
     }
 }

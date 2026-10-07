@@ -2,9 +2,10 @@
 //! text being typed, e.g. `New file: notes.md`.
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::buffer::movement::Motion;
 use crate::keymap::{Action, Input};
@@ -119,6 +120,37 @@ impl PromptBar {
             .min(area.width.saturating_sub(1));
         (area.x + col, area.y)
     }
+
+    /// Draws just the text in `style` from the left of `area`, without the label,
+    /// for a dialog's input row. When the text before the cursor doesn't fit,
+    /// its start scrolls off so the cursor stays in view. Returns where the
+    /// cursor goes.
+    pub fn render_value(&self, buf: &mut Buffer, area: Rect, style: Style) -> (u16, u16) {
+        if area.width == 0 {
+            return (area.x, area.y);
+        }
+        let room = usize::from(area.width) - 1;
+        let mut skip = 0;
+        let mut before: usize = self
+            .text
+            .chars()
+            .take(self.cursor)
+            .map(|c| c.width().unwrap_or(0))
+            .sum();
+        for c in self.text.chars().take(self.cursor) {
+            if before <= room {
+                break;
+            }
+            before -= c.width().unwrap_or(0);
+            skip += 1;
+        }
+        let shown: String = self.text.chars().skip(skip).collect();
+        buf.set_stringn(area.x, area.y, shown, usize::from(area.width), style);
+        let col = u16::try_from(before)
+            .unwrap_or(u16::MAX)
+            .min(area.width - 1);
+        (area.x + col, area.y)
+    }
 }
 
 #[cfg(test)]
@@ -175,5 +207,16 @@ mod tests {
         assert_eq!(row.trim_end(), "New file: notes.md");
         assert_eq!(at, (18, 1));
         Ok(())
+    }
+
+    #[test]
+    fn a_value_too_long_for_its_row_scrolls_to_keep_the_cursor_in_view() {
+        let bar = PromptBar::new("Search", "abcdefgh");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 5, 1));
+        let at = bar.render_value(&mut buf, Rect::new(0, 0, 5, 1), Style::new());
+        let row: String = (0..5).map(|x| buf[(x, 0)].symbol()).collect();
+        // Four letters and the cursor after them.
+        assert_eq!(row, "efgh ");
+        assert_eq!(at, (4, 0));
     }
 }
