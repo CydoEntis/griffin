@@ -133,6 +133,11 @@ impl Buffer {
     /// between them selected, the cursor at the same end as before.
     fn wrap_selection(&mut self, range: Range<usize>, opener: char, closer: char) {
         let cursor_at_start = self.cursor == range.start;
+        let anchor = if cursor_at_start {
+            range.end
+        } else {
+            range.start
+        };
         self.begin_group();
         // The closer first, so `range.start` still points at the selection.
         for (at, ch) in [(range.end, closer), (range.start, opener)] {
@@ -143,6 +148,7 @@ impl Buffer {
             });
         }
         self.end_group();
+        self.history.select_on_undo(anchor);
         let (start, end) = (range.start + 1, range.end + 1);
         let (anchor, cursor) = if cursor_at_start {
             (end, start)
@@ -588,6 +594,7 @@ b]}"
         b.undo();
         assert_eq!(b.rope.to_string(), "x foo");
         assert_eq!(b.cursor, 5);
+        assert_eq!(b.selected_text().as_deref(), Some("foo"));
         assert!(!b.history.can_undo());
     }
 
