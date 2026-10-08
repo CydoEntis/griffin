@@ -1862,6 +1862,9 @@ impl App {
                 | Action::StepOver
                 | Action::StepInto
                 | Action::StepOut => {}
+                // Alt+F5 continues a paused session, which needs no buffer;
+                // starting one does, as the file shown picks the adapter.
+                Action::DebugStart if self.debug.is_some() => {}
                 // The rest act on a buffer, and the splash and the key list
                 // stand for there being none.
                 _ => return,

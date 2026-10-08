@@ -550,3 +550,32 @@ fn a_refused_step_keeps_the_program_paused_where_it_was() {
         .collect();
     assert_eq!(threads, [json!(7), json!(7), json!(7)]);
 }
+
+#[test]
+fn alt_f5_continues_a_paused_session_with_no_file_open() {
+    let project = Project::new(json!({}), "");
+    let script = json!({
+        "events": {"configurationDone": [stopped(7)]},
+        "responses": {"stackTrace": stacks(&project, &[3])},
+    });
+    write_script(&project, &script);
+
+    let mut glyph = project.open("main.py");
+    glyph.send_keys("alt+f5");
+    wait_for_status(&glyph, "‖ paused main.py:3");
+
+    // Closing the last tab leaves the key list, but the session is still
+    // paused and Alt+F5 still continues it.
+    glyph.send_keys("ctrl+w");
+    glyph.wait_for_text("no file open", WAIT);
+    glyph.send_keys("alt+f5");
+    project.wait_for(&glyph, "continue", 1);
+
+    let threads: Vec<Value> = project
+        .requests()
+        .iter()
+        .filter(|r| r["command"] == "continue")
+        .map(|r| r["arguments"]["threadId"].clone())
+        .collect();
+    assert_eq!(threads, [json!(7)]);
+}
