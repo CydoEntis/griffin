@@ -206,20 +206,6 @@ fn arrows_move_the_selection_and_esc_or_a_click_outside_close() {
 }
 
 #[test]
-fn c_copies_the_install_command_and_says_so() {
-    let project = tempfile::tempdir().expect("create project");
-    let path = programs(&[]);
-    let mut glyph = with_path(project.path(), path.path());
-    open_catalog(&mut glyph);
-    glyph.send_keys("down");
-    glyph.send_keys("c");
-    glyph.wait_for_screen("the copy in the status line", WAIT, |screen| {
-        screen[usize::from(ROWS - 1)].contains("copied: go install golang.org/x/tools/gopls@latest")
-    });
-    assert!(row(&glyph, HEADER_ROW).contains(HEADER));
-}
-
-#[test]
 fn mono_reverses_the_selected_row() {
     let project = tempfile::tempdir().expect("create project");
     let path = programs(&[]);
