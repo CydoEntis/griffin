@@ -178,7 +178,7 @@ fn put(out: &mut Buffer, area: Rect, x: u16, y: u16, text: &str, style: Style) {
 }
 
 /// `text` in at most `room` columns, its end replaced by `…` when it doesn't fit.
-fn cut(text: &str, room: usize) -> String {
+pub(crate) fn cut(text: &str, room: usize) -> String {
     if text.width() <= room {
         return text.to_string();
     }
