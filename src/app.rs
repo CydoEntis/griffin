@@ -113,6 +113,9 @@ enum Prompt {
     Trash,
     /// Replacing project search's hits in every listed file.
     ProjectReplace,
+    /// Opening another folder while tabs have unsaved changes, asked once about
+    /// all of them.
+    UnsavedSwitch,
 }
 
 /// A project replace waiting for its prompt's answer.
@@ -134,6 +137,9 @@ enum AfterSave {
     Close,
     /// The quit prompt's save: go on to the next dirty tab, or quit.
     Quit,
+    /// The switch prompt's Save all: go on to the next dirty tab, or open the
+    /// pending folder.
+    Switch,
 }
 
 /// What the prompt bar's answer will be used for.
@@ -194,6 +200,21 @@ const UNSAVED: &[Choice] = &[
     Choice {
         key: 's',
         label: "Save",
+    },
+    Choice {
+        key: 'd',
+        label: "Discard",
+    },
+    Choice {
+        key: 'c',
+        label: "Cancel",
+    },
+];
+
+const UNSAVED_SWITCH: &[Choice] = &[
+    Choice {
+        key: 's',
+        label: "Save all",
     },
     Choice {
         key: 'd',
@@ -759,6 +780,9 @@ pub struct App {
     pending_replace: Option<PendingReplace>,
     /// The entry the trash prompt will move once answered.
     pending_trash: Option<PathBuf>,
+    /// The folder the unsaved-files prompt will open once its tabs are saved
+    /// or discarded. Emptied when the switch is cancelled.
+    pending_switch: Option<PathBuf>,
     /// Tabs whose changes the user chose to discard while quitting, so the quit
     /// prompt moves on to the next one. Emptied when the quit is cancelled.
     quit_discarded: Vec<u64>,
@@ -1835,6 +1859,33 @@ impl App {
                     choices: REPLACE,
                 }
             }
+            Prompt::UnsavedSwitch => {
+                let names: Vec<String> = self
+                    .tabs
+                    .docs
+                    .iter()
+                    .filter(|doc| doc.buffer.dirty)
+                    .map(|doc| {
+                        doc.buffer
+                            .path
+                            .as_deref()
+                            .map_or_else(|| "untitled".to_string(), file_name)
+                    })
+                    .collect();
+                let count = names.len();
+                Confirm {
+                    question: Cow::Owned(format!(
+                        "{} unsaved changes",
+                        if count == 1 {
+                            "1 file has".to_string()
+                        } else {
+                            format!("{count} files have")
+                        }
+                    )),
+                    explanation: Cow::Owned(names.join(", ")),
+                    choices: UNSAVED_SWITCH,
+                }
+            }
         }
     }
 
@@ -2109,12 +2160,44 @@ impl App {
     /// the tree shows the new folder beside the splash. Everything else that reads
     /// the project (Ctrl+P, project search, F5, save as, new servers) asks the
     /// tree for its root, so it follows. Unsaved changes would be lost, so with
-    /// any it refuses and says so.
+    /// any it first asks, once, whether to save them all or discard them.
     fn open_project(&mut self, dir: &Path) {
         if self.tabs.docs.iter().any(|doc| doc.buffer.dirty) {
-            self.say(Tone::Warn, "save or close unsaved files first");
+            self.pending_switch = Some(dir.to_path_buf());
+            self.ask(Prompt::UnsavedSwitch);
             return;
         }
+        self.switch_project(dir);
+    }
+
+    /// Save all on the switch prompt, and after each of its saves: saves the
+    /// next tab with unsaved changes (switching to it, so an untitled one's save
+    /// as shows which buffer it names), or opens the pending folder when none
+    /// is left.
+    fn continue_switch(&mut self) {
+        let next = self
+            .tabs
+            .docs
+            .iter()
+            .find(|doc| doc.buffer.dirty)
+            .map(|doc| doc.id);
+        match next {
+            Some(doc) => {
+                self.tabs.reveal(doc);
+                self.reset_mouse();
+                self.follow_cursor();
+                self.save_or_ask(AfterSave::Switch);
+            }
+            None => {
+                if let Some(dir) = self.pending_switch.take() {
+                    self.switch_project(&dir);
+                }
+            }
+        }
+    }
+
+    /// Opens `dir` as the project, whatever the tabs hold.
+    fn switch_project(&mut self, dir: &Path) {
         // The run's command was started in the old folder and belongs to it.
         if let Some(view) = &mut self.run
             && view.status == RunStatus::Running
@@ -2138,7 +2221,8 @@ impl App {
         if self.tabs.splits.len() > 1 {
             self.tabs.toggle_split();
         }
-        // Every tab is saved, so no backup is needed any more.
+        // Every tab was saved or its changes discarded, so no backup is needed
+        // any more.
         for doc in self.tabs.close_where(|_| true) {
             let _ = self.backups.delete(doc.buffer.path.as_deref(), doc.id);
         }
@@ -2548,6 +2632,9 @@ impl App {
             (AfterSave::Close, true) => self.close_active(),
             (AfterSave::Quit, true) => self.continue_quit(),
             (AfterSave::Quit, false) => self.quit_discarded.clear(),
+            (AfterSave::Switch, true) => self.continue_switch(),
+            // The tabs saved so far stay saved; nothing is closed.
+            (AfterSave::Switch, false) => self.pending_switch = None,
             _ => {}
         }
     }
@@ -2843,6 +2930,13 @@ impl App {
             }
             (Prompt::UnsavedClose, Answer::Picked('d')) => self.close_active(),
             (Prompt::UnsavedClose, _) => {}
+            (Prompt::UnsavedSwitch, Answer::Picked('s')) => self.continue_switch(),
+            (Prompt::UnsavedSwitch, Answer::Picked('d')) => {
+                if let Some(dir) = self.pending_switch.take() {
+                    self.switch_project(&dir);
+                }
+            }
+            (Prompt::UnsavedSwitch, _) => self.pending_switch = None,
             (Prompt::Trash, Answer::Picked('y')) => self.trash_pending(),
             (Prompt::Trash, _) => self.pending_trash = None,
             (Prompt::ProjectReplace, Answer::Picked('r')) => self.replace_in_project(),
@@ -4302,19 +4396,83 @@ world",
     }
 
     #[test]
-    fn opening_a_folder_with_unsaved_changes_refuses() -> Result<()> {
+    fn opening_a_folder_with_unsaved_changes_asks_once_and_cancel_keeps_all() -> Result<()> {
+        let (dir, mut app) = project()?;
+        let other = tempfile::tempdir()?;
+        app.open(&dir.path().join("a.txt"));
+        app.focus = Focus::Editor;
+        type_keys(&mut app, "x");
+        app.open(&dir.path().join("b.txt"));
+        type_keys(&mut app, "y");
+        app.folders_step(Browsed::Open(other.path().to_path_buf()));
+        assert_eq!(app.prompt, Some(Prompt::UnsavedSwitch));
+        let card = app.confirm(Prompt::UnsavedSwitch);
+        assert_eq!(card.question, "2 files have unsaved changes");
+        assert_eq!(card.explanation, "a.txt, b.txt");
+        press(&mut app, &["c"]);
+        assert_eq!(app.prompt, None);
+        assert_eq!(app.pending_switch, None);
+        assert_eq!(app.tree.root(), dir.path());
+        assert_eq!(tab_names(&app), ["a.txt ●", "b.txt ●"]);
+        Ok(())
+    }
+
+    #[test]
+    fn save_all_saves_each_unsaved_tab_then_switches() -> Result<()> {
+        let (dir, mut app) = project()?;
+        let other = tempfile::tempdir()?;
+        app.open(&dir.path().join("a.txt"));
+        app.focus = Focus::Editor;
+        type_keys(&mut app, "x");
+        app.open(&dir.path().join("b.txt"));
+        type_keys(&mut app, "y");
+        app.folders_step(Browsed::Open(other.path().to_path_buf()));
+        press(&mut app, &["s"]);
+        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt"))?, "xa");
+        assert_eq!(std::fs::read_to_string(dir.path().join("b.txt"))?, "yb");
+        assert_eq!(app.tree.root(), other.path());
+        assert_eq!(tab_names(&app), ["untitled"]);
+        Ok(())
+    }
+
+    #[test]
+    fn cancelling_an_untitled_save_as_cancels_the_switch() -> Result<()> {
+        let (dir, mut app) = project()?;
+        let other = tempfile::tempdir()?;
+        app.open(&dir.path().join("a.txt"));
+        app.focus = Focus::Editor;
+        type_keys(&mut app, "x");
+        press(&mut app, &["ctrl+n"]);
+        type_keys(&mut app, "new");
+        app.folders_step(Browsed::Open(other.path().to_path_buf()));
+        press(&mut app, &["s"]);
+        // a.txt is saved first; the untitled tab then asks for a name.
+        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt"))?, "xa");
+        assert!(app.name_prompt.is_some());
+        press(&mut app, &["esc"]);
+        assert!(app.name_prompt.is_none());
+        assert_eq!(app.pending_switch, None);
+        assert_eq!(app.tree.root(), dir.path());
+        assert_eq!(tab_names(&app), ["a.txt", "untitled ●"]);
+        Ok(())
+    }
+
+    #[test]
+    fn discard_switches_without_saving() -> Result<()> {
         let (dir, mut app) = project()?;
         let other = tempfile::tempdir()?;
         app.open(&dir.path().join("a.txt"));
         app.focus = Focus::Editor;
         type_keys(&mut app, "x");
         app.folders_step(Browsed::Open(other.path().to_path_buf()));
-        assert_eq!(app.tree.root(), dir.path());
-        assert_eq!(tab_names(&app), ["a.txt ●"]);
         assert_eq!(
-            app.message.as_deref(),
-            Some("save or close unsaved files first")
+            app.confirm(Prompt::UnsavedSwitch).question,
+            "1 file has unsaved changes"
         );
+        press(&mut app, &["d"]);
+        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt"))?, "a");
+        assert_eq!(app.tree.root(), other.path());
+        assert_eq!(tab_names(&app), ["untitled"]);
         Ok(())
     }
 

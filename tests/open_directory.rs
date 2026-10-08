@@ -320,22 +320,192 @@ fn opening_a_folder_makes_it_the_project() {
     });
 }
 
-#[test]
-fn unsaved_files_stop_the_switch() {
-    let dir = folder(&["other"], &[("a.txt", "hello\n")]);
+/// A project holding `a.txt`, `b.txt` and the folder `other` (with
+/// `marker.txt`), glyph open on `a.txt` with `x` typed into it.
+fn edited_project() -> (TempDir, Glyph) {
+    let dir = folder(
+        &["other"],
+        &[
+            (
+                "a.txt", "hello
+",
+            ),
+            (
+                "b.txt", "bye
+",
+            ),
+            ("other/marker.txt", ""),
+        ],
+    );
     let mut glyph = Glyph::spawn_in(dir.path(), &["a.txt"]);
     glyph.wait_for_text("hello", START);
     glyph.type_text("x");
     glyph.wait_for_text("xhello", WAIT);
-    open_browser(&mut glyph);
+    (dir, glyph)
+}
+
+/// Opens `b.txt` through Ctrl+P and types `y` into it.
+fn edit_b(glyph: &mut Glyph) {
+    glyph.send_keys("ctrl+p");
+    glyph.wait_for_text("cast · files · commands", WAIT);
+    glyph.type_text("b.txt");
+    glyph.wait_for_screen("b.txt listed", WAIT, |screen| {
+        screen[usize::from(FIRST_ROW)].contains("b.txt")
+    });
+    glyph.send_keys("enter");
+    glyph.wait_for_text("bye", WAIT);
+    glyph.type_text("y");
+    glyph.wait_for_text("ybye", WAIT);
+}
+
+/// Picks `other` in the folder browser and opens it.
+fn open_other(glyph: &mut Glyph) {
+    open_browser(glyph);
     glyph.send_keys("down");
     glyph.send_keys("enter");
     glyph.wait_for_screen("inside other", WAIT, |screen| {
         screen[usize::from(HEADER_ROW)].contains("other")
     });
     glyph.send_keys("enter");
-    glyph.wait_for_text("save or close unsaved files first", WAIT);
-    // Nothing changed: the edited tab is still open.
-    assert!(glyph.screen().iter().any(|line| line.contains("xhello")));
     glyph.wait_for_text_gone(SCOPE, WAIT);
+}
+
+fn read(dir: &Path, name: &str) -> String {
+    fs::read_to_string(dir.join(name)).expect("read file")
+}
+
+#[test]
+fn unsaved_files_ask_once_and_cancel_changes_nothing() {
+    let (dir, mut glyph) = edited_project();
+    edit_b(&mut glyph);
+    open_other(&mut glyph);
+    // One card for both files, naming them, with its three buttons.
+    glyph.wait_for_text("2 files have unsaved changes", WAIT);
+    glyph.wait_for_text("a.txt, b.txt", WAIT);
+    glyph.wait_for_text(" Save all    Discard    Cancel ", WAIT);
+    assert!(
+        !glyph
+            .screen()
+            .iter()
+            .any(|line| line.contains("save or close unsaved files first"))
+    );
+
+    glyph.type_text("c");
+    glyph.wait_for_text_gone("2 files have unsaved changes", WAIT);
+    // Nothing changed: both edited tabs are open, nothing saved, no switch.
+    assert!(glyph.screen().iter().any(|line| line.contains("ybye")));
+    assert!(
+        !glyph
+            .screen()
+            .iter()
+            .any(|line| line.contains("marker.txt"))
+    );
+    assert_eq!(
+        read(dir.path(), "a.txt"),
+        "hello
+"
+    );
+    assert_eq!(
+        read(dir.path(), "b.txt"),
+        "bye
+"
+    );
+    glyph.send_keys("alt+,");
+    glyph.wait_for_text("xhello", WAIT);
+}
+
+#[test]
+fn save_all_saves_each_file_then_switches() {
+    let (dir, mut glyph) = edited_project();
+    edit_b(&mut glyph);
+    open_other(&mut glyph);
+    glyph.wait_for_text("2 files have unsaved changes", WAIT);
+    glyph.send_keys("enter");
+    glyph.wait_for_text("marker.txt", WAIT);
+    assert_eq!(
+        read(dir.path(), "a.txt"),
+        "xhello
+"
+    );
+    assert_eq!(
+        read(dir.path(), "b.txt"),
+        "ybye
+"
+    );
+    assert!(!glyph.screen().iter().any(|line| line.contains("ybye")));
+}
+
+#[test]
+fn save_all_names_an_untitled_file_through_save_as() {
+    let (dir, mut glyph) = edited_project();
+    glyph.send_keys("ctrl+n");
+    glyph.wait_for_text("untitled", WAIT);
+    glyph.type_text("fresh");
+    glyph.wait_for_text("fresh", WAIT);
+    open_other(&mut glyph);
+    glyph.wait_for_text("2 files have unsaved changes", WAIT);
+    glyph.wait_for_text("a.txt, untitled", WAIT);
+    glyph.type_text("s");
+    glyph.wait_for_text(" Save as  ", WAIT);
+    glyph.type_text("named.txt");
+    glyph.send_keys("enter");
+    glyph.wait_for_text("marker.txt", WAIT);
+    assert_eq!(
+        read(dir.path(), "a.txt"),
+        "xhello
+"
+    );
+    assert_eq!(read(dir.path(), "named.txt"), "fresh");
+}
+
+#[test]
+fn cancelling_the_save_as_cancels_the_switch() {
+    let (dir, mut glyph) = edited_project();
+    glyph.send_keys("ctrl+n");
+    glyph.wait_for_text("untitled", WAIT);
+    glyph.type_text("fresh");
+    glyph.wait_for_text("fresh", WAIT);
+    open_other(&mut glyph);
+    glyph.wait_for_text("2 files have unsaved changes", WAIT);
+    glyph.type_text("s");
+    glyph.wait_for_text(" Save as  ", WAIT);
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(" Save as  ", WAIT);
+    // a.txt was saved before the untitled tab asked; nothing was closed and
+    // the project stayed.
+    assert_eq!(
+        read(dir.path(), "a.txt"),
+        "xhello
+"
+    );
+    assert!(glyph.screen().iter().any(|line| line.contains("fresh")));
+    assert!(
+        !glyph
+            .screen()
+            .iter()
+            .any(|line| line.contains("marker.txt"))
+    );
+    glyph.send_keys("alt+,");
+    glyph.wait_for_text("xhello", WAIT);
+}
+
+#[test]
+fn discard_switches_without_saving() {
+    let (dir, mut glyph) = edited_project();
+    edit_b(&mut glyph);
+    open_other(&mut glyph);
+    glyph.wait_for_text("2 files have unsaved changes", WAIT);
+    glyph.type_text("d");
+    glyph.wait_for_text("marker.txt", WAIT);
+    assert!(!glyph.screen().iter().any(|line| line.contains("ybye")));
+    assert_eq!(
+        read(dir.path(), "a.txt"),
+        "hello
+"
+    );
+    assert_eq!(
+        read(dir.path(), "b.txt"),
+        "bye
+"
+    );
 }
