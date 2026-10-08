@@ -18,16 +18,19 @@ const WAIT: Duration = Duration::from_secs(10);
 /// At 100x30 the catalog is the cast's card: 86 wide from column 7, dropping
 /// from row 4 with its lit edge. The header is row 6, the rule row 7 and the
 /// servers rows 8 to 14, their text four cells in; the states end four cells
-/// in from the card's right edge. A blank, then the footer two cells in.
+/// in from the card's right edge. A blank, the `debuggers` heading on row 16
+/// and the adapters on rows 17 to 19; a blank, then the footer two cells in.
 const CARD_X: u16 = 7;
 const CARD_Y: u16 = 4;
 const HEADER_ROW: u16 = 6;
 const RULE_ROW: u16 = 7;
 const FIRST_ROW: u16 = 8;
+const DEBUGGERS_ROW: u16 = 16;
+const LAST_ROW: u16 = 19;
 const TEXT_X: u16 = 11;
 const COMMAND_X: u16 = 36;
 const RIGHT: u16 = 89;
-const FOOTER_ROW: u16 = 16;
+const FOOTER_ROW: u16 = 21;
 const HEADER: &str = "✦ language servers";
 const FOOTER: &str = "⏎ install  c copy command  esc close";
 
@@ -188,7 +191,7 @@ fn arrows_move_the_selection_and_esc_or_a_click_outside_close() {
     for _ in 0..10 {
         glyph.send_keys("down");
     }
-    glyph.wait_for_bg(CARD_X, FIRST_ROW + 6, lit, WAIT);
+    glyph.wait_for_bg(CARD_X, LAST_ROW, lit, WAIT);
     for _ in 0..10 {
         glyph.send_keys("up");
     }
@@ -471,4 +474,301 @@ fn server_not_found_says_the_catalog_installs_it() {
         "rust: server not found (nope) · >language servers installs it",
         START,
     );
+}
+
+/// The tool `lldb-dap`'s install runs on this platform.
+const LLDB_TOOL: &str = if cfg!(windows) { "winget" } else { "apt" };
+const LLDB_INSTALL: &str = if cfg!(windows) {
+    "winget install --id LLVM.LLVM -e --accept-source-agreements --accept-package-agreements"
+} else {
+    "sudo apt install lldb"
+};
+
+/// Writes the script `name` into `dir`: `windows` as `name.cmd`, `unix` as an
+/// executable `name`. The catalog finds either as the program `name`.
+fn script(dir: &Path, name: &str, windows: &str, unix: &str) {
+    if cfg!(windows) {
+        fs::write(dir.join(format!("{name}.cmd")), windows).expect("write fake script");
+    } else {
+        let path = dir.join(name);
+        fs::write(&path, unix).expect("write fake script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+                .expect("make fake script executable");
+        }
+    }
+}
+
+/// `dir` on PATH ahead of the folders the platform shell and the scripts'
+/// commands come from, but none of the user's own programs.
+fn path_with_shell(dir: &Path) -> OsString {
+    let system: Vec<std::path::PathBuf> = if cfg!(windows) {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        vec![Path::new(&root).join("System32")]
+    } else {
+        vec!["/usr/bin".into(), "/bin".into()]
+    };
+    std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(system)).expect("join PATH")
+}
+
+/// Glyph on an empty project with `path` as its PATH, an empty LLVM folder, and
+/// its clipboard in the file `clipboard`. Windows can still hand Glyph the real
+/// `ProgramFiles` (CI's windows-latest has LLVM there), so a test that asserts
+/// lldb-dap's state asks `lldb_state` what to expect.
+fn with_adapters_path(project: &Path, path: OsString, clipboard: &Path) -> (Glyph, TempDir) {
+    let program_files = tempfile::tempdir().expect("create Program Files");
+    let env = [
+        ("PATH", path),
+        ("ProgramFiles", program_files.path().as_os_str().to_owned()),
+        ("GLYPH_CLIPBOARD_FILE", clipboard.as_os_str().to_owned()),
+    ];
+    let glyph = Glyph::spawn_in_with_env(project, &env, &["."]);
+    glyph.wait_for_text("Open directory", START);
+    (glyph, program_files)
+}
+
+/// lldb-dap's state when it isn't on PATH: `installed` when LLVM's own folder
+/// on this machine has it, as on CI's Windows runner, else `missing`.
+fn lldb_state() -> &'static str {
+    let program_files =
+        std::env::var_os("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".into());
+    let lldb = Path::new(&program_files)
+        .join("LLVM")
+        .join("bin")
+        .join("lldb-dap.exe");
+    if cfg!(windows) && lldb.is_file() {
+        "installed"
+    } else {
+        "missing"
+    }
+}
+
+/// Moves the selection from the first row down to row `y`.
+fn select(glyph: &mut Glyph, y: u16) {
+    let lit = mix(RAISED, ACCENT, 0.3);
+    glyph.wait_for_bg(CARD_X, FIRST_ROW, lit, WAIT);
+    // The heading isn't a row: the adapters follow SQL a ↓ each, so this
+    // stops short of `y` by the heading and its blank.
+    for _ in FIRST_ROW..y - 2 {
+        glyph.send_keys("down");
+    }
+    glyph.wait_for_bg(CARD_X, y, lit, WAIT);
+}
+
+#[test]
+fn debuggers_are_listed_under_their_heading_and_copy_their_install() {
+    let project = tempfile::tempdir().expect("create project");
+    let clip = tempfile::tempdir().expect("create clipboard dir");
+    let clipboard = clip.path().join("clip");
+    // lldb-dap's install tool and a Python that can't import anything, but
+    // no Go.
+    let path = programs(&[LLDB_TOOL]);
+    script(
+        path.path(),
+        "python",
+        "@exit /b 1\r\n",
+        "#!/bin/sh\nexit 1\n",
+    );
+    let (mut glyph, _llvm) =
+        with_adapters_path(project.path(), OsString::from(path.path()), &clipboard);
+    open_catalog(&mut glyph);
+    // The header can arrive before the rest of the card (ConPTY streams the
+    // redraw in pieces), so wait for every adapter's state and the footer.
+    glyph.wait_for_screen("the debuggers' states", WAIT, |screen| {
+        let at = |y: u16| &screen[usize::from(y)];
+        at(DEBUGGERS_ROW + 1).contains(lldb_state())
+            && at(DEBUGGERS_ROW + 2).contains("missing")
+            && at(LAST_ROW).contains("needs go")
+            && at(FOOTER_ROW).contains(FOOTER)
+    });
+
+    assert_eq!(row(&glyph, DEBUGGERS_ROW - 1).trim(), "");
+    assert_eq!(glyph.text_col(DEBUGGERS_ROW, "debuggers"), Some(TEXT_X));
+    assert!(glyph.bold_at(TEXT_X, DEBUGGERS_ROW));
+    let expect = [
+        ("lldb-dap", "lldb-dap", lldb_state()),
+        ("debugpy", "python -m debugpy.adapter", "missing"),
+        ("dlv", "dlv dap", "needs go"),
+    ];
+    for (i, (name, command, state)) in expect.into_iter().enumerate() {
+        let y = DEBUGGERS_ROW + 1 + u16::try_from(i).expect("three rows");
+        assert_eq!(glyph.text_col(y, name), Some(TEXT_X), "{name}");
+        // lldb-dap's command is its name, so look from the command column.
+        let from_command: String = row(&glyph, y)
+            .chars()
+            .skip(usize::from(COMMAND_X))
+            .collect();
+        assert!(from_command.starts_with(command), "{from_command:?}");
+        assert_eq!(glyph.text_col(y, state), Some(state_x(state)), "{name}");
+    }
+    // The states take the servers' colours.
+    let missing = glyph.fg_at(state_x("missing"), DEBUGGERS_ROW + 2);
+    let needs = glyph.fg_at(state_x("needs go"), LAST_ROW);
+    assert_ne!(missing, needs);
+    assert_eq!(glyph.fg_at(state_x("needs go"), FIRST_ROW + 6), needs);
+    assert_eq!(row(&glyph, FOOTER_ROW - 1).trim(), "");
+    assert_eq!(glyph.text_col(FOOTER_ROW, FOOTER), Some(CARD_X + 2));
+
+    // `c` on lldb-dap copies its install command.
+    select(&mut glyph, DEBUGGERS_ROW + 1);
+    glyph.send_keys("c");
+    glyph.wait_for_text("copied: ", WAIT);
+    assert_eq!(
+        fs::read_to_string(&clipboard).expect("read clipboard"),
+        LLDB_INSTALL
+    );
+    // Enter on dlv, whose install needs Go, copies too.
+    glyph.send_keys("down");
+    glyph.send_keys("down");
+    glyph.wait_for_bg(CARD_X, LAST_ROW, mix(RAISED, ACCENT, 0.3), WAIT);
+    glyph.send_keys("enter");
+    glyph.wait_for_text(
+        "copied: go install github.com/go-delve/delve/cmd/dlv@latest",
+        WAIT,
+    );
+    // Off Windows lldb-dap's install needs `sudo`: Enter copies it rather
+    // than running it.
+    if !cfg!(windows) {
+        fs::remove_file(&clipboard).expect("clear clipboard");
+        glyph.send_keys("up");
+        glyph.send_keys("up");
+        glyph.wait_for_bg(CARD_X, DEBUGGERS_ROW + 1, mix(RAISED, ACCENT, 0.3), WAIT);
+        glyph.send_keys("enter");
+        glyph.wait_for_text("copied: sudo apt install lldb", WAIT);
+        assert_eq!(
+            fs::read_to_string(&clipboard).expect("read clipboard"),
+            LLDB_INSTALL
+        );
+    }
+    assert!(!glyph.screen().iter().any(|l| l.contains("install dlv")));
+}
+
+/// A fake `go` that says what it was asked and, when `creates`, leaves an
+/// empty `dlv` beside itself, as `go install` would in `~/go/bin`.
+fn fake_go(dir: &Path, creates: bool) {
+    let (windows, unix) = if creates {
+        (
+            "@echo off\r\necho fake go %*\r\ntype nul > \"%~dp0dlv.exe\"\r\n",
+            "#!/bin/sh\necho \"fake go $*\"\nd=$(dirname \"$0\")\n: > \"$d/dlv\"\nchmod +x \"$d/dlv\"\n",
+        )
+    } else {
+        (
+            "@echo off\r\necho fake go %*\r\n",
+            "#!/bin/sh\necho \"fake go $*\"\n",
+        )
+    };
+    script(dir, "go", windows, unix);
+}
+
+#[test]
+fn enter_on_dlv_runs_its_install_and_finds_it_after() {
+    let project = tempfile::tempdir().expect("create project");
+    let clip = tempfile::tempdir().expect("create clipboard dir");
+    let bin = tempfile::tempdir().expect("create PATH folder");
+    fake_go(bin.path(), true);
+    let (mut glyph, _llvm) = with_adapters_path(
+        project.path(),
+        path_with_shell(bin.path()),
+        &clip.path().join("clip"),
+    );
+    open_catalog(&mut glyph);
+    glyph.wait_for_screen("dlv missing", WAIT, |screen| {
+        screen[usize::from(LAST_ROW)].contains("missing")
+    });
+    select(&mut glyph, LAST_ROW);
+    glyph.send_keys("enter");
+
+    glyph.wait_for_text_gone(HEADER, WAIT);
+    glyph.wait_for_screen("the install's title and output", WAIT, |screen| {
+        screen[usize::from(RUN_TITLE_ROW)].contains("install dlv")
+            && screen[usize::from(RUN_OUTPUT_ROW)]
+                .contains("fake go install github.com/go-delve/delve/cmd/dlv@latest")
+    });
+    glyph.wait_for_text("dlv installed", WAIT);
+
+    // Opened again, the catalog finds it.
+    open_catalog(&mut glyph);
+    glyph.wait_for_screen("dlv installed", WAIT, |screen| {
+        screen[usize::from(LAST_ROW)].contains("installed")
+    });
+    assert_eq!(
+        glyph.text_col(LAST_ROW, "installed"),
+        Some(state_x("installed"))
+    );
+}
+
+#[test]
+fn an_adapter_still_missing_after_its_install_says_so() {
+    let project = tempfile::tempdir().expect("create project");
+    let clip = tempfile::tempdir().expect("create clipboard dir");
+    let bin = tempfile::tempdir().expect("create PATH folder");
+    fake_go(bin.path(), false);
+    let (mut glyph, _llvm) = with_adapters_path(
+        project.path(),
+        path_with_shell(bin.path()),
+        &clip.path().join("clip"),
+    );
+    open_catalog(&mut glyph);
+    glyph.wait_for_screen("dlv missing", WAIT, |screen| {
+        screen[usize::from(LAST_ROW)].contains("missing")
+    });
+    select(&mut glyph, LAST_ROW);
+    glyph.send_keys("enter");
+    glyph.wait_for_text(
+        "installed, but dlv isn't on PATH; restart your terminal",
+        WAIT,
+    );
+}
+
+#[test]
+fn debugpy_is_installed_once_python_can_import_it() {
+    let project = tempfile::tempdir().expect("create project");
+    let clip = tempfile::tempdir().expect("create clipboard dir");
+    let bin = tempfile::tempdir().expect("create PATH folder");
+    // A fake Python: `-c` (the import check) succeeds once its pip has run.
+    script(
+        bin.path(),
+        "python",
+        "@echo off\r\n\
+         if \"%~1\"==\"-c\" goto import\r\n\
+         echo fake pip %*\r\n\
+         type nul > \"%~dp0debugpy-installed\"\r\n\
+         exit /b 0\r\n\
+         :import\r\n\
+         if exist \"%~dp0debugpy-installed\" exit /b 0\r\n\
+         exit /b 1\r\n",
+        "#!/bin/sh\n\
+         d=$(dirname \"$0\")\n\
+         if [ \"$1\" = \"-c\" ]; then\n\
+         test -f \"$d/debugpy-installed\"\n\
+         exit $?\n\
+         fi\n\
+         echo \"fake pip $*\"\n\
+         : > \"$d/debugpy-installed\"\n",
+    );
+    let (mut glyph, _llvm) = with_adapters_path(
+        project.path(),
+        path_with_shell(bin.path()),
+        &clip.path().join("clip"),
+    );
+    open_catalog(&mut glyph);
+    // Python is there, but it can't import debugpy yet.
+    let debugpy = DEBUGGERS_ROW + 2;
+    glyph.wait_for_screen("debugpy missing", WAIT, |screen| {
+        screen[usize::from(debugpy)].contains("missing")
+    });
+    select(&mut glyph, debugpy);
+    glyph.send_keys("enter");
+    glyph.wait_for_screen("the install's title and output", WAIT, |screen| {
+        screen[usize::from(RUN_TITLE_ROW)].contains("install debugpy")
+            && screen[usize::from(RUN_OUTPUT_ROW)].contains("fake pip -m pip install debugpy")
+    });
+    glyph.wait_for_text("debugpy installed", WAIT);
+
+    open_catalog(&mut glyph);
+    glyph.wait_for_screen("debugpy installed", WAIT, |screen| {
+        screen[usize::from(debugpy)].contains("installed")
+    });
 }

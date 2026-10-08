@@ -1,9 +1,11 @@
-//! The language server catalog `>language servers` opens (glyph-catalog spec
-//! C1, C2): a card in the cast's style listing each server, its command, and
-//! whether it's installed, missing, waiting on its install tool, or running.
+//! The catalog `>language servers` opens (glyph-catalog spec C1, C2;
+//! glyph-debugger spec D8): a card in the cast's style listing each language
+//! server, then each debug adapter under a `debuggers` heading, with its command
+//! and whether it's installed, missing, waiting on its install tool, or running.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
+use std::path::Path;
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -13,6 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::buffer::movement::Motion;
 use crate::config::LspServer;
+use crate::dap::adapters;
 use crate::keymap::{Action, Input};
 use crate::lsp::servers;
 use crate::theme::Theme;
@@ -22,10 +25,13 @@ use crate::ui::{dialog_card, dim, footer, glow_row};
 /// the cast palette's, so the catalog reads as the palette turning into it.
 const WIDTH: u16 = 86;
 const TOP: u16 = 4;
-/// The rows other than the servers: the lit edge, a blank, the header and the
-/// rule above them; a blank and the footer below.
+/// The rows other than the servers and debuggers: the lit edge, a blank, the
+/// header and the rule above them; a blank and the footer below.
 const CHROME: u16 = 6;
+/// The rows between the servers and the debuggers: a blank and the heading.
+const GAP: u16 = 2;
 const HEADER: &str = "language servers";
+const DEBUGGERS: &str = "debuggers";
 const FOOTER: &str = "⏎ install  c copy command  esc close";
 /// Cells for the row's name, so the commands line up: the longest name and two
 /// blanks.
@@ -45,6 +51,14 @@ const ENTRIES: [(&str, &[&str]); 7] = [
     ("HTML", &["html"]),
     ("CSS", &["css"]),
     ("SQL", &["sql"]),
+];
+
+/// One row per debug adapter, in the spec's order: its name, the language whose
+/// default adapter it is, and how to tell it's installed.
+const ADAPTERS: [(&str, &str, Probe); 3] = [
+    ("lldb-dap", "rust", Probe::Program),
+    ("debugpy", "python", Probe::Module("debugpy")),
+    ("dlv", "go", Probe::Program),
 ];
 
 /// Where a server is, as its row says it.
@@ -81,20 +95,56 @@ impl State {
     }
 }
 
-/// One server's row.
+/// How a row's command is known to be installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Probe {
+    /// The command is found on PATH (or, for `lldb-dap`, in LLVM's folder).
+    Program,
+    /// The command is a Python that can import this module: pip puts debugpy
+    /// beside Python rather than on PATH.
+    Module(&'static str),
+}
+
+/// Where the catalog looks for what's installed.
+pub struct Lookup<'a> {
+    /// The `PATH` and `PATHEXT` values `servers::find` searches.
+    pub path: Option<&'a OsStr>,
+    pub pathext: Option<&'a OsStr>,
+    /// Where LLVM's installer puts `lldb-dap` (see `adapters::llvm_bin`).
+    pub llvm_bin: Option<&'a Path>,
+    /// Whether the Python at a path can import a module (see `adapters::imports`).
+    pub imports: &'a dyn Fn(&Path, &str) -> bool,
+}
+
+impl Lookup<'_> {
+    /// Whether `command` is there as `probe` checks it.
+    pub fn found(&self, command: &str, probe: Probe) -> bool {
+        let program = adapters::find(command, self.path, self.pathext, self.llvm_bin);
+        match probe {
+            Probe::Program => program.is_some(),
+            Probe::Module(module) => program.is_some_and(|python| (self.imports)(&python, module)),
+        }
+    }
+}
+
+/// One server's or adapter's row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub name: &'static str,
-    /// The command that starts the server.
+    /// The command that starts the server or adapter.
     pub command: String,
+    /// The adapter's args, shown after the command: `python` alone wouldn't say
+    /// what runs. Servers show their command only.
+    pub args: &'static [&'static str],
     pub state: State,
     /// The command that installs it, if one is known.
     pub install: Option<String>,
     /// The languages it serves, whose failed starts an install makes Glyph
-    /// forget.
+    /// forget. None for an adapter: nothing remembers a failed debug session.
     pub langs: &'static [&'static str],
     /// The install command has to be run by the user (see `servers::copy_only`).
     pub copy_only: bool,
+    pub probe: Probe,
 }
 
 /// What a key did to the catalog, when it did more than move.
@@ -116,56 +166,95 @@ pub struct Install {
     /// The row's name, which titles the run and the messages.
     pub name: &'static str,
     pub langs: &'static [&'static str],
-    /// The command that starts the server, looked up on PATH afterwards.
+    /// The command that starts the server or adapter, looked up afterwards.
     pub command: String,
     /// The command that installs it.
     pub install: String,
+    /// How to tell the install worked.
+    pub probe: Probe,
+}
+
+impl Install {
+    /// The status line when the install exited 0 but what it installs still
+    /// can't be found.
+    pub fn not_found(&self) -> String {
+        match self.probe {
+            Probe::Program => format!(
+                "installed, but {} isn't on PATH; restart your terminal",
+                self.command
+            ),
+            Probe::Module(module) => {
+                format!("installed, but {} can't import {module}", self.command)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Catalog {
+    /// The servers, then the adapters.
     rows: Vec<Row>,
+    /// How many of `rows` are servers; the `debuggers` heading comes after them.
+    servers: usize,
     selected: usize,
 }
 
 impl Catalog {
     /// The catalog for the server tables `config`, with `running` saying which
-    /// languages have a server up, and programs looked up in `path` and
-    /// `pathext` as `servers::find` does.
+    /// languages have a server up, and programs looked up through `lookup`.
     pub fn new(
         config: &BTreeMap<String, LspServer>,
         running: impl Fn(&str) -> bool,
-        path: Option<&OsStr>,
-        pathext: Option<&OsStr>,
+        lookup: &Lookup,
     ) -> Self {
         // Fills in any language the tables leave out; ones already filled in
         // stay as they are.
         let config = servers::with_defaults(config.clone());
-        let rows = ENTRIES
+        let mut rows: Vec<Row> = ENTRIES
             .iter()
             .map(|&(name, langs)| {
                 let server = config.get(langs[0]).cloned().unwrap_or_default();
-                let install = servers::install_state(&server, path, pathext);
-                let state = if langs.iter().any(|lang| running(lang)) {
-                    State::Running
-                } else if install.command_found {
-                    State::Installed
-                } else if let Some(tool) = install.tool.filter(|_| !install.tool_found) {
-                    State::Needs(tool)
-                } else {
-                    State::Missing
-                };
+                let install = servers::install_state(&server, lookup.path, lookup.pathext);
+                let running = langs.iter().any(|lang| running(lang));
                 Row {
                     name,
                     command: server.command.unwrap_or_default(),
-                    state,
+                    args: &[],
+                    state: state(running, install.command_found, &install),
                     install: install.install,
                     langs,
                     copy_only: install.copy_only,
+                    probe: Probe::Program,
                 }
             })
             .collect();
-        Catalog { rows, selected: 0 }
+        let servers = rows.len();
+        // The spec's adapters, whatever `[debug.<lang>]` says: the install
+        // commands install these programs, not ones a table names.
+        rows.extend(ADAPTERS.iter().filter_map(|&(name, lang, probe)| {
+            let (command, args) = adapters::default_adapter(lang)?;
+            let server = LspServer {
+                command: Some(command.to_string()),
+                install: adapters::default_install(lang).map(str::to_string),
+                ..LspServer::default()
+            };
+            let install = servers::install_state(&server, lookup.path, lookup.pathext);
+            Some(Row {
+                name,
+                command: command.to_string(),
+                args,
+                state: state(false, lookup.found(command, probe), &install),
+                install: install.install,
+                langs: &[],
+                copy_only: install.copy_only,
+                probe,
+            })
+        }));
+        Catalog {
+            rows,
+            servers,
+            selected: 0,
+        }
     }
 
     #[cfg(test)]
@@ -212,6 +301,7 @@ impl Catalog {
                     langs: row.langs,
                     command: row.command.clone(),
                     install: install.clone(),
+                    probe: row.probe,
                 }))
             }
             Input::Action(Action::Cancel) => Some(Step::Close),
@@ -219,13 +309,33 @@ impl Catalog {
         }
     }
 
+    /// The rows the card's body takes: every row, and the gap before the
+    /// adapters when there are any.
+    fn body_height(&self) -> u16 {
+        let rows = u16::try_from(self.rows.len()).unwrap_or(u16::MAX);
+        let gap = if self.rows.len() > self.servers {
+            GAP
+        } else {
+            0
+        };
+        rows.saturating_add(gap)
+    }
+
+    /// The row `i` is drawn on, below the card's top: past the heading for an
+    /// adapter.
+    fn row_offset(&self, i: usize) -> u16 {
+        let gap = if i >= self.servers { GAP } else { 0 };
+        4 + u16::try_from(i).unwrap_or(u16::MAX).saturating_add(gap)
+    }
+
     /// Where the card goes in `area`: the cast's width, centred, from row 4, as
     /// tall as its rows need.
     pub fn card(&self, area: Rect) -> Rect {
         let width = WIDTH.min(area.width.saturating_sub(4));
         let y = area.y + TOP.min(area.height);
-        let rows = u16::try_from(self.rows.len()).unwrap_or(u16::MAX);
-        let height = CHROME.saturating_add(rows).min(area.bottom() - y);
+        let height = CHROME
+            .saturating_add(self.body_height())
+            .min(area.bottom() - y);
         Rect {
             x: area.x + (area.width - width) / 2,
             y,
@@ -235,13 +345,13 @@ impl Catalog {
     }
 
     /// Dims `area` and draws the card over it: the lit edge; `✦ language
-    /// servers`; a rule; a row per server, the selected one on the glow row;
-    /// the footer.
+    /// servers`; a rule; a row per server, a blank, `debuggers` and a row per
+    /// adapter, the selected one on the glow row; the footer.
     pub fn render(&self, theme: &Theme, frame: &mut Frame, area: Rect) {
         dim(theme, frame.buffer_mut(), area);
         let card = self.card(area);
         dialog_card(theme, frame, card);
-        let full = CHROME + u16::try_from(self.rows.len()).unwrap_or(u16::MAX);
+        let full = CHROME.saturating_add(self.body_height());
         if card.height < full || card.width < 40 {
             return;
         }
@@ -262,8 +372,18 @@ impl Catalog {
         }
 
         for (i, row) in self.rows.iter().enumerate() {
-            let y = card.y + 4 + u16::try_from(i).unwrap_or(u16::MAX);
+            let y = card.y + self.row_offset(i);
             self.render_row(theme, out, card, y, row, i == self.selected);
+        }
+        if self.rows.len() > self.servers {
+            // As the cast labels its sections.
+            let y = card.y + self.row_offset(self.servers) - 1;
+            out.set_string(
+                left,
+                y,
+                DEBUGGERS,
+                Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
+            );
         }
 
         footer(theme, out, card, FOOTER);
@@ -309,14 +429,32 @@ impl Catalog {
         // Two blanks short of the state, so a long command never runs into it.
         let command_x = left + NAME_WIDTH;
         if command_x + 2 < state_x {
+            let line = std::iter::once(row.command.as_str())
+                .chain(row.args.iter().copied())
+                .collect::<Vec<_>>()
+                .join(" ");
             out.set_stringn(
                 command_x,
                 y,
-                &row.command,
+                &line,
                 usize::from(state_x - command_x - 2),
                 pick(Style::new().fg(theme.muted)),
             );
         }
+    }
+}
+
+/// A row's state: `running` beats being found, and a missing row whose install
+/// tool isn't on PATH needs that tool.
+fn state(running: bool, found: bool, install: &servers::InstallState) -> State {
+    if running {
+        State::Running
+    } else if found {
+        State::Installed
+    } else if let Some(tool) = install.tool.clone().filter(|_| !install.tool_found) {
+        State::Needs(tool)
+    } else {
+        State::Missing
     }
 }
 
@@ -363,13 +501,31 @@ mod tests {
         Ok(Catalog::new(
             &BTreeMap::new(),
             |lang| running.contains(&lang),
-            Some(dir.path().as_os_str()),
-            None,
+            &on(Some(dir.path())),
         ))
     }
 
+    fn never(_: &Path, _: &str) -> bool {
+        false
+    }
+
+    /// A lookup in `dir` alone, with no LLVM folder and no Python importing
+    /// anything.
+    fn on(dir: Option<&Path>) -> Lookup<'_> {
+        Lookup {
+            path: dir.map(Path::as_os_str),
+            pathext: None,
+            llvm_bin: None,
+            imports: &never,
+        }
+    }
+
+    /// The server rows' names and states.
     fn states(c: &Catalog) -> Vec<(&str, String)> {
-        c.rows().iter().map(|r| (r.name, r.state.label())).collect()
+        c.rows()[..c.servers]
+            .iter()
+            .map(|r| (r.name, r.state.label()))
+            .collect()
     }
 
     #[test]
@@ -387,7 +543,10 @@ mod tests {
                 ("SQL", "needs go".to_string()),
             ]
         );
-        let commands: Vec<&str> = c.rows().iter().map(|r| r.command.as_str()).collect();
+        let commands: Vec<&str> = c.rows()[..c.servers]
+            .iter()
+            .map(|r| r.command.as_str())
+            .collect();
         assert_eq!(
             commands,
             [
@@ -415,7 +574,7 @@ mod tests {
                 ..LspServer::default()
             },
         )]);
-        let c = Catalog::new(&config, |_| false, Some(dir.path().as_os_str()), None);
+        let c = Catalog::new(&config, |_| false, &on(Some(dir.path())));
         let python = &c.rows()[3];
         assert_eq!(python.command, "pylsp");
         assert_eq!(python.state, State::Missing);
@@ -448,11 +607,12 @@ mod tests {
         for _ in 0..10 {
             press(&mut c, Action::Move(Motion::Down));
         }
-        assert_eq!(c.selected, 6);
+        // The last row is the last adapter's.
+        assert_eq!(c.selected, 9);
         assert_eq!(
             press(&mut c, Action::CatalogCopy),
             Some(Step::Copy(
-                "go install github.com/sqls-server/sqls@latest".into()
+                "go install github.com/go-delve/delve/cmd/dlv@latest".into()
             ))
         );
         // Typed letters do nothing here.
@@ -470,7 +630,7 @@ mod tests {
                 ..LspServer::default()
             },
         )]);
-        let mut c = Catalog::new(&config, |_| false, None, None);
+        let mut c = Catalog::new(&config, |_| false, &on(None));
         assert_eq!(
             c.handle(Input::Action(Action::CatalogCopy)),
             Some(Step::NoInstall("Rust"))
@@ -494,12 +654,7 @@ mod tests {
                 ..LspServer::default()
             },
         )]);
-        let mut c = Catalog::new(
-            &config,
-            |lang| lang == "tsx",
-            Some(dir.path().as_os_str()),
-            None,
-        );
+        let mut c = Catalog::new(&config, |lang| lang == "tsx", &on(Some(dir.path())));
         let mut enter_on = |row: usize| {
             c.selected = row;
             c.handle(Input::Action(Action::Newline))
@@ -517,6 +672,7 @@ mod tests {
                 langs: &["python"],
                 command: "pyright-langserver".into(),
                 install: "npm install -g pyright".into(),
+                probe: Probe::Program,
             }))
         );
         assert_eq!(
@@ -545,7 +701,7 @@ mod tests {
         let c = catalog(&["rust-analyzer", "npm"], &[])?;
         let theme = Theme::default();
         let card = c.card(Rect::new(0, 0, 100, 30));
-        assert_eq!(card, Rect::new(7, 4, 86, 13));
+        assert_eq!(card, Rect::new(7, 4, 86, 18));
         let buffer = draw(&c, &theme)?;
         assert_eq!(buffer[(card.x, card.y)].symbol(), "▀");
         let header = card_row(&buffer, card, card.y + 2);
@@ -579,9 +735,210 @@ mod tests {
         let sql = card_row(&buffer, card, card.y + 10);
         assert!(sql.starts_with("    SQL "), "{sql:?}");
 
+        // A blank, the `debuggers` heading as the cast labels a section, and
+        // a row per adapter.
         assert_eq!(card_row(&buffer, card, card.y + 11).trim(), "");
-        let foot = card_row(&buffer, card, card.y + 12);
+        let heading = card_row(&buffer, card, card.y + 12);
+        assert_eq!(heading.trim_end(), "    debuggers", "{heading:?}");
+        assert_eq!(buffer[(card.x + 4, card.y + 12)].fg, theme.muted);
+        assert!(
+            buffer[(card.x + 4, card.y + 12)]
+                .modifier
+                .contains(Modifier::BOLD)
+        );
+        let debugpy = card_row(&buffer, card, card.y + 14);
+        assert_eq!(
+            debugpy,
+            format!(
+                "    {:<25}{:<41}needs python    ",
+                "debugpy", "python -m debugpy.adapter"
+            )
+        );
+        let dlv = card_row(&buffer, card, card.y + 15);
+        assert!(dlv.starts_with("    dlv                      dlv dap "));
+
+        assert_eq!(card_row(&buffer, card, card.y + 16).trim(), "");
+        let foot = card_row(&buffer, card, card.y + 17);
         assert!(foot.starts_with(&format!("  {FOOTER}")), "{foot:?}");
+        Ok(())
+    }
+
+    /// A catalog with `programs` on its PATH, `llvm` as LLVM's folder holding
+    /// `lldb-dap` when given, and Python importing debugpy when `debugpy`.
+    fn adapters(programs: &[&str], llvm: bool, debugpy: bool) -> anyhow::Result<Catalog> {
+        fn yes(_: &Path, module: &str) -> bool {
+            module == "debugpy"
+        }
+        let dir = tempfile::tempdir()?;
+        for program in programs {
+            touch(&dir.path().join(exe(program)))?;
+        }
+        let llvm_dir = tempfile::tempdir()?;
+        touch(&llvm_dir.path().join(exe("lldb-dap")))?;
+        let lookup = Lookup {
+            path: Some(dir.path().as_os_str()),
+            pathext: None,
+            llvm_bin: llvm.then_some(llvm_dir.path()),
+            imports: if debugpy { &yes } else { &never },
+        };
+        Ok(Catalog::new(&BTreeMap::new(), |_| false, &lookup))
+    }
+
+    /// The adapter rows' names, commands with args, states and installs.
+    fn adapter_rows(c: &Catalog) -> Vec<(&str, String, String, Option<&str>)> {
+        c.rows()[c.servers..]
+            .iter()
+            .map(|r| {
+                let line = std::iter::once(r.command.as_str())
+                    .chain(r.args.iter().copied())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (r.name, line, r.state.label(), r.install.as_deref())
+            })
+            .collect()
+    }
+
+    const LLDB: &str = if cfg!(windows) {
+        "winget install --id LLVM.LLVM -e --accept-source-agreements --accept-package-agreements"
+    } else {
+        "sudo apt install lldb"
+    };
+    const LLDB_TOOL: &str = if cfg!(windows) { "winget" } else { "apt" };
+    const DEBUGPY: &str = "python -m pip install debugpy";
+    const DLV: &str = "go install github.com/go-delve/delve/cmd/dlv@latest";
+
+    #[test]
+    fn debuggers_list_lldb_dap_debugpy_and_dlv_with_their_installs() -> anyhow::Result<()> {
+        let c = adapters(&[], false, false)?;
+        assert_eq!(c.servers, 7);
+        assert_eq!(
+            adapter_rows(&c),
+            [
+                (
+                    "lldb-dap",
+                    "lldb-dap".to_string(),
+                    format!("needs {LLDB_TOOL}"),
+                    Some(LLDB)
+                ),
+                (
+                    "debugpy",
+                    "python -m debugpy.adapter".to_string(),
+                    "needs python".to_string(),
+                    Some(DEBUGPY)
+                ),
+                (
+                    "dlv",
+                    "dlv dap".to_string(),
+                    "needs go".to_string(),
+                    Some(DLV)
+                ),
+            ]
+        );
+        // Linux's lldb comes from a `sudo` install, which only copies.
+        let copy_only: Vec<bool> = c.rows()[c.servers..].iter().map(|r| r.copy_only).collect();
+        assert_eq!(copy_only, [!cfg!(windows), false, false]);
+        Ok(())
+    }
+
+    #[test]
+    fn an_adapter_is_missing_until_found_and_debugpy_until_python_imports_it() -> anyhow::Result<()>
+    {
+        // The install tools are there; the adapters aren't.
+        let c = adapters(&[LLDB_TOOL, "python", "go"], false, false)?;
+        let states: Vec<String> = adapter_rows(&c).into_iter().map(|r| r.2).collect();
+        assert_eq!(states, ["missing", "missing", "missing"]);
+
+        // lldb-dap in LLVM's folder, a Python that imports debugpy, dlv on PATH.
+        let c = adapters(&["python", "dlv"], true, true)?;
+        let states: Vec<String> = adapter_rows(&c).into_iter().map(|r| r.2).collect();
+        assert_eq!(states, ["installed", "installed", "installed"]);
+
+        // Importing debugpy needs a Python to import it with.
+        let c = adapters(&[], false, true)?;
+        assert_eq!(adapter_rows(&c)[1].2, "needs python");
+        Ok(())
+    }
+
+    #[test]
+    fn enter_on_an_adapter_installs_it_as_a_server_is() -> anyhow::Result<()> {
+        let mut c = adapters(&[LLDB_TOOL, "python", "go"], false, false)?;
+        let mut enter_on = |row: usize| {
+            c.selected = row;
+            c.handle(Input::Action(Action::Newline))
+        };
+        let lldb = if cfg!(windows) {
+            Step::Install(Install {
+                name: "lldb-dap",
+                langs: &[],
+                command: "lldb-dap".into(),
+                install: LLDB.into(),
+                probe: Probe::Program,
+            })
+        } else {
+            Step::Copy(LLDB.into())
+        };
+        assert_eq!(enter_on(7), Some(lldb));
+        assert_eq!(
+            enter_on(8),
+            Some(Step::Install(Install {
+                name: "debugpy",
+                langs: &[],
+                command: "python".into(),
+                install: DEBUGPY.into(),
+                probe: Probe::Module("debugpy"),
+            }))
+        );
+        assert_eq!(
+            enter_on(9),
+            Some(Step::Install(Install {
+                name: "dlv",
+                langs: &[],
+                command: "dlv".into(),
+                install: DLV.into(),
+                probe: Probe::Program,
+            }))
+        );
+        // `c` copies an adapter's install too.
+        assert_eq!(
+            c.handle(Input::Action(Action::CatalogCopy)),
+            Some(Step::Copy(DLV.into()))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_install_checks_what_it_installed_the_way_its_row_does() -> anyhow::Result<()> {
+        fn yes(_: &Path, module: &str) -> bool {
+            module == "debugpy"
+        }
+        let dir = tempfile::tempdir()?;
+        touch(&dir.path().join(exe("python")))?;
+        let lookup = |imports: &'static dyn Fn(&Path, &str) -> bool| Lookup {
+            path: Some(dir.path().as_os_str()),
+            pathext: None,
+            llvm_bin: None,
+            imports,
+        };
+        assert!(lookup(&yes).found("python", Probe::Module("debugpy")));
+        assert!(!lookup(&never).found("python", Probe::Module("debugpy")));
+        assert!(lookup(&never).found("python", Probe::Program));
+        assert!(!lookup(&yes).found("dlv", Probe::Program));
+
+        let install = |command: &str, probe| Install {
+            name: "x",
+            langs: &[],
+            command: command.into(),
+            install: "true".into(),
+            probe,
+        };
+        assert_eq!(
+            install("dlv", Probe::Program).not_found(),
+            "installed, but dlv isn't on PATH; restart your terminal"
+        );
+        assert_eq!(
+            install("python", Probe::Module("debugpy")).not_found(),
+            "installed, but python can't import debugpy"
+        );
         Ok(())
     }
 
