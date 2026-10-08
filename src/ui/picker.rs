@@ -451,9 +451,10 @@ fn width_of(text: &str) -> u16 {
 
 /// One file row of the cast in `room`: the file's name, its matched letters
 /// `accent` bold and the rest `fg` (`strong` when selected), then two blanks and
-/// its folder in `muted`, any matched letters there in `accent`. `matched` holds
-/// the char indices of the matched letters in `path`, sorted. On the selected
-/// row in `mono`, which is reverse video, the only styling is bold.
+/// its folder in plain `muted`: the design lights only the name, so a query that
+/// hits the folder (`src`, `util`) doesn't paint the folder of every row.
+/// `matched` holds the char indices of the matched letters in `path`, sorted. On
+/// the selected row in `mono`, which is reverse video, the only styling is bold.
 fn cast_file(
     theme: &Theme,
     out: &mut Buffer,
@@ -466,12 +467,7 @@ fn cast_file(
     let pick = |style: Style| if plain { Style::new() } else { style };
     let name_hit = pick(Style::new().fg(theme.accent)).add_modifier(Modifier::BOLD);
     let name_rest = pick(Style::new().fg(if selected { theme.strong } else { theme.fg }));
-    let dir_hit = if plain {
-        Style::new().add_modifier(Modifier::BOLD)
-    } else {
-        Style::new().fg(theme.accent)
-    };
-    let dir_rest = pick(Style::new().fg(theme.muted));
+    let dir = pick(Style::new().fg(theme.muted));
 
     let chars: Vec<char> = path.chars().collect();
     // The name starts after the last `/`; a file at the root has no folder.
@@ -498,7 +494,7 @@ fn cast_file(
     // Two blanks, then the folder without the `/` that ends it.
     x += 2;
     for at in 0..base.saturating_sub(1) {
-        if !put(&mut x, at, dir_hit, dir_rest) {
+        if !put(&mut x, at, dir, dir) {
             return;
         }
     }
@@ -652,6 +648,31 @@ mod tests {
             .collect();
         assert_eq!(lit, "main");
         assert_eq!(buffer[(card.x + 13, row)].fg, theme.muted);
+        Ok(())
+    }
+
+    #[test]
+    fn letters_matched_in_the_folder_stay_muted() -> anyhow::Result<()> {
+        let mut p = picker(FILES);
+        type_query(&mut p, "util");
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+        terminal.draw(|frame| {
+            p.render(&theme, frame, frame.area());
+        })?;
+        let buffer = terminal.backend().buffer();
+        let card = p.card(Rect::new(0, 0, 100, 30));
+        let row = card.y + 5;
+        let line: String = (card.x..card.right())
+            .map(|x| buffer[(x, row)].symbol())
+            .collect();
+        assert!(line.starts_with("    helpers.rs  src/util"), "{line:?}");
+        let folder = card.x + 16..card.x + 24;
+        for x in folder {
+            let cell = &buffer[(x, row)];
+            assert_eq!(cell.fg, theme.muted, "{:?} at {x}", cell.symbol());
+            assert!(!cell.modifier.contains(Modifier::BOLD));
+        }
         Ok(())
     }
 
