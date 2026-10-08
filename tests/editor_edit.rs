@@ -53,7 +53,7 @@ fn assert_one_line(glyph: &Glyph) {
 /// Every test here edits an untitled buffer, so Ctrl+Q asks first; discard.
 fn quit(glyph: &mut Glyph) {
     glyph.send_keys("ctrl+q");
-    glyph.wait_for_text("Unsaved changes", WAIT);
+    glyph.wait_for_text("has unsaved changes", WAIT);
     glyph.type_text("d");
     let status = glyph.wait_exit(WAIT);
     assert!(status.success(), "glyph exited with {status:?}");

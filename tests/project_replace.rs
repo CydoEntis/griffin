@@ -27,6 +27,8 @@ const FOOTER: &str = "alt+a replace all   esc close";
 /// The selected row's glow at its left end: hydra's `raised` (`#0f1821`) lit 30 %
 /// towards its accent (`#c3f53c`).
 const GLOW: vt100::Color = vt100::Color::Rgb(0x45, 0x5a, 0x29);
+/// Hydra's accent, where a confirm card's focused button starts.
+const ACCENT: vt100::Color = vt100::Color::Rgb(0xc3, 0xf5, 0x3c);
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     for entry in fs::read_dir(from)? {
@@ -86,7 +88,12 @@ fn search(glyph: &mut Glyph, query: &str) {
     glyph.send_keys("enter");
 }
 
-/// Searches for `todo`, Tab, `done` in the Replace field, then Alt+A.
+const QUESTION: &str = "Replace 4 matches in 2 files?";
+const EXPLANATION: &str =
+    "Open buffers are edited in place (undo with Ctrl+Z); other files are saved.";
+
+/// Searches for `todo`, Tab, `done` in the Replace field, then Alt+A, and checks
+/// the confirm card.
 fn replace_todo(glyph: &mut Glyph) {
     search(glyph, "todo");
     wait_for_status(glyph, "4 matches in 2 files");
@@ -97,7 +104,18 @@ fn replace_todo(glyph: &mut Glyph) {
     glyph.type_text("done");
     glyph.wait_for_text("Replace  done", WAIT);
     glyph.send_keys("alt+a");
-    glyph.wait_for_text("Replace 4 matches in 2 files? y / n", WAIT);
+    glyph.wait_for_text(QUESTION, WAIT);
+    // At 100x30 the card is 83 wide (the 75-cell explanation + 8), centred from
+    // column 8, with its text from column 11 (SPEC_V1_LAYOUT §7.4).
+    let screen = glyph.screen();
+    assert_eq!(glyph.text_col(12, QUESTION), Some(11), "{screen:#?}");
+    assert_eq!(glyph.text_col(13, EXPLANATION), Some(11), "{screen:#?}");
+    assert_eq!(
+        glyph.text_col(15, "Replace    Cancel"),
+        Some(12),
+        "{screen:#?}"
+    );
+    assert_eq!(glyph.underlined_text(15), "RC");
 }
 
 #[test]
@@ -115,7 +133,7 @@ fn alt_enter_asks_then_replaces_in_every_listed_file_and_searches_again() -> std
     glyph.wait_for_text_gone(FOOTER, WAIT);
 
     replace_todo(&mut glyph);
-    glyph.type_text("y");
+    glyph.type_text("r");
     wait_for_message(&glyph, "Replaced 4 in 2 files");
     glyph.wait_for_text_gone("Replace 4 matches", WAIT);
     // The list refreshed: nothing matches any more.
@@ -130,13 +148,21 @@ fn alt_enter_asks_then_replaces_in_every_listed_file_and_searches_again() -> std
 }
 
 #[test]
-fn n_closes_the_prompt_and_changes_nothing() -> std::io::Result<()> {
+fn cancel_closes_the_prompt_and_changes_nothing() -> std::io::Result<()> {
     let dir = fixture_copy()?;
     let notes = dir.path().join("notes.txt");
     let before = fs::read(&notes)?;
     let mut glyph = open_in(dir.path());
     replace_todo(&mut glyph);
-    glyph.type_text("n");
+    glyph.type_text("c");
+    glyph.wait_for_text_gone("Replace 4 matches", WAIT);
+    wait_for_status(&glyph, "4 matches in 2 files");
+    // So do Tab to Cancel and Enter.
+    glyph.send_keys("alt+a");
+    glyph.wait_for_text(QUESTION, WAIT);
+    glyph.send_keys("tab");
+    glyph.wait_for_bg(22, 15, ACCENT, WAIT);
+    glyph.send_keys("enter");
     glyph.wait_for_text_gone("Replace 4 matches", WAIT);
     wait_for_status(&glyph, "4 matches in 2 files");
     assert_eq!(fs::read(&notes)?, before);
@@ -161,7 +187,7 @@ fn an_open_buffer_is_edited_in_place_and_left_unsaved() -> std::io::Result<()> {
     glyph.wait_for_text("2 │     // TODO tidy", WAIT);
 
     replace_todo(&mut glyph);
-    glyph.type_text("y");
+    glyph.type_text("r");
     wait_for_message(&glyph, "Replaced 4 in 2 files");
     glyph.send_keys("esc");
     glyph.wait_for_text_gone(FOOTER, WAIT);
@@ -187,7 +213,7 @@ fn a_file_that_cannot_be_written_is_reported_and_the_others_still_go() -> std::i
 
     let mut glyph = open_in(dir.path());
     replace_todo(&mut glyph);
-    glyph.type_text("y");
+    glyph.type_text("r");
     wait_for_message(
         &glyph,
         "Replaced 1 in 1 file · cannot write notes.txt: read-only",

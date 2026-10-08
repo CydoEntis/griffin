@@ -4,13 +4,22 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use harness::{COLS, Glyph, ROWS};
+use harness::{Glyph, ROWS};
 use tempfile::TempDir;
 
 const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(5);
-const QUESTION: &str = "Recover unsaved changes?";
-const CARD: &str = "Recover unsaved changes? Recover / Discard";
+const QUESTION: &str = "Recover unsaved changes to a.txt?";
+/// At 100x30 the card is 59 wide (the 51-cell explanation + 8) and 7 tall,
+/// centred (SPEC_V1_LAYOUT §7.4): from column 20 and row 11, with its text at
+/// column 23 and the buttons on row 15, ` Recover ` then ` Discard ` at 34.
+const CARD_X: u16 = 20;
+const CARD_Y: u16 = 11;
+const TEXT_X: u16 = 23;
+const BUTTON_ROW: u16 = 15;
+const DISCARD_X: u16 = 34;
+/// The default theme's `accent`, where the focused button starts.
+const ACCENT: vt100::Color = vt100::Color::Rgb(0xc3, 0xf5, 0x3c);
 
 /// A project folder holding `a.txt` and a separate data dir that survives relaunches.
 struct Setup {
@@ -93,25 +102,41 @@ fn edit_and_crash(setup: &Setup) {
     assert_eq!(setup.read_a(), "hello\n", "nothing was saved");
 }
 
-/// Waits for the recover card and checks it sits in the middle of the screen.
-fn wait_for_card(glyph: &Glyph) {
+/// Waits for the recover card and checks its copy, with the backup's time, and
+/// buttons sit where §7.4 puts them.
+fn wait_for_card(setup: &Setup, glyph: &Glyph) {
     glyph.wait_for_text(QUESTION, START);
-    let screen = glyph.screen();
-    let row = screen
-        .iter()
-        .position(|line| line.contains(CARD))
-        .unwrap_or_else(|| panic!("{screen:#?}"));
-    assert!((13..=16).contains(&row), "card on row {row}: {screen:#?}");
-    let line = &screen[row];
-    assert!(
-        line.contains("Recover") && line.contains("Discard"),
-        "{line}"
+    let backups = setup.backup_files();
+    let written = fs::metadata(&backups[0])
+        .and_then(|m| m.modified())
+        .expect("backup time");
+    let explanation = format!(
+        "A backup from {} is newer than the file on disk.",
+        chrono::DateTime::<chrono::Local>::from(written).format("%H:%M")
     );
-    let col = glyph
-        .text_col(row as u16, CARD)
-        .unwrap_or_else(|| panic!("{screen:#?}"));
-    let right = COLS - (col + CARD.len() as u16);
-    assert!(col.abs_diff(right) <= 1, "card not centred: {screen:#?}");
+    let screen = glyph.screen();
+    assert_eq!(
+        glyph.text_col(CARD_Y, &"▀".repeat(59)),
+        Some(CARD_X),
+        "{screen:#?}"
+    );
+    assert_eq!(
+        glyph.text_col(CARD_Y + 1, QUESTION),
+        Some(TEXT_X),
+        "{screen:#?}"
+    );
+    assert_eq!(
+        glyph.text_col(CARD_Y + 2, &explanation),
+        Some(TEXT_X),
+        "{screen:#?}"
+    );
+    assert_eq!(
+        glyph.text_col(BUTTON_ROW, "Recover    Discard"),
+        Some(TEXT_X + 1),
+        "{screen:#?}"
+    );
+    assert_eq!(glyph.bg_at(TEXT_X, BUTTON_ROW), ACCENT);
+    assert_eq!(glyph.underlined_text(BUTTON_ROW), "RD");
 }
 
 #[test]
@@ -120,7 +145,7 @@ fn recover_after_a_crash_loads_the_backup() {
     edit_and_crash(&setup);
 
     let mut glyph = setup.launch();
-    wait_for_card(&glyph);
+    wait_for_card(&setup, &glyph);
     glyph.type_text("r");
     glyph.wait_for_text_gone(QUESTION, WAIT);
     glyph.wait_for_text("xyhello", WAIT);
@@ -143,7 +168,7 @@ fn discard_after_a_crash_deletes_the_backup() {
     edit_and_crash(&setup);
 
     let mut glyph = setup.launch();
-    wait_for_card(&glyph);
+    wait_for_card(&setup, &glyph);
     glyph.type_text("d");
     glyph.wait_for_text_gone(QUESTION, WAIT);
     glyph.wait_for_text("hello", WAIT);
@@ -172,9 +197,33 @@ fn quitting_cleanly_deletes_the_backup() {
     glyph.wait_for_text("a.txt ●", WAIT);
     glyph.wait_for_files("a backup file", WAIT, || !setup.backup_files().is_empty());
     glyph.send_keys("ctrl+q");
-    glyph.wait_for_text("Unsaved changes", WAIT);
+    glyph.wait_for_text("has unsaved changes", WAIT);
     glyph.type_text("d");
     assert!(glyph.wait_exit(WAIT).success());
     assert!(setup.backup_files().is_empty());
     assert_eq!(setup.read_a(), "hello\n");
+}
+
+#[test]
+fn enter_recovers_and_a_click_on_discard_discards() {
+    let setup = Setup::new("hello\n");
+    edit_and_crash(&setup);
+
+    // Recover is the default: Enter presses it.
+    let mut glyph = setup.launch();
+    wait_for_card(&setup, &glyph);
+    glyph.send_keys("enter");
+    glyph.wait_for_text_gone(QUESTION, WAIT);
+    glyph.wait_for_text("xyhello", WAIT);
+    glyph.kill();
+
+    // The backup is still there, so it's offered again; a click discards it.
+    let mut glyph = setup.launch();
+    wait_for_card(&setup, &glyph);
+    glyph.click(DISCARD_X + 2, BUTTON_ROW);
+    glyph.wait_for_text_gone(QUESTION, WAIT);
+    glyph.wait_for_files("the backup to go", WAIT, || setup.backup_files().is_empty());
+    assert!(!glyph.screen().iter().any(|l| l.contains("xyhello")));
+    glyph.send_keys("ctrl+q");
+    assert!(glyph.wait_exit(WAIT).success());
 }

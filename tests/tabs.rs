@@ -9,7 +9,7 @@ use tempfile::TempDir;
 
 const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(5);
-const PROMPT: &str = "Unsaved changes: [S]ave [D]iscard [C]ancel";
+const PROMPT: &str = "has unsaved changes";
 /// The tree's width plus its divider: the tab bar starts in this column.
 const BAR_X: u16 = 31;
 
@@ -224,14 +224,14 @@ fn ctrl_q_asks_about_each_dirty_tab_in_turn() {
     wait_for_tabs(&glyph, " a.txt ●  b.txt ●  untitled");
 
     glyph.send_keys("ctrl+q");
-    glyph.wait_for_text(PROMPT, WAIT);
+    glyph.wait_for_text("a.txt has unsaved changes", WAIT);
     // The question is about a.txt, shown as the active tab.
     wait_for_active(&glyph, " a.txt ● ");
     glyph.wait_for_text("1 │ 1alpha", WAIT);
     glyph.type_text("s");
     // Then b.txt.
     wait_for_active(&glyph, " b.txt ● ");
-    glyph.wait_for_text(PROMPT, WAIT);
+    glyph.wait_for_text("b.txt has unsaved changes", WAIT);
     glyph.wait_for_text("1 │ 2bravo", WAIT);
     assert_eq!(read(dir.path(), "a.txt"), "1alpha\n");
 
@@ -243,7 +243,7 @@ fn ctrl_q_asks_about_each_dirty_tab_in_turn() {
 
     // Asked again, discard: nothing is left to ask about, so glyph quits.
     glyph.send_keys("ctrl+q");
-    glyph.wait_for_text(PROMPT, WAIT);
+    glyph.wait_for_text("b.txt has unsaved changes", WAIT);
     wait_for_active(&glyph, " b.txt ● ");
     glyph.type_text("d");
     assert!(glyph.wait_exit(WAIT).success());
