@@ -163,6 +163,12 @@ impl Backups {
         Some(text)
     }
 
+    /// When `path`'s backup was last written, if it has one.
+    pub fn written(&self, path: &Path) -> Option<SystemTime> {
+        let backup = self.path_for(Some(path), 0)?;
+        fs::metadata(backup).and_then(|m| m.modified()).ok()
+    }
+
     /// Removes the buffer's backup, if it has one. Waits for a write in flight to
     /// finish first, and stops any that hasn't started from landing afterwards.
     pub fn delete(&self, path: Option<&Path>, untitled: u64) -> io::Result<()> {
