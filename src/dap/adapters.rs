@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
 
@@ -27,6 +28,35 @@ pub fn default_adapter(lang: &str) -> Option<(&'static str, &'static [&'static s
         "go" => ("dlv", &["dap"]),
         _ => return None,
     })
+}
+
+/// The spec's install command for `lang`'s default adapter. LLVM ships
+/// `lldb-dap`: winget installs it on Windows; elsewhere the distribution's
+/// package needs `sudo`, so the catalog only offers it to copy.
+pub fn default_install(lang: &str) -> Option<&'static str> {
+    Some(match lang {
+        "rust" if cfg!(windows) => {
+            "winget install --id LLVM.LLVM -e --accept-source-agreements --accept-package-agreements"
+        }
+        "rust" => "sudo apt install lldb",
+        "python" => "python -m pip install debugpy",
+        "go" => "go install github.com/go-delve/delve/cmd/dlv@latest",
+        _ => return None,
+    })
+}
+
+/// Whether the Python at `python` can import `module`. debugpy is a module run
+/// by Python rather than a program of its own, so finding `python` on PATH says
+/// nothing about whether it's installed.
+pub fn imports(python: &Path, module: &str) -> bool {
+    Command::new(python)
+        .arg("-c")
+        .arg(format!("import {module}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Why a debug session can't be set up.
@@ -248,6 +278,35 @@ mod tests {
             Ok(adapter("python", &["-m", "debugpy.adapter"]))
         );
         assert_eq!(adapter_for("go", &none), Ok(adapter("dlv", &["dap"])));
+    }
+
+    #[test]
+    fn each_default_adapter_has_its_install_command() {
+        let lldb = default_install("rust").unwrap();
+        if cfg!(windows) {
+            assert_eq!(
+                lldb,
+                "winget install --id LLVM.LLVM -e --accept-source-agreements --accept-package-agreements"
+            );
+        } else {
+            assert_eq!(lldb, "sudo apt install lldb");
+            assert!(servers::copy_only(lldb));
+        }
+        assert_eq!(
+            default_install("python"),
+            Some("python -m pip install debugpy")
+        );
+        assert_eq!(
+            default_install("go"),
+            Some("go install github.com/go-delve/delve/cmd/dlv@latest")
+        );
+        assert_eq!(default_install("typescript"), None);
+    }
+
+    #[test]
+    fn a_program_that_cant_start_imports_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!imports(&dir.path().join("no-such-python"), "debugpy"));
     }
 
     #[test]
