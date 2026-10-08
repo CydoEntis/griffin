@@ -21,22 +21,38 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
   is the untouched untitled buffer, not an empty split. Opening a file already replaces an
   untouched untitled tab (`src/app.rs:1357`).
 
+- **The splash design changed after Cody tried it** (2026-10-08): Cody's images
+  [design/splash.png](design/splash.png) and [design/no-file-open.png](design/no-file-open.png)
+  replace the "centred card" mockup, and bring back SPEC_V1_LAYOUT's 9a key list as the
+  screen shown whenever no file is open (S11). Colours follow the theme's ramp, not the
+  image's purple → teal.
+
 ## Requirements
 
 - **S1.** `glyph` and `glyph <folder>` show the splash in the editor area; `glyph <file>`
   opens the file with no splash — checked by PTY tests.
-- **S2.** The splash draws, centred in the editor area: `✦ glyph` with the accent → accent2
-  ramp of the tree's brand row; the project folder's absolute path in `muted`, cut with `…`
-  to fit; a blank row; three action rows *New file* `n`, *New directory* `d`, *Open
-  directory* `o` (the selected row on the dialog glow with a `✦` in `accent2`, the others
-  with `▸` in `muted`, the key letter right-aligned in `muted`); a blank row; the footer
-  `ctrl+p go to file · ctrl+q quit` in `muted`. In `mono` the selected row is reverse video
-  — checked by PTY tests (text, positions, colours, mono).
+- **S2.** The splash fills the editor area with no card, as in
+  [design/splash.png](design/splash.png), centred as one block: the `glyph` wordmark in
+  block letters 5 rows tall (half-block pixels), each column coloured along the theme's
+  accent → accent2 ramp (`theme::grad`), on a soft glow (background cells blended toward
+  `accent2`, fading with distance); a one-row rule in the same ramp, fading at both ends; a
+  blank row; the project path with the home folder as `~`, its last folder in `strong` bold
+  and the rest in `muted`, cut with `…` to fit; a blank row; three rows one blank row apart
+  — *New file* · `in <path>` · `n`, *New directory* · `in <path>` · `d`, *Open directory* ·
+  `choose a folder` · `o` (label in `text`, hint in `muted`, key right-aligned in `muted`).
+  The selected row lies on the dialog glow with `✦` in `accent2`, its label `strong` bold
+  and its key `accent` bold. With too little room the wordmark becomes `✦ glyph` on one
+  row; with less, the hints go, then the path. In `mono` there's no glow, the wordmark and
+  rule are plain and the selected row is reverse video — checked by PTY tests (text,
+  positions, colours, mono) and unit tests of each size step.
 - **S3.** ↑ / ↓ move the selection (wrapping), Enter or the row's letter runs it, a click
   on a row runs it. Esc or Ctrl+N leaves the splash for the empty untitled buffer. Opening
   any file (Ctrl+P, the tree) replaces the splash. With the tree open the
-  splash has focus at launch; Ctrl+E moves focus to the tree as usual — checked by PTY
-  tests.
+  splash has focus at launch; Ctrl+E moves focus to the tree as usual. While the splash is
+  up the tree is hidden (Ctrl+B or Ctrl+E shows it), the status bar shows the project path
+  where it would say `untitled` and, on the right, `↑↓ select  ⏎ choose  q quit` and
+  Glyph's version in place of the cursor position and language, and `q` quits as Ctrl+Q
+  does — checked by PTY tests.
 - **S4.** *New file* opens the name prompt the tree's `a` uses, creates the file in the
   project folder, and opens it in a tab; Esc in the prompt returns to the splash; an
   invalid or existing name shows the existing error and creates nothing — checked by PTY
@@ -72,15 +88,25 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
   nothing. Before this card exists (S2–S8 tickets), opening a folder with unsaved tabs
   refuses with "save or close unsaved files first" in the status line — checked by PTY
   tests.
+- **S11.** Whenever no file is open and the splash isn't up (after opening a folder, after
+  closing the last tab), the editor area shows the key list of
+  [design/no-file-open.png](design/no-file-open.png) and SPEC_V1_LAYOUT 9a, left-aligned
+  in the upper third: `<project folder>/` in `strong` bold and `no file open` in `muted`,
+  then rows two apart of key in `accent` bold and label in `text` — `Ctrl+P` cast · files
+  and commands, `Ctrl+N` new file, `Ctrl+B` toggle tree, `Ctrl+Q` quit (keys read from the
+  keymap, so a rebound key shows its new name). The tab bar shows no tab and typing does
+  nothing; opening a file or Ctrl+N replaces it. In `mono` it's plain text — checked by PTY
+  tests.
 - **S10.** Every on-screen requirement has a PTY test; `cargo fmt --check && cargo clippy
   --all-targets -- -D warnings && cargo test` passes on Windows and Ubuntu.
 
 ## Design
 
 - **Screens and states**:
-  - Splash: S2, matching the "centred card" mockup chosen 2026-10-08. Header rows show no
-    pills or thread while the splash is up. Small editor areas: rows that don't fit are
-    dropped from the bottom (footer first, then the path).
+  - Splash: S2, matching [design/splash.png](design/splash.png) (Cody, 2026-10-08; it
+    replaced the "centred card" mockup). Header rows show no pills or thread while the
+    splash is up.
+  - No file open: S11, matching [design/no-file-open.png](design/no-file-open.png).
   - Folder browser: S6, matching the "cast-style folder browser" mockup chosen 2026-10-08.
   - Unsaved card: S9, in the confirm-card style of #92 (`src/ui/confirm.rs`).
 - **Data**: none stored. The project folder stays owned by `Tree` (`src/workspace/tree.rs:21`),
@@ -117,12 +143,13 @@ through the card.
 ## Coverage
 
 - S1 → #115
-- S2 → #115
-- S3 → #115
+- S2 → #115, #126
+- S3 → #115, #127
 - S4 → #115
 - S5 → #116
 - S6 → #114
 - S7 → #113, #114, #116
 - S8 → #114
 - S9 → #114 (refusal), #117
-- S10 → every ticket #113–#117
+- S11 → #128
+- S10 → every ticket #113–#117, #124, #126–#128
