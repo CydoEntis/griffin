@@ -836,6 +836,8 @@ fn the_jump_list_keeps_the_last_50_places() {
 
 /// The theme with `card` pinned, so the popup's background is known.
 const CARD: vt100::Color = vt100::Color::Rgb(0x20, 0x30, 0x40);
+/// The popup's border and rule colour, pinned as `line2` where a test needs it.
+const LINE2: vt100::Color = vt100::Color::Rgb(0x50, 0x60, 0x70);
 
 /// The fake's answer to every `textDocument/hover`: markdown with a code fence
 /// and a paragraph too long for one line of the popup.
@@ -844,8 +846,8 @@ const HOVER_MARKDOWN: &str = r#"{"responses": {"textDocument/hover": {"contents"
     "value": "```rust\npub fn greet()\n```\n\nGreets whoever is listening, then keeps on talking for quite a while so this line wraps."
 }}}}"#;
 
-/// A definition project (cursor still at the top) with `card` pinned, its
-/// cursor moved onto `greet` on line 4.
+/// A definition project (cursor still at the top) with `card` and `line2`
+/// pinned, its cursor moved onto `greet` on line 4.
 fn hover_project(script: &str) -> (Project, Glyph) {
     let project = Project::new(Some(script));
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/definition");
@@ -853,7 +855,7 @@ fn hover_project(script: &str) -> (Project, Glyph) {
         fs::copy(fixtures.join(name), project.dir.path().join(name)).expect("copy fixture");
     }
     let config = format!(
-        "{}[theme_overrides]\ncard = \"#203040\"\n",
+        "{}[theme_overrides]\ncard = \"#203040\"\nline2 = \"#506070\"\n",
         rust_server(fake())
     );
     let mut glyph = project.open(&config, "main.rs");
@@ -918,6 +920,53 @@ fn alt_k_shows_the_hover_below_the_cursor() {
         status.contains("main.rs") && status.contains("Ln 4, Col 11"),
         "{status:?}"
     );
+}
+
+#[test]
+fn the_hover_has_a_rounded_border_a_rule_under_the_code_and_dims_nothing() {
+    let (_project, mut glyph) = hover_project(HOVER_MARKDOWN);
+    // Every cell left of the card, from the tab header down past its bottom.
+    let cells: Vec<(u16, u16)> = (3..14)
+        .flat_map(|row| (0..16).map(move |col| (col, row)))
+        .collect();
+    let colours = |glyph: &Glyph| -> Vec<_> {
+        cells
+            .iter()
+            .map(|&(col, row)| (glyph.fg_at(col, row), glyph.bg_at(col, row)))
+            .collect()
+    };
+    let before = colours(&glyph);
+
+    glyph.send_keys("alt+k");
+    glyph.wait_for_text("pub fn greet()", WAIT);
+    let screen = glyph.screen();
+    // The card from (16, 7) to (79, 12): 60 columns of text plus border and
+    // padding, the code, the rule, two rows of docs.
+    let (left, right, top, bottom) = (16, 79, HOVER_FIRST_ROW - 1, HOVER_FIRST_ROW + 4);
+    for (row, ends) in [(top, ("╭", "╮")), (bottom, ("╰", "╯"))] {
+        assert_eq!(glyph.text_col(row, ends.0), Some(left), "{screen:#?}");
+        assert_eq!(glyph.text_col(row, ends.1), Some(right), "{screen:#?}");
+        assert_eq!(glyph.fg_at(left, row), LINE2);
+        assert_eq!(glyph.fg_at(left + 30, row), LINE2);
+        assert_eq!(glyph.bg_at(left + 30, row), CARD);
+    }
+    for row in [HOVER_FIRST_ROW, HOVER_FIRST_ROW + 2] {
+        assert_eq!(glyph.text_col(row, "│"), Some(left), "{screen:#?}");
+        assert_eq!(glyph.fg_at(right, row), LINE2);
+    }
+    // The rule takes the blank line between the code and the docs, joined to
+    // the side borders.
+    let rule = format!("├{}┤", "─".repeat(usize::from(right - left - 1)));
+    assert_eq!(
+        glyph.text_col(HOVER_FIRST_ROW + 1, &rule),
+        Some(left),
+        "{screen:#?}"
+    );
+    assert_eq!(glyph.fg_at(left, HOVER_FIRST_ROW + 1), LINE2);
+    assert_eq!(glyph.fg_at(left + 30, HOVER_FIRST_ROW + 1), LINE2);
+    assert_eq!(glyph.bg_at(left + 30, HOVER_FIRST_ROW + 1), CARD);
+    // Not a dialog: the text beside it keeps its colours.
+    assert_eq!(colours(&glyph), before);
 }
 
 #[test]
@@ -1021,19 +1070,38 @@ fn the_hover_flips_above_and_shifts_left_at_the_screen_edges() {
     glyph.wait_for_cursor(cursor.0, cursor.1, WAIT);
 }
 
-/// The theme with `card` and `hov` pinned, so the popup's rows are known.
-const COMPLETION_THEME: &str = "[theme_overrides]\ncard = \"#203040\"\nhov = \"#405060\"\n";
-const HOV: vt100::Color = vt100::Color::Rgb(0x40, 0x50, 0x60);
+/// The theme with the popup's roles pinned, so its rows' colours are known.
+const COMPLETION_THEME: &str = "[theme_overrides]\ncard = \"#203040\"\n\
+    accent = \"#c080ff\"\naccent2 = \"#40e0d0\"\nfg = \"#c0c4c8\"\n\
+    strong = \"#f0f2f4\"\nmuted = \"#707478\"\n";
+const ACCENT: vt100::Color = vt100::Color::Rgb(0xc0, 0x80, 0xff);
+const FG: vt100::Color = vt100::Color::Rgb(0xc0, 0xc4, 0xc8);
+const STRONG: vt100::Color = vt100::Color::Rgb(0xf0, 0xf2, 0xf4);
+const MUTED: vt100::Color = vt100::Color::Rgb(0x70, 0x74, 0x78);
 
-/// Whether `row` is the selected one, showing `label` on `hov`: drawn as reverse
-/// video, so `hov` is the cells' foreground (see `Theme::highlight`).
-fn on_hov(glyph: &Glyph, row: u16, label: &str) -> bool {
-    glyph.fg_at(LABEL_COL, row) == HOV && glyph.reversed_text(row).contains(label)
+/// `a` moved `t` of the way to `b`, per channel, rounded, as the editor mixes.
+fn mix(a: vt100::Color, b: vt100::Color, t: f64) -> vt100::Color {
+    let (vt100::Color::Rgb(r1, g1, b1), vt100::Color::Rgb(r2, g2, b2)) = (a, b) else {
+        panic!("can't mix {a:?} and {b:?}");
+    };
+    let m = |p: u8, q: u8| (f64::from(p) + (f64::from(q) - f64::from(p)) * t).round() as u8;
+    vt100::Color::Rgb(m(r1, r2), m(g1, g2), m(b1, b2))
+}
+
+/// The left end of the selected row's glow: `raised` lit 30 % towards the accent.
+fn glow() -> vt100::Color {
+    mix(CARD, ACCENT, 0.3)
+}
+
+/// Whether `row` of a card whose rows start `shift` cells right of the usual is
+/// the selected one: the glow row, its label in `strong` from column `col`.
+fn is_selected(glyph: &Glyph, row: u16, shift: u16, col: u16) -> bool {
+    glyph.bg_at(KIND_COL - 1 + shift, row) == glow() && glyph.fg_at(col, row) == STRONG
 }
 
 /// Initialize advertising `.` as a completion trigger, then 12 items for every
 /// `textDocument/completion`, sorted by label: `len` carries a `textEdit` from
-/// the cursor after `s.` on line 2, `push` a snippet, `push_str` plain insert
+/// the cursor after `s.` on line 2 and a detail, `push` a snippet, `push_str` plain insert
 /// text and `trim` only its label.
 fn completion_script(extra: &str) -> String {
     let method = |label: &str| format!(r#"{{"label": "{label}", "kind": 2}}"#);
@@ -1051,7 +1119,7 @@ fn completion_script(extra: &str) -> String {
     .collect();
     items.extend([
         r#"{"label": "as_str", "kind": 5}"#.to_string(),
-        r#"{"label": "len", "kind": 2, "textEdit": {"range": {
+        r#"{"label": "len", "kind": 2, "detail": "fn(&self) -> usize", "textEdit": {"range": {
             "start": {"line": 1, "character": 6}, "end": {"line": 1, "character": 6}},
             "newText": "len()"}}"#
             .to_string(),
@@ -1075,10 +1143,17 @@ fn completion_script(extra: &str) -> String {
 /// A project with `comp.rs` open on the fake server, the cursor at the end of
 /// its indented empty line 2.
 fn completion_project(script: &str) -> (Project, Glyph) {
+    completion_project_with(
+        script,
+        &format!("{}{COMPLETION_THEME}", rust_server(fake())),
+    )
+}
+
+/// `completion_project` under `config` rather than the pinned theme.
+fn completion_project_with(script: &str, config: &str) -> (Project, Glyph) {
     let project = Project::new(Some(script));
     fs::write(project.dir.path().join("comp.rs"), "fn main() {\n    \n}\n").expect("write comp.rs");
-    let config = format!("{}{COMPLETION_THEME}", rust_server(fake()));
-    let mut glyph = project.open(&config, "comp.rs");
+    let mut glyph = project.open(config, "comp.rs");
     project.wait_for(&glyph, "textDocument/didOpen", "comp.rs");
     glyph.send_keys("down");
     glyph.wait_for_text("Ln 2, Col 1", WAIT);
@@ -1165,9 +1240,32 @@ fn a_trigger_character_or_alt_slash_shows_up_to_ten_items_with_kinds() {
         "{screen:#?}"
     );
     assert!(!screen.iter().any(|r| r.contains("trim")), "{screen:#?}");
-    // The first row is selected, on `hov`; the rest are on the card.
-    assert!(on_hov(&glyph, ITEM_ROW, "as_str"), "{screen:#?}");
+    // The first row is selected, the glow row; the rest are on the card, kind
+    // `muted`, label `fg`.
+    assert!(is_selected(&glyph, ITEM_ROW, 0, LABEL_COL), "{screen:#?}");
+    assert_eq!(glyph.fg_at(KIND_COL, ITEM_ROW), MUTED);
     assert_eq!(glyph.bg_at(LABEL_COL, ITEM_ROW + 1), CARD);
+    assert_eq!(glyph.fg_at(KIND_COL, ITEM_ROW + 1), MUTED);
+    assert_eq!(glyph.fg_at(LABEL_COL, ITEM_ROW + 1), FG);
+    // `len`'s detail, right-aligned two cells in from the card's right border:
+    // 6 + 1 + 9 + 2 + 18 cells of text make the card 40 wide, from column 12.
+    let len_row = ITEM_ROW + 7;
+    let detail = "fn(&self) -> usize";
+    assert_eq!(
+        glyph.text_col(len_row, detail),
+        Some(12 + 40 - 2 - 18),
+        "{screen:#?}"
+    );
+    assert_eq!(glyph.text_col(len_row, "│"), Some(12));
+    assert_eq!(
+        screen[usize::from(len_row)].chars().nth(12 + 40 - 1),
+        Some('│')
+    );
+    // The same rounded frame as the hover's.
+    assert_eq!(glyph.text_col(ITEM_ROW - 1, "╭"), Some(12));
+    assert_eq!(glyph.text_col(ITEM_ROW - 1, "╮"), Some(12 + 40 - 1));
+    assert_eq!(glyph.text_col(ITEM_ROW + 10, "╰"), Some(12));
+    assert_eq!(glyph.fg_at(12 + 40 - 2 - 18, len_row), MUTED);
     assert!(status_line(&glyph).contains("Ln 2, Col 7"));
 
     // Esc closes it; Alt+/ asks again from the same place.
@@ -1181,6 +1279,38 @@ fn a_trigger_character_or_alt_slash_shows_up_to_ten_items_with_kinds() {
         requests[1]["params"]["position"],
         serde_json::json!({"line": 1, "character": 6})
     );
+}
+
+#[test]
+fn mono_reverses_the_selected_completion_row() {
+    let config = format!("theme = \"mono\"\n{}", rust_server(fake()));
+    let (project, mut glyph) = completion_project_with(&completion_script(""), &config);
+    open_completion(&project, &mut glyph, 2);
+    glyph.wait_for_cursor(12, 4, WAIT);
+    let screen = glyph.screen();
+    // The selected row is reverse video across the card, kind and label in it.
+    let selected = glyph.reversed_text(ITEM_ROW);
+    assert!(
+        selected.contains("field  as_str"),
+        "{selected:?} {screen:#?}"
+    );
+    assert_eq!(selected.chars().count(), 40 - 2, "{selected:?}");
+    // Its label keeps the row's own colours rather than `strong`, so it reads
+    // as reversed like the rest of the row.
+    assert_eq!(
+        glyph.fg_at(LABEL_COL, ITEM_ROW),
+        glyph.fg_at(KIND_COL - 1, ITEM_ROW)
+    );
+    assert_ne!(
+        glyph.fg_at(LABEL_COL, ITEM_ROW),
+        vt100::Color::Idx(15),
+        "{screen:#?}"
+    );
+    // The next row isn't reversed: kind in `muted` (dark grey), label in `fg`
+    // (the terminal's default).
+    assert_eq!(glyph.reversed_text(ITEM_ROW + 1), "", "{screen:#?}");
+    assert_eq!(glyph.fg_at(KIND_COL, ITEM_ROW + 1), vt100::Color::Idx(8));
+    assert_eq!(glyph.fg_at(LABEL_COL, ITEM_ROW + 1), vt100::Color::Default);
 }
 
 #[test]
@@ -1203,16 +1333,28 @@ fn typing_filters_and_the_arrows_move_the_selection() {
         glyph.text_col(ITEM_ROW + 1, "method push_str"),
         Some(KIND_COL + 1)
     );
-    assert!(on_hov(&glyph, ITEM_ROW, "push"), "{screen:#?}");
+    // The typed `p` is `accent` bold in every label; the rest of the selected
+    // label, from column `LABEL_COL + 2`, is `strong`.
+    assert!(
+        is_selected(&glyph, ITEM_ROW, 1, LABEL_COL + 2),
+        "{screen:#?}"
+    );
+    for row in [ITEM_ROW, ITEM_ROW + 1] {
+        assert_eq!(glyph.fg_at(LABEL_COL + 1, row), ACCENT);
+        assert!(glyph.bold_at(LABEL_COL + 1, row));
+        assert!(!glyph.bold_at(LABEL_COL + 2, row));
+    }
+    assert_eq!(glyph.fg_at(LABEL_COL + 2, ITEM_ROW + 1), FG);
 
     glyph.send_keys("down");
-    glyph.wait_for_fg_at(LABEL_COL + 1, ITEM_ROW + 1, HOV, WAIT);
-    assert!(on_hov(&glyph, ITEM_ROW + 1, "push_str"));
+    glyph.wait_for_fg_at(LABEL_COL + 2, ITEM_ROW + 1, STRONG, WAIT);
+    assert!(is_selected(&glyph, ITEM_ROW + 1, 1, LABEL_COL + 2));
     assert_eq!(glyph.bg_at(LABEL_COL + 1, ITEM_ROW), CARD);
+    assert_eq!(glyph.fg_at(LABEL_COL + 2, ITEM_ROW), FG);
     // The selection stops at the last item, and the cursor never moves.
     glyph.send_keys("down");
     glyph.send_keys("up");
-    glyph.wait_for_fg_at(LABEL_COL + 1, ITEM_ROW, HOV, WAIT);
+    glyph.wait_for_fg_at(LABEL_COL + 2, ITEM_ROW, STRONG, WAIT);
     assert!(status_line(&glyph).contains("Ln 2, Col 8"));
 
     // A filter matching nothing hides the popup; Backspace brings it back.
@@ -1261,7 +1403,7 @@ fn enter_and_tab_insert_the_item_as_one_undo_step() {
     glyph.type_text("p");
     glyph.wait_for_text_gone("capacity", WAIT);
     glyph.send_keys("down");
-    glyph.wait_for_fg_at(LABEL_COL + 1, 9, HOV, WAIT);
+    glyph.wait_for_fg_at(LABEL_COL + 2, 9, STRONG, WAIT);
     glyph.send_keys("enter");
     glyph.wait_for_text("s.push_str", WAIT);
 

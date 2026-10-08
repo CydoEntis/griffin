@@ -6,7 +6,7 @@ use std::ops::Range;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Clear;
 use ropey::Rope;
 use unicode_width::UnicodeWidthStr;
@@ -121,8 +121,10 @@ impl Completion {
     }
 
     /// Draws the items matching `typed` in a card anchored at the cursor cell
-    /// `cursor`, inside `bounds`: each row its kind then its label, the selected
-    /// row on `hov`. Nothing when nothing matches.
+    /// `cursor`, inside `bounds`: each row its kind in `muted`, its label in `fg`
+    /// with the typed prefix in `accent` bold, and its detail right-aligned in
+    /// `muted`. The selected row is the glow row with its label in `strong`.
+    /// Nothing when nothing matches.
     pub fn render(
         &self,
         theme: &Theme,
@@ -139,7 +141,14 @@ impl Completion {
         let kind_width = shown.iter().map(|i| i.kind.width()).max().unwrap_or(0);
         let gap = usize::from(kind_width > 0);
         let label_width = shown.iter().map(|i| i.label.width()).max().unwrap_or(0);
-        let text_width = (kind_width + gap + label_width).clamp(1, MAX_TEXT_WIDTH);
+        let detail_width = shown.iter().map(|i| i.detail.width()).max().unwrap_or(0);
+        // Two blanks keep the detail apart from the longest label.
+        let detail_room = if detail_width > 0 {
+            detail_width + 2
+        } else {
+            0
+        };
+        let text_width = (kind_width + gap + label_width + detail_room).clamp(1, MAX_TEXT_WIDTH);
         let rows = u16::try_from(shown.len()).unwrap_or(u16::MAX);
         let width = u16::try_from(text_width).unwrap_or(u16::MAX);
         let card = anchor(cursor, width + SIDE * 2, rows + 2, bounds);
@@ -151,27 +160,55 @@ impl Completion {
         let inner = block.inner(card);
         frame.render_widget(block, card);
         let room = usize::from(inner.width.saturating_sub(2));
+        let typed_chars = typed.chars().count();
+        // `mono` draws the glow as reverse video, which only reads when the
+        // row's text brings no colours of its own.
+        let plain = !theme.ramps();
         let out = frame.buffer_mut();
         for (index, (y, item)) in (inner.y..inner.bottom()).zip(&shown).enumerate() {
-            let (row, kind) = if index == selected {
-                let row = Theme::highlight(theme.hov, theme.strong);
-                (row, Theme::highlight(theme.hov, theme.muted))
-            } else {
-                (Style::new(), Style::new().fg(theme.muted))
+            let chosen = index == selected;
+            if chosen {
+                super::glow_row(theme, out, inner.x, inner.right(), y);
+            }
+            let fg = |color| {
+                if chosen && plain {
+                    Style::new()
+                } else {
+                    Style::new().fg(color)
+                }
             };
-            out.set_stringn(
-                inner.x,
-                y,
-                " ".repeat(inner.width.into()),
-                inner.width.into(),
-                row,
-            );
             let x = inner.x + 1;
-            out.set_stringn(x, y, item.kind, room, kind);
+            out.set_stringn(x, y, item.kind, room, fg(theme.muted));
             let offset = kind_width + gap;
-            if offset < room {
-                let label_x = x + u16::try_from(offset).unwrap_or(u16::MAX);
-                out.set_stringn(label_x, y, &item.label, room - offset, row);
+            if offset >= room {
+                continue;
+            }
+            let label_x = x + u16::try_from(offset).unwrap_or(u16::MAX);
+            let label_room = room - offset;
+            let label = fg(if chosen { theme.strong } else { theme.fg });
+            let (end, _) = out.set_stringn(label_x, y, &item.label, label_room, label);
+            // The typed prefix: the label's first chars, when they are what was
+            // typed (the match is on the filter text, which can differ).
+            let prefix_len = item
+                .label
+                .char_indices()
+                .nth(typed_chars)
+                .map_or(item.label.len(), |(at, _)| at);
+            let prefix = &item.label[..prefix_len];
+            if typed_chars > 0
+                && prefix.chars().count() == typed_chars
+                && prefix.to_lowercase() == typed.to_lowercase()
+            {
+                let style = fg(theme.accent).add_modifier(Modifier::BOLD);
+                out.set_stringn(label_x, y, prefix, label_room, style);
+            }
+            let detail = item.detail.width();
+            let right = usize::from(inner.right().saturating_sub(1));
+            let free = right.saturating_sub(usize::from(end) + 2);
+            if detail > 0 && free > 0 {
+                let shown_width = detail.min(free);
+                let detail_x = u16::try_from(right - shown_width).unwrap_or(u16::MAX);
+                out.set_stringn(detail_x, y, &item.detail, shown_width, fg(theme.muted));
             }
         }
     }
@@ -185,6 +222,7 @@ mod tests {
         CompletionItem {
             label: label.into(),
             kind: "fn",
+            detail: String::new(),
             filter: label.into(),
             text: label.into(),
             edit,

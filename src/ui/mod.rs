@@ -14,18 +14,20 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Clear};
+use ratatui::widgets::{Block, BorderType, Clear};
 
 use crate::theme::{Theme, grad, mix};
 use crate::ui::prompt::PromptBar;
 
-/// The frame every popup card is drawn in: a `border` line around `card`.
-/// Dialogs over a dimmed screen use `dialog_card` instead: a border on top of the
-/// dim is the kind of box the design avoids.
+/// The frame the popups anchored at the cursor (hover, completion) are drawn in:
+/// a rounded `line2` border around `raised` (design README §5.3). They don't dim
+/// the screen, so unlike dialogs (`dialog_card`) they need the border to stand
+/// apart from the text around them.
 pub fn card_block(theme: &Theme) -> Block<'static> {
     Block::bordered()
-        .border_style(Style::new().fg(theme.border))
-        .style(Style::new().bg(theme.card).fg(theme.text))
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.line2))
+        .style(Style::new().bg(theme.raised).fg(theme.text))
 }
 
 /// How far each cell moves towards `scrim` behind a dialog (design README §3).

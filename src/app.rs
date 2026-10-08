@@ -33,8 +33,8 @@ use crate::highlight::languages;
 use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
 use crate::lsp::{
-    CompletionItem, Diagnostic, FormatRequest, Location, Lsp, LspEvent, LspNews, Severity,
-    char_index, diagnostic_at, diagnostic_jump,
+    CompletionItem, Diagnostic, FormatRequest, HoverText, Location, Lsp, LspEvent, LspNews,
+    Severity, char_index, diagnostic_at, diagnostic_jump,
 };
 use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
@@ -769,7 +769,7 @@ pub struct App {
     /// Places go to definition left, newest last, at most `JUMP_LIST_LEN`.
     jumps: Vec<Jump>,
     /// The hover popup's text, while it's showing. Any key or click closes it.
-    hover: Option<String>,
+    hover: Option<HoverText>,
     /// The hover awaiting its reply, as (buffer id, cursor) when asked; an answer
     /// for a cursor that has since moved is dropped.
     hover_for: Option<(u64, usize)>,
@@ -3371,13 +3371,16 @@ mod tests {
     #[test]
     fn a_key_release_leaves_the_hover_open() {
         let mut app = App {
-            hover: Some("pub fn greet()".into()),
+            hover: Some(HoverText {
+                code: "pub fn greet()".into(),
+                docs: String::new(),
+            }),
             ..App::default()
         };
         let mut release = key_event("alt+k");
         release.kind = KeyEventKind::Release;
         app.handle_event(AppEvent::Input(Event::Key(release)));
-        assert_eq!(app.hover.as_deref(), Some("pub fn greet()"));
+        assert!(app.hover.is_some());
         app.handle_event(key("esc"));
         assert_eq!(app.hover, None);
     }

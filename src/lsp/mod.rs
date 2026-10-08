@@ -128,42 +128,109 @@ fn first_location(result: &Value) -> Option<Location> {
     })
 }
 
+/// Whether `line` opens or closes a markdown code fence.
+fn is_fence(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("```") || line.starts_with("~~~")
+}
+
 /// `markdown` with its code fence lines dropped, since the popup shows plain
 /// text: the code inside them stays, the fence markers go.
 fn strip_fences(markdown: &str) -> String {
     markdown
         .lines()
-        .filter(|line| {
-            let line = line.trim_start();
-            !line.starts_with("```") && !line.starts_with("~~~")
-        })
+        .filter(|line| !is_fence(line))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// A hover reply as plain text, fences stripped and blank edges trimmed. `None`
-/// for an empty or unreadable result, which shows nothing.
-fn hover_text(result: &Value) -> Option<String> {
+/// Whether `line` is a markdown thematic break (`---`, `***`, `___`).
+fn is_thematic_break(line: &str) -> bool {
+    let marks: Vec<char> = line.chars().filter(|c| !c.is_whitespace()).collect();
+    marks.len() >= 3 && matches!(marks[0], '-' | '*' | '_') && marks.iter().all(|&c| c == marks[0])
+}
+
+/// `markdown` as (code, docs): the code inside the fences it opens with, then
+/// the rest with its fences stripped. Servers put the signature in those leading
+/// fences (rust-analyzer sends the module path and the signature as two, split
+/// by blank lines), and the popup draws a rule under them. A thematic break
+/// opening the docs goes: it is the server's own rule, and the popup has one.
+fn split_fence(markdown: &str) -> (String, String) {
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut at = 0;
+    let mut blocks = Vec::new();
+    loop {
+        while lines.get(at).is_some_and(|line| line.trim().is_empty()) {
+            at += 1;
+        }
+        if !lines.get(at).is_some_and(|line| is_fence(line)) {
+            break;
+        }
+        let start = at + 1;
+        let close = lines[start..]
+            .iter()
+            .position(|line| is_fence(line))
+            .map_or(lines.len(), |offset| start + offset);
+        blocks.push(lines[start..close].join("\n"));
+        at = (close + 1).min(lines.len());
+    }
+    let mut rest = &lines[at..];
+    if !blocks.is_empty() && rest.first().is_some_and(|line| is_thematic_break(line)) {
+        rest = &rest[1..];
+    }
+    (blocks.join("\n\n"), strip_fences(&rest.join("\n")))
+}
+
+/// A hover reply as the popup shows it: the code it opens with (the signature)
+/// and the docs after it, both plain text with fences stripped.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HoverText {
+    /// Empty when the reply doesn't open with code.
+    pub code: String,
+    /// Empty when the reply is only code.
+    pub docs: String,
+}
+
+/// A hover reply split into code and docs, blank edges trimmed. `None` for an
+/// empty or unreadable result, which shows nothing.
+fn hover_text(result: &Value) -> Option<HoverText> {
     let hover: Hover = serde_json::from_value(result.clone()).ok()?;
     let marked = |marked: MarkedString| match marked {
-        MarkedString::String(text) => strip_fences(&text),
-        MarkedString::LanguageString(code) => code.value,
+        MarkedString::String(text) => split_fence(&text),
+        MarkedString::LanguageString(code) => (code.value, String::new()),
     };
-    let text = match hover.contents {
-        HoverContents::Scalar(one) => marked(one),
-        HoverContents::Array(many) => many
-            .into_iter()
-            .map(marked)
+    let parts = match hover.contents {
+        HoverContents::Scalar(one) => vec![marked(one)],
+        HoverContents::Array(many) => many.into_iter().map(marked).collect(),
+        HoverContents::Markup(markup) if markup.kind == MarkupKind::Markdown => {
+            vec![split_fence(&markup.value)]
+        }
+        HoverContents::Markup(markup) => vec![(String::new(), markup.value)],
+    };
+    let mut code = Vec::new();
+    let mut docs: Vec<String> = Vec::new();
+    for (part_code, part_docs) in parts {
+        // Code once the docs have begun is an example in them, not the signature.
+        if docs.iter().any(|part| !part.trim().is_empty()) {
+            docs.push(part_code);
+        } else {
+            code.push(part_code);
+        }
+        docs.push(part_docs);
+    }
+    let tidy = |parts: Vec<String>| {
+        parts
+            .iter()
+            .map(|part| part.trim_matches(['\n', '\r']).trim_end())
             .filter(|part| !part.trim().is_empty())
             .collect::<Vec<_>>()
-            .join("\n\n"),
-        HoverContents::Markup(markup) if markup.kind == MarkupKind::Markdown => {
-            strip_fences(&markup.value)
-        }
-        HoverContents::Markup(markup) => markup.value,
+            .join("\n\n")
     };
-    let text = text.trim_matches(['\n', '\r']).trim_end();
-    (!text.trim().is_empty()).then(|| text.to_string())
+    let text = HoverText {
+        code: tidy(code),
+        docs: tidy(docs),
+    };
+    (!text.code.is_empty() || !text.docs.is_empty()).then_some(text)
 }
 
 /// One completion a server offered, with positions already in char indices.
@@ -173,6 +240,8 @@ pub struct CompletionItem {
     /// A short name for what it is (`fn`, `field`), or empty when the server
     /// didn't say.
     pub kind: &'static str,
+    /// The server's one-line `detail` (often a type or signature), or empty.
+    pub detail: String,
     /// What typing is matched against: the server's `filterText`, else the label.
     pub filter: String,
     /// What accepting it inserts, snippet syntax already flattened.
@@ -337,6 +406,14 @@ fn completion_items(result: &Value, rope: &Rope) -> Vec<CompletionItem> {
                     .clone()
                     .unwrap_or_else(|| item.label.clone()),
                 kind: kind_label(item.kind),
+                // A row has one line for it, so a multi-line detail keeps its first.
+                detail: item
+                    .detail
+                    .as_deref()
+                    .and_then(|detail| detail.lines().next())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
                 label: item.label,
                 text,
                 edit,
@@ -362,9 +439,9 @@ pub enum LspNews {
     /// The answer to the latest go to definition: where to go, or `None` when
     /// the server found nothing.
     Definition(Option<Location>),
-    /// The answer to the latest hover, as plain text, or `None` when the server
-    /// had nothing to say.
-    Hover(Option<String>),
+    /// The answer to the latest hover, or `None` when the server had nothing to
+    /// say.
+    Hover(Option<HoverText>),
     /// The answer to the latest completion request for buffer `doc`; empty when
     /// the server offered nothing.
     Completion {
@@ -1133,25 +1210,48 @@ mod tests {
 
     #[test]
     fn hover_text_is_plain_with_fences_stripped_in_any_result_shape() {
+        let text = |code: &str, docs: &str| {
+            Some(HoverText {
+                code: code.into(),
+                docs: docs.into(),
+            })
+        };
         let markdown = serde_json::json!({"contents": {"kind": "markdown",
             "value": "```rust\nfn greet()\n```\n\nSays hello."}});
-        assert_eq!(
-            hover_text(&markdown).as_deref(),
-            Some("fn greet()\n\nSays hello.")
-        );
+        assert_eq!(hover_text(&markdown), text("fn greet()", "Says hello."));
         let plain = serde_json::json!({"contents": {"kind": "plaintext", "value": "```x```"}});
-        assert_eq!(hover_text(&plain).as_deref(), Some("```x```"));
+        assert_eq!(hover_text(&plain), text("", "```x```"));
         let marked = serde_json::json!({"contents": [
             {"language": "rust", "value": "fn a()"}, "", "docs"
         ]});
-        assert_eq!(hover_text(&marked).as_deref(), Some("fn a()\n\ndocs"));
+        assert_eq!(hover_text(&marked), text("fn a()", "docs"));
         let scalar = serde_json::json!({"contents": "a"});
-        assert_eq!(hover_text(&scalar).as_deref(), Some("a"));
+        assert_eq!(hover_text(&scalar), text("", "a"));
+        // Code after the docs is an example in them; a fence not first is docs.
+        let example = serde_json::json!({"contents": {"kind": "markdown",
+            "value": "Adds.\n\n```rust\nadd(1)\n```"}});
+        assert_eq!(hover_text(&example), text("", "Adds.\n\nadd(1)"));
+        let late = serde_json::json!({"contents": ["docs", {"language": "rust", "value": "f()"}]});
+        assert_eq!(hover_text(&late), text("", "docs\n\nf()"));
         assert_eq!(hover_text(&Value::Null), None);
         assert_eq!(hover_text(&serde_json::json!({"contents": ""})), None);
         assert_eq!(hover_text(&serde_json::json!({"contents": []})), None);
         let fences = serde_json::json!({"contents": {"kind": "markdown", "value": "```\n```"}});
         assert_eq!(hover_text(&fences), None);
+        // rust-analyzer: module path and signature as two fences, then `---`.
+        let rust_analyzer = serde_json::json!({"contents": {"kind": "markdown",
+            "value": "```rust\nmy_crate\n```\n\n```rust\npub fn greet()\n```\n\n---\n\nSays hello."}});
+        assert_eq!(
+            hover_text(&rust_analyzer),
+            text("my_crate\n\npub fn greet()", "Says hello.")
+        );
+        // pyright: the break straight under the fence; a later break stays.
+        let pyright = serde_json::json!({"contents": {"kind": "markdown",
+            "value": "```python\ndef f()\n```\n---\nDoes.\n\n***\n\nMore."}});
+        assert_eq!(
+            hover_text(&pyright),
+            text("def f()", "Does.\n\n***\n\nMore.")
+        );
     }
 
     #[test]
