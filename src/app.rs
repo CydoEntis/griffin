@@ -801,6 +801,9 @@ struct DebugSession {
     configured: bool,
     /// While the program is stopped.
     paused: Option<Paused>,
+    /// The pause a continue or step request left, until the adapter answers:
+    /// if it refuses, the program never moved and this is put back.
+    stepping: Option<Paused>,
     /// Output since its last newline: adapters send output in pieces that
     /// don't follow lines.
     partial: String,
@@ -814,6 +817,7 @@ impl DebugSession {
             run,
             configured: false,
             paused: None,
+            stepping: None,
             partial: String::new(),
         }
     }
@@ -3109,9 +3113,10 @@ impl App {
             return;
         };
         // The marker goes as the program runs, not when the adapter gets round
-        // to answering; the next `stopped` brings it back.
+        // to answering; the next `stopped` brings it back. The pause is kept
+        // aside in case the adapter refuses, as then nothing ran.
         if step(&mut debug.session, thread).is_some() {
-            debug.paused = None;
+            debug.stepping = debug.paused.take();
         }
     }
 
@@ -3174,6 +3179,7 @@ impl App {
             }
             DapNews::Initialized => self.configure_debugging(),
             DapNews::Stopped { thread, .. } => {
+                debug.stepping = None;
                 debug.paused = Some(Paused { thread, at: None });
                 // Without a thread there's no stack to ask for yet.
                 match thread {
@@ -3183,7 +3189,10 @@ impl App {
             }
             DapNews::Threads(threads) => self.stack_of_first(&threads),
             DapNews::StackTrace { frames, .. } => self.show_paused(&frames),
-            DapNews::Resumed(_) => debug.paused = None,
+            DapNews::Resumed(_) => {
+                debug.paused = None;
+                debug.stepping = None;
+            }
             DapNews::Output { category, text } => {
                 // Telemetry is the adapter talking to its makers, not output.
                 if category != "telemetry" {
@@ -3213,6 +3222,13 @@ impl App {
                 self.say(Tone::Err, format!("debugger: {command} failed: {message}"));
             }
             DapNews::Refused { command, message } => {
+                // A refused continue or step left the program where it was
+                // stopped, so the pause, its marker and its thread come back.
+                if matches!(command.as_str(), "continue" | "next" | "stepIn" | "stepOut")
+                    && debug.paused.is_none()
+                {
+                    debug.paused = debug.stepping.take();
+                }
                 self.say(Tone::Warn, format!("debugger: {command} failed: {message}"));
             }
             // A missing or crashed adapter is said once and costs nothing else:

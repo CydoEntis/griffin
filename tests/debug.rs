@@ -511,3 +511,42 @@ fn the_program_ending_after_continue_says_exited_and_clears_the_marker() {
     assert!(!status_line(&screen).contains("paused"), "{screen:#?}");
     project.wait_for(&glyph, "disconnect", 1);
 }
+
+#[test]
+fn a_refused_step_keeps_the_program_paused_where_it_was() {
+    let project = Project::new(json!({}), "");
+    let script = json!({
+        "events": {
+            "configurationDone": [stopped(7)],
+            "stepIn": [stopped(7)],
+        },
+        "errors": {"next": "busy"},
+        "responses": {"stackTrace": stacks(&project, &[3, 1])},
+    });
+    write_script(&project, &script);
+
+    let mut glyph = project.open("main.py");
+    glyph.send_keys("alt+f5");
+    wait_for_status(&glyph, "‖ paused main.py:3");
+    wait_for_marker(&glyph, 3);
+
+    glyph.send_keys("f10");
+    wait_for_status(&glyph, "debugger: next failed: busy");
+    wait_for_marker(&glyph, 3);
+
+    // The stopped thread came back with the pause, so stepping still works.
+    glyph.send_keys("f10");
+    project.wait_for(&glyph, "next", 2);
+    wait_for_marker(&glyph, 3);
+    glyph.send_keys("alt+f10");
+    wait_for_status(&glyph, "‖ paused main.py:1");
+    wait_for_marker(&glyph, 1);
+
+    let threads: Vec<Value> = project
+        .requests()
+        .iter()
+        .filter(|r| ["next", "stepIn"].contains(&r["command"].as_str().unwrap_or_default()))
+        .map(|r| r["arguments"]["threadId"].clone())
+        .collect();
+    assert_eq!(threads, [json!(7), json!(7), json!(7)]);
+}
