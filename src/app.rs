@@ -2982,9 +2982,9 @@ impl App {
                 frame,
             );
             // Matches belong to the active buffer, which the focused split shows.
-            let highlights = match &self.find {
-                Some(find) if split == focused => find.matches(),
-                _ => &[],
+            let (highlights, current) = match &self.find {
+                Some(find) if split == focused => (find.matches(), find.current_match()),
+                _ => (&[][..], None),
             };
             render_buffer(
                 theme,
@@ -2993,6 +2993,7 @@ impl App {
                 self.editor.tab_width,
                 Marks {
                     highlights,
+                    current,
                     diagnostics: &self.tabs.doc(tabs.active().doc).diagnostics,
                 },
                 split == focused,

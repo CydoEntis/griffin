@@ -536,16 +536,34 @@ impl Glyph {
     /// The text of the cells on `row` whose background is `color`, in order. A
     /// blank cell counts as a space.
     pub fn bg_text(&self, row: u16, color: vt100::Color) -> String {
-        let parser = self.parser();
-        let screen = parser.screen();
-        (0..COLS)
-            .filter_map(|col| screen.cell(row, col))
-            .filter(|cell| cell.bgcolor() == color && !cell.is_wide_continuation())
-            .map(|cell| match cell.contents() {
-                "" => " ".to_string(),
-                text => text.to_string(),
-            })
-            .collect()
+        bg_cells(&self.parser(), row, color)
+    }
+
+    /// Waits until the cells on `row` whose background is `color` read exactly
+    /// `text`. Panics with the screen on timeout.
+    pub fn wait_for_bg_text(&self, row: u16, color: vt100::Color, text: &str, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut parser = self.parser();
+        loop {
+            let colored = bg_cells(&parser, row, color);
+            if colored == text {
+                return;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                panic!(
+                    "timed out after {timeout:?} waiting for row {row} to show {text:?} \
+                     on {color:?}; it shows {colored:?}\n{}",
+                    dump(&screen_lines(&parser))
+                );
+            }
+            parser = self
+                .shared
+                .changed
+                .wait_timeout(parser, deadline - now)
+                .expect("screen lock poisoned")
+                .0;
+        }
     }
 
     /// The background colour of the cell at (`col`, `row`).
@@ -953,6 +971,18 @@ fn underlined_cells(parser: &vt100::Parser, row: u16) -> String {
     (0..COLS)
         .filter_map(|col| screen.cell(row, col))
         .filter(|cell| cell.underline() && !cell.is_wide_continuation())
+        .map(|cell| match cell.contents() {
+            "" => " ".to_string(),
+            text => text.to_string(),
+        })
+        .collect()
+}
+
+fn bg_cells(parser: &vt100::Parser, row: u16, color: vt100::Color) -> String {
+    let screen = parser.screen();
+    (0..COLS)
+        .filter_map(|col| screen.cell(row, col))
+        .filter(|cell| cell.bgcolor() == color && !cell.is_wide_continuation())
         .map(|cell| match cell.contents() {
             "" => " ".to_string(),
             text => text.to_string(),
