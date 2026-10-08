@@ -22,6 +22,7 @@ use lsp_types::{
 use ropey::Rope;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::task::JoinHandle;
 
 use crate::app::AppEvent;
 use crate::buffer::Buffer;
@@ -560,6 +561,25 @@ fn protocol_language_id(lang: &str) -> &str {
     }
 }
 
+/// How long a server asked to stop gets to exit before it's killed.
+const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
+
+/// Waits up to `SHUTDOWN_GRACE` for stopping servers' tasks to end, then aborts
+/// what's left: the reader owns the child process, and dropping it kills the
+/// process (`kill_on_drop`), so a server that ignores `exit` doesn't linger.
+async fn reap(tasks: Vec<JoinHandle<()>>) {
+    let aborts: Vec<_> = tasks.iter().map(JoinHandle::abort_handle).collect();
+    let _ = tokio::time::timeout(SHUTDOWN_GRACE, async {
+        for task in tasks {
+            let _ = task.await;
+        }
+    })
+    .await;
+    for abort in aborts {
+        abort.abort();
+    }
+}
+
 /// One buffer's link to its server, and what the server has been told about it.
 #[derive(Debug)]
 struct Attached {
@@ -985,20 +1005,79 @@ impl Lsp {
         news
     }
 
-    /// Asks every server to stop and gives them a moment to go. Whatever is still
-    /// running after that is killed as the runtime drops it.
+    /// Stops every server started for project folder `root` and forgets it, so
+    /// the next file opened under that folder starts a fresh one. Buffers they
+    /// follow are closed with them first. The wait for the processes to exit
+    /// runs on a task of its own, so editing never waits on a server; the
+    /// returned handle ends once they're gone, killed if they had to be. `None`
+    /// when there was nothing to wait for.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "opening another project calls it, in a later change"
+        )
+    )]
+    pub fn stop_root(&mut self, root: &Path) -> Option<JoinHandle<()>> {
+        let stopped: HashSet<u64> = self
+            .by_root
+            .iter()
+            .filter(|((_, r), _)| r == root)
+            .map(|(_, &id)| id)
+            .collect();
+        if stopped.is_empty() {
+            return None;
+        }
+        self.by_root.retain(|_, id| !stopped.contains(id));
+        let docs: Vec<u64> = self
+            .docs
+            .iter()
+            .filter(|(_, doc)| stopped.contains(&doc.server))
+            .map(|(&id, _)| id)
+            .collect();
+        // Before the shutdown, so the server hears every close on the same queue.
+        for id in docs {
+            self.detach(id);
+        }
+        // A reply from a stopped server would name a buffer it no longer follows.
+        let from_stopped =
+            |pending: Option<(u64, i64)>| pending.filter(|(server, _)| !stopped.contains(server));
+        self.definition = from_stopped(self.definition);
+        self.hover = from_stopped(self.hover);
+        if self
+            .completion
+            .as_ref()
+            .is_some_and(|p| stopped.contains(&p.server))
+        {
+            self.completion = None;
+        }
+        if self
+            .format
+            .as_ref()
+            .is_some_and(|p| stopped.contains(&p.server))
+        {
+            self.format = None;
+        }
+        let tasks: Vec<JoinHandle<()>> = stopped
+            .iter()
+            .filter_map(|id| self.servers.remove(id))
+            .flat_map(|mut client| client.shutdown())
+            .collect();
+        if tasks.is_empty() {
+            return None;
+        }
+        Some(tokio::spawn(reap(tasks)))
+    }
+
+    /// Asks every server to stop and gives them a moment to go; whatever is
+    /// still running after that is killed.
     pub async fn finish(&mut self) {
         let tasks: Vec<_> = self
             .servers
             .values_mut()
             .flat_map(Client::shutdown)
             .collect();
-        let _ = tokio::time::timeout(Duration::from_millis(500), async {
-            for task in tasks {
-                let _ = task.await;
-            }
-        })
-        .await;
+        reap(tasks).await;
     }
 }
 
@@ -1381,5 +1460,242 @@ mod tests {
         assert_eq!(lang, "rust");
         assert!(uri.as_str().ends_with("/a.rs"));
         assert!(Uri::from_str(uri.as_str()).is_ok());
+    }
+
+    /// The scripted fake server. Cargo builds it beside this binary's `deps`
+    /// folder whenever it builds the integration tests, which `cargo test` does.
+    fn fake_lsp() -> PathBuf {
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.parent().and_then(Path::parent).unwrap();
+        let path = dir.join(format!("fake_lsp{}", std::env::consts::EXE_SUFFIX));
+        assert!(
+            path.exists(),
+            "no {}: run `cargo build --bins`",
+            path.display()
+        );
+        path
+    }
+
+    /// An `Lsp` whose Rust server is the fake, logging every message it gets to
+    /// `log.jsonl` and following `script` when there is one. The fake takes both
+    /// as arguments because a server config can't set its environment.
+    struct Fake {
+        lsp: Lsp,
+        events: tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        files: tempfile::TempDir,
+    }
+
+    impl Fake {
+        fn new(script: Option<&str>) -> Self {
+            let files = tempfile::tempdir().unwrap();
+            let log = files.path().join("log.jsonl");
+            let mut args = vec!["--log".to_string(), log.display().to_string()];
+            if let Some(script) = script {
+                let path = files.path().join("script.json");
+                std::fs::write(&path, script).unwrap();
+                args.extend(["--script".to_string(), path.display().to_string()]);
+            }
+            let mut lsp = Lsp::new(BTreeMap::from([(
+                "rust".to_string(),
+                LspServer {
+                    command: Some(fake_lsp().display().to_string()),
+                    args,
+                    ..LspServer::default()
+                },
+            )]));
+            let (tx, events) = tokio::sync::mpsc::unbounded_channel();
+            lsp.connect(tx);
+            Self { lsp, events, files }
+        }
+
+        /// Syncs `docs` and handles server events, as the app loop does, until
+        /// `done` holds.
+        async fn run_until(
+            &mut self,
+            root: &Path,
+            docs: &[(u64, &Buffer)],
+            done: impl Fn(&Lsp) -> bool,
+        ) {
+            let waited = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    self.lsp.sync(root, docs);
+                    if done(&self.lsp) {
+                        return;
+                    }
+                    match self.events.recv().await {
+                        Some(AppEvent::Lsp(event)) => {
+                            self.lsp.handle(event);
+                        }
+                        Some(_) => {}
+                        None => panic!("the app channel closed"),
+                    }
+                }
+            })
+            .await;
+            assert!(waited.is_ok(), "timed out waiting on the fake server");
+        }
+
+        /// Every logged message, as (pid, message).
+        fn log(&self) -> Vec<(u64, Value)> {
+            let text =
+                std::fs::read_to_string(self.files.path().join("log.jsonl")).unwrap_or_default();
+            text.lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .map(|e| (e["pid"].as_u64().unwrap_or(0), e["message"].clone()))
+                .collect()
+        }
+
+        /// The exit codes reported for `server` and not yet handled.
+        fn exits(&mut self, server: u64) -> Vec<Option<i32>> {
+            let mut codes = Vec::new();
+            while let Ok(event) = self.events.try_recv() {
+                if let AppEvent::Lsp(LspEvent {
+                    server: from,
+                    event: ServerEvent::Exited(code),
+                }) = event
+                    && from == server
+                {
+                    codes.push(code);
+                }
+            }
+            codes
+        }
+    }
+
+    async fn reaped(handle: Option<JoinHandle<()>>) {
+        let handle = handle.expect("servers to wait for");
+        let done = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        assert!(done.is_ok(), "stopping servers took too long");
+    }
+
+    fn opened(doc: u64) -> impl Fn(&Lsp) -> bool {
+        move |lsp| lsp.docs.get(&doc).is_some_and(|d| d.opened)
+    }
+
+    fn methods(log: &[(u64, Value)], pid: u64) -> Vec<String> {
+        log.iter()
+            .filter(|(p, _)| *p == pid)
+            .filter_map(|(_, m)| m["method"].as_str().map(String::from))
+            .collect()
+    }
+
+    fn pid_of(log: &[(u64, Value)], file: &str) -> u64 {
+        log.iter()
+            .find(|(_, m)| {
+                m["method"] == "textDocument/didOpen"
+                    && m["params"]["textDocument"]["uri"]
+                        .as_str()
+                        .is_some_and(|uri| uri.ends_with(&format!("/{file}")))
+            })
+            .map(|(pid, _)| *pid)
+            .unwrap_or_else(|| panic!("no didOpen for {file}"))
+    }
+
+    #[tokio::test]
+    async fn stopping_a_root_closes_its_files_shuts_its_server_down_and_forgets_it() {
+        let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut fake = Fake::new(None);
+        let a = rust_buffer(one.path(), "a.rs");
+        fake.run_until(one.path(), &[(1, &a)], opened(1)).await;
+        let first = fake.lsp.docs[&1].server;
+
+        reaped(fake.lsp.stop_root(one.path())).await;
+        assert!(fake.lsp.by_root.is_empty());
+        assert!(fake.lsp.servers.is_empty());
+        assert!(fake.lsp.docs.is_empty());
+        // It went because it was told to, not because it was killed.
+        assert_eq!(fake.exits(first), [Some(0)]);
+        let log = fake.log();
+        let sent = methods(&log, pid_of(&log, "a.rs"));
+        assert_eq!(
+            sent[sent.len() - 3..],
+            ["textDocument/didClose", "shutdown", "exit"]
+        );
+
+        // The same language in another folder gets a server of its own.
+        let b = rust_buffer(two.path(), "b.rs");
+        fake.run_until(two.path(), &[(2, &b)], opened(2)).await;
+        let second = fake.lsp.docs[&2].server;
+        assert_ne!(second, first);
+        assert_eq!(
+            fake.lsp.by_root[&("rust", two.path().to_path_buf())],
+            second
+        );
+        reaped(fake.lsp.stop_root(two.path())).await;
+        let log = fake.log();
+        assert_ne!(pid_of(&log, "b.rs"), pid_of(&log, "a.rs"));
+    }
+
+    #[tokio::test]
+    async fn stopping_one_root_leaves_another_running() {
+        let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut fake = Fake::new(None);
+        let (a, b) = (
+            rust_buffer(one.path(), "a.rs"),
+            rust_buffer(two.path(), "b.rs"),
+        );
+        fake.run_until(one.path(), &[(1, &a)], opened(1)).await;
+        fake.run_until(two.path(), &[(1, &a), (2, &b)], opened(2))
+            .await;
+
+        reaped(fake.lsp.stop_root(one.path())).await;
+        assert!(!fake.lsp.docs.contains_key(&1));
+        let other = fake.lsp.docs[&2].server;
+        assert_eq!(fake.lsp.servers.len(), 1);
+        assert!(fake.lsp.servers[&other].is_ready());
+        assert!(fake.exits(other).is_empty());
+        reaped(fake.lsp.stop_root(two.path())).await;
+    }
+
+    #[tokio::test]
+    async fn a_server_that_ignores_exit_is_killed() {
+        let root = tempfile::tempdir().unwrap();
+        // Busy for a minute on `shutdown`, so it never reads `exit`.
+        let mut fake = Fake::new(Some(r#"{"delay": {"shutdown": 60000}}"#));
+        let a = rust_buffer(root.path(), "a.rs");
+        fake.run_until(root.path(), &[(1, &a)], opened(1)).await;
+        let server = fake.lsp.docs[&1].server;
+
+        reaped(fake.lsp.stop_root(root.path())).await;
+        assert!(fake.lsp.servers.is_empty());
+        // Killed with its reader, so no exit was ever reported.
+        assert!(fake.exits(server).is_empty());
+    }
+
+    #[test]
+    fn stopping_a_root_without_servers_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lsp = Lsp::new(config("glyph-no-such-server"));
+        // No runtime here: nothing is spawned for a root with no servers.
+        assert!(lsp.stop_root(dir.path()).is_none());
+    }
+
+    #[tokio::test]
+    async fn stopping_a_missing_or_crashed_server_never_blocks_editing() {
+        let root = tempfile::tempdir().unwrap();
+        let mut lsp = Lsp::new(config("glyph-no-such-server"));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        lsp.connect(tx);
+        let a = rust_buffer(root.path(), "a.rs");
+        lsp.sync(root.path(), &[(1, &a)]);
+        // A server that never started has no process to wait on.
+        assert!(lsp.stop_root(root.path()).is_none());
+        assert!(lsp.by_root.is_empty() && lsp.docs.is_empty());
+
+        let mut fake = Fake::new(Some(r#"{"exit_on": "initialize"}"#));
+        let mut a = rust_buffer(root.path(), "a.rs");
+        fake.run_until(root.path(), &[(1, &a)], |lsp| {
+            lsp.server_state(1)
+                .is_some_and(|(state, _)| state == ServerState::Crashed)
+        })
+        .await;
+        let crashed = fake.lsp.stop_root(root.path());
+        assert!(fake.lsp.by_root.is_empty() && fake.lsp.servers.is_empty());
+        // Editing carries on at once; any wait on the dead server is elsewhere.
+        a.type_text("x");
+        assert!(fake.lsp.sync(root.path(), &[]).is_empty());
+        if let Some(handle) = crashed {
+            reaped(Some(handle)).await;
+        }
     }
 }

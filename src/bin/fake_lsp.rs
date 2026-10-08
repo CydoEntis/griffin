@@ -22,6 +22,10 @@
 //!   - `errors`: the JSON-RPC error object to answer each method with instead
 //!     of a result.
 //!
+//! `--log <path>` and `--script <path>` arguments stand in for the two variables,
+//! for tests that start it through a server config rather than a child of their
+//! own, where they can't set its environment.
+//!
 //! It exits cleanly on `exit` or when stdin closes.
 
 use std::env;
@@ -35,11 +39,13 @@ use serde_json::{Value, json};
 const CRASH_CODE: u8 = 3;
 
 fn main() -> ExitCode {
-    let script = env::var_os("FAKE_LSP_SCRIPT")
+    let script = arg("--script")
+        .or_else(|| env::var_os("FAKE_LSP_SCRIPT"))
         .and_then(|path| fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .unwrap_or_else(|| json!({}));
-    let mut log = env::var_os("FAKE_LSP_LOG")
+    let mut log = arg("--log")
+        .or_else(|| env::var_os("FAKE_LSP_LOG"))
         .and_then(|path| OpenOptions::new().create(true).append(true).open(path).ok());
     let mut input = BufReader::new(io::stdin().lock());
     let mut output = io::stdout().lock();
@@ -100,6 +106,13 @@ fn main() -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// The value following `flag` on the command line.
+fn arg(flag: &str) -> Option<std::ffi::OsString> {
+    let mut args = env::args_os();
+    args.by_ref().find(|a| a == flag)?;
+    args.next()
 }
 
 /// Replaces every `"$uri"` string in `value` with `uri`, and every
