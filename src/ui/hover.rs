@@ -1,12 +1,15 @@
 //! The hover popup: a small card anchored at the cursor showing what the language
-//! server said about the symbol under it, as plain text wrapped to the card.
+//! server said about the symbol under it, as plain text wrapped to the card, its
+//! signature ruled off from its docs.
 //! `anchor` places it and is kept apart so the completion popup can share it.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::widgets::Clear;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::lsp::HoverText;
 use crate::theme::Theme;
 
 /// Widest and tallest the text gets inside the card.
@@ -90,24 +93,53 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-/// Draws `text` in a card anchored at the cursor cell `cursor`, kept inside
-/// `bounds`. Leaves the terminal cursor where it was.
+/// One row of the hover card's text.
+enum Row<'a> {
+    Code(&'a str),
+    /// The `├─┤` between the code and the docs.
+    Rule,
+    Docs(&'a str),
+}
+
+/// Draws `hover` in a card anchored at the cursor cell `cursor`, kept inside
+/// `bounds`: the code in `fg`, a rule, then the docs in `text`. Leaves the
+/// terminal cursor where it was, and the screen around the card as it was: a
+/// popup at the cursor is read alongside the code, so nothing is dimmed.
 pub fn render_hover(
     theme: &Theme,
-    text: &str,
+    hover: &HoverText,
     cursor: (u16, u16),
     bounds: Rect,
     frame: &mut Frame,
 ) {
     let room = bounds.width.saturating_sub(SIDE * 2).min(MAX_TEXT_WIDTH);
-    let longest = text.lines().map(UnicodeWidthStr::width).max().unwrap_or(0);
+    let longest = hover
+        .code
+        .lines()
+        .chain(hover.docs.lines())
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0);
     let text_width = u16::try_from(longest)
         .unwrap_or(u16::MAX)
         .clamp(1, room.max(1));
-    let lines = wrap(text, usize::from(text_width));
-    let rows = u16::try_from(lines.len())
-        .unwrap_or(u16::MAX)
-        .min(MAX_TEXT_HEIGHT);
+    let wrapped = |text: &str| {
+        if text.is_empty() {
+            Vec::new()
+        } else {
+            wrap(text, usize::from(text_width))
+        }
+    };
+    let (code, docs) = (wrapped(&hover.code), wrapped(&hover.docs));
+    let rule = !code.is_empty() && !docs.is_empty();
+    let lines: Vec<Row> = code
+        .iter()
+        .map(|line| Row::Code(line))
+        .chain(rule.then_some(Row::Rule))
+        .chain(docs.iter().map(|line| Row::Docs(line)))
+        .take(usize::from(MAX_TEXT_HEIGHT))
+        .collect();
+    let rows = u16::try_from(lines.len()).unwrap_or(MAX_TEXT_HEIGHT);
     let card = anchor(cursor, text_width + SIDE * 2, rows + 2, bounds);
     if card.width <= SIDE * 2 || card.height <= 2 {
         return;
@@ -119,7 +151,20 @@ pub fn render_hover(
     let width = usize::from(inner.width.saturating_sub(2));
     let out = frame.buffer_mut();
     for (y, line) in (inner.y..inner.bottom()).zip(&lines) {
-        out.set_stringn(inner.x + 1, y, line, width, ratatui::style::Style::new());
+        match line {
+            Row::Code(text) => {
+                out.set_stringn(inner.x + 1, y, text, width, Style::new().fg(theme.fg));
+            }
+            // Docs keep the card's own `text`.
+            Row::Docs(text) => {
+                out.set_stringn(inner.x + 1, y, text, width, Style::new());
+            }
+            // Joined into the side borders, so it reads as part of the frame.
+            Row::Rule => {
+                let rule = format!("├{}┤", "─".repeat(usize::from(inner.width)));
+                out.set_string(card.x, y, rule, Style::new().fg(theme.line2));
+            }
+        }
     }
 }
 
