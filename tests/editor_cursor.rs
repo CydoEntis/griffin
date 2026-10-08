@@ -8,8 +8,8 @@ const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(5);
 const RENDER: &str = "tests/fixtures/render.txt";
 const LONG: &str = "tests/fixtures/long.txt";
-/// The first row of the editor pane, just below the tab bar.
-const TOP: u16 = 1;
+/// The first row of the editor pane, just below the tab header.
+const TOP: u16 = 3;
 /// The last row of the editor pane, just above the status line.
 const LAST_TEXT_ROW: u16 = ROWS - 2;
 
@@ -61,29 +61,29 @@ fn status_shows_position() {
     assert_eq!(glyph.cursor(), (x, TOP));
 
     let g = &mut glyph;
-    press(g, "right", (1, 2), (x + 1, 1));
-    press(g, "right", (1, 3), (x + 2, 1));
-    press(g, "right", (1, 4), (x + 3, 1));
+    press(g, "right", (1, 2), (x + 1, 3));
+    press(g, "right", (1, 3), (x + 2, 3));
+    press(g, "right", (1, 4), (x + 3, 3));
     // Line 2 starts with a tab filling cells 0-3; column 3 is inside it.
-    press(g, "down", (2, 1), (x, 2));
+    press(g, "down", (2, 1), (x, 4));
     // `\tlet x = 1;`: 11 chars, 14 cells.
-    press(g, "end", (2, 12), (x + 14, 2));
+    press(g, "end", (2, 12), (x + 14, 4));
     // `日本語 ok` is 9 cells wide, shorter than the goal column 14.
-    press(g, "down", (3, 7), (x + 9, 3));
+    press(g, "down", (3, 7), (x + 9, 5));
     // The goal column survives the shorter line.
-    press(g, "up", (2, 12), (x + 14, 2));
-    press(g, "down", (3, 7), (x + 9, 3));
+    press(g, "up", (2, 12), (x + 14, 4));
+    press(g, "down", (3, 7), (x + 9, 5));
     // `😀 ok`: a 2-cell emoji, then ` ok`.
-    press(g, "down", (4, 5), (x + 5, 4));
-    press(g, "ctrl+left", (4, 3), (x + 3, 4));
-    press(g, "ctrl+left", (4, 1), (x, 4));
-    press(g, "ctrl+right", (4, 2), (x + 2, 4));
-    press(g, "left", (4, 1), (x, 4));
-    press(g, "up", (3, 1), (x, 3));
-    press(g, "right", (3, 2), (x + 2, 3));
-    press(g, "home", (3, 1), (x, 3));
-    press(g, "ctrl+end", (6, 1), (x, 6));
-    press(g, "ctrl+home", (1, 1), (x, 1));
+    press(g, "down", (4, 5), (x + 5, 6));
+    press(g, "ctrl+left", (4, 3), (x + 3, 6));
+    press(g, "ctrl+left", (4, 1), (x, 6));
+    press(g, "ctrl+right", (4, 2), (x + 2, 6));
+    press(g, "left", (4, 1), (x, 6));
+    press(g, "up", (3, 1), (x, 5));
+    press(g, "right", (3, 2), (x + 2, 5));
+    press(g, "home", (3, 1), (x, 5));
+    press(g, "ctrl+end", (6, 1), (x, 8));
+    press(g, "ctrl+home", (1, 1), (x, 3));
 
     quit(&mut glyph);
 }
@@ -92,13 +92,13 @@ fn status_shows_position() {
 fn scrolls_to_cursor() {
     let mut glyph = Glyph::spawn(&[LONG]);
     // The first frame can arrive in pieces; wait for its last text row, not its first.
-    glyph.wait_for_text("line 28", START);
+    glyph.wait_for_text("line 26", START);
     // 200 lines: a 3-digit gutter, so text starts at column 7.
     let x = col_of(&glyph, TOP, "line 1");
-    assert!(screen_row(&glyph, LAST_TEXT_ROW).ends_with(" line 28"));
+    assert!(screen_row(&glyph, LAST_TEXT_ROW).ends_with(" line 26"));
 
     // Down to the last visible row: no scrolling yet.
-    for line in 2..=28 {
+    for line in 2..=26 {
         glyph.send_keys("down");
         wait_for_position(&glyph, line, 1);
     }
@@ -106,15 +106,15 @@ fn scrolls_to_cursor() {
     assert!(screen_row(&glyph, TOP).ends_with(" line 1"));
 
     // One more scrolls by one line.
-    press(&mut glyph, "down", (29, 1), (x, LAST_TEXT_ROW));
+    press(&mut glyph, "down", (27, 1), (x, LAST_TEXT_ROW));
     assert!(screen_row(&glyph, TOP).ends_with(" line 2"));
-    assert!(screen_row(&glyph, LAST_TEXT_ROW).ends_with(" line 29"));
+    assert!(screen_row(&glyph, LAST_TEXT_ROW).ends_with(" line 27"));
 
     // Back above the first visible row scrolls up.
     press(&mut glyph, "ctrl+home", (1, 1), (x, TOP));
     assert!(screen_row(&glyph, TOP).ends_with(" line 1"));
 
-    press(&mut glyph, "pagedown", (29, 1), (x, LAST_TEXT_ROW));
+    press(&mut glyph, "pagedown", (27, 1), (x, LAST_TEXT_ROW));
     assert!(screen_row(&glyph, TOP).ends_with(" line 2"));
 
     // The visual check: line 200 on the last text row.
@@ -124,10 +124,10 @@ fn scrolls_to_cursor() {
         "{:#?}",
         glyph.screen()
     );
-    assert!(screen_row(&glyph, TOP).ends_with(" line 173"));
+    assert!(screen_row(&glyph, TOP).ends_with(" line 175"));
 
-    press(&mut glyph, "pageup", (172, 9), (x + 8, TOP));
-    assert!(screen_row(&glyph, TOP).ends_with(" line 172"));
+    press(&mut glyph, "pageup", (174, 9), (x + 8, TOP));
+    assert!(screen_row(&glyph, TOP).ends_with(" line 174"));
 
     quit(&mut glyph);
 }
@@ -137,7 +137,7 @@ fn scrolls_sideways_on_long_line() {
     let mut glyph = Glyph::spawn(&[RENDER]);
     glyph.wait_for_text("fn main() {", START);
     let x = col_of(&glyph, TOP, "fn main() {");
-    let long_row = 5;
+    let long_row = TOP + 4;
     assert!(!glyph.screen().iter().any(|row| row.contains("END")));
 
     for line in 2..=5 {

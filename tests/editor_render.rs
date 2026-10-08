@@ -31,14 +31,14 @@ fn opens_file() {
     let mut glyph = Glyph::spawn(&[FIXTURE]);
     glyph.wait_for_text("fn main() {", START);
 
-    let text_col = col_of(&glyph, 1, "fn main() {");
+    let text_col = col_of(&glyph, 3, "fn main() {");
     // Each line's number sits in the same right-aligned column, left of the text.
-    for (row, number) in (1u16..5).zip(["1", "2", "3", "4"]) {
+    for (row, number) in (3u16..7).zip(["1", "2", "3", "4"]) {
         let number_col = col_of(&glyph, row, number);
         assert!(number_col < text_col, "row {row}: {:#?}", glyph.screen());
         assert_eq!(
             number_col,
-            col_of(&glyph, 1, "1"),
+            col_of(&glyph, 3, "1"),
             "gutter misaligned: {:#?}",
             glyph.screen()
         );
@@ -54,15 +54,15 @@ fn tabs_and_wide_chars() {
     let mut glyph = Glyph::spawn(&[FIXTURE]);
     glyph.wait_for_text("😀 ok", START);
 
-    let base = col_of(&glyph, 1, "fn main() {");
+    let base = col_of(&glyph, 3, "fn main() {");
     // `\tlet`: the tab fills to column 4 of the text area.
-    assert_eq!(col_of(&glyph, 2, "let x = 1;"), base + 4);
+    assert_eq!(col_of(&glyph, 4, "let x = 1;"), base + 4);
     // `日本語 ok`: three 2-wide characters and a space.
-    assert_eq!(col_of(&glyph, 3, "日本語"), base);
-    assert_eq!(col_of(&glyph, 3, "ok"), base + 7);
+    assert_eq!(col_of(&glyph, 5, "日本語"), base);
+    assert_eq!(col_of(&glyph, 5, "ok"), base + 7);
     // `😀 ok`: one 2-wide emoji and a space.
-    assert_eq!(col_of(&glyph, 4, "😀"), base);
-    assert_eq!(col_of(&glyph, 4, "ok"), base + 3);
+    assert_eq!(col_of(&glyph, 6, "😀"), base);
+    assert_eq!(col_of(&glyph, 6, "ok"), base + 3);
 
     quit(&mut glyph);
 }
@@ -78,12 +78,12 @@ fn long_line_is_cut() {
 
     let screen = glyph.screen();
     // The first line fills the row to the right edge and stops there.
-    assert_eq!(screen[1].chars().count(), usize::from(COLS), "{screen:#?}");
-    assert!(screen[1].ends_with('x'), "{screen:#?}");
+    assert_eq!(screen[3].chars().count(), usize::from(COLS), "{screen:#?}");
+    assert!(screen[3].ends_with('x'), "{screen:#?}");
     assert!(!screen.iter().any(|row| row.contains("END")), "{screen:#?}");
     // Nothing wrapped: the next row is the file's second line.
-    assert!(screen[2].contains("second"), "{screen:#?}");
-    assert!(screen[2].trim_start().starts_with('2'), "{screen:#?}");
+    assert!(screen[4].contains("second"), "{screen:#?}");
+    assert!(screen[4].trim_start().starts_with('2'), "{screen:#?}");
 
     quit(&mut glyph);
 }
@@ -95,11 +95,14 @@ fn no_path_opens_untitled() {
 
     let screen = glyph.screen();
     assert!(status_line(&glyph).contains("untitled"), "{screen:#?}");
-    // The tab bar, one empty line numbered 1, and nothing else.
-    assert_eq!(screen[0].trim(), "untitled", "{screen:#?}");
-    assert_eq!(screen[1].trim(), "1 │", "{screen:#?}");
+    // The tab header (blank, pill, thread), one empty line numbered 1, and
+    // nothing else.
+    assert_eq!(screen[0].trim(), "", "{screen:#?}");
+    assert_eq!(screen[1].trim(), "▐ untitled ▌", "{screen:#?}");
+    assert!(screen[2].chars().all(|c| c == '─'), "{screen:#?}");
+    assert_eq!(screen[3].trim(), "1 │", "{screen:#?}");
     assert!(
-        screen[2..usize::from(ROWS) - 1]
+        screen[4..usize::from(ROWS) - 1]
             .iter()
             .all(|row| row.is_empty())
     );
@@ -115,7 +118,7 @@ fn missing_file_opens_empty_with_its_name() {
 
     let screen = glyph.screen();
     assert!(status_line(&glyph).contains("missing.txt"), "{screen:#?}");
-    assert_eq!(screen[1].trim(), "1 │", "{screen:#?}");
+    assert_eq!(screen[3].trim(), "1 │", "{screen:#?}");
     // Opening alone never creates the file; saving (#7) does.
     assert!(!dir.path().join("missing.txt").exists());
 
@@ -135,7 +138,7 @@ fn non_utf8_file_is_not_opened() {
         status_line(&glyph).contains("cannot open bad.txt: not UTF-8"),
         "{screen:#?}"
     );
-    assert_eq!(screen[1].trim(), "1 │", "{screen:#?}");
+    assert_eq!(screen[3].trim(), "1 │", "{screen:#?}");
 
     quit(&mut glyph);
 }

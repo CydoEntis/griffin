@@ -65,7 +65,7 @@ fn read_a(dir: &Path) -> Vec<u8> {
 /// Types `x` and waits for the dirty marker.
 fn make_dirty(glyph: &mut Glyph) {
     glyph.type_text("x");
-    glyph.wait_for_text("a.txt ●", WAIT);
+    glyph.wait_for_text("a.txt •", WAIT);
 }
 
 /// Ctrl+Q, then checks the card's copy and buttons sit where §7.4 puts them
@@ -158,7 +158,7 @@ fn ctrl_s_on_an_untitled_buffer_asks_for_a_path() {
     let mut glyph = Glyph::spawn_in(dir.path(), &[]);
     glyph.wait_for_text("untitled", START);
     glyph.type_text("x");
-    glyph.wait_for_text("untitled ●", WAIT);
+    glyph.wait_for_text("untitled •", WAIT);
     glyph.send_keys("ctrl+s");
     glyph.wait_for_text("Save as:", WAIT);
     // Esc leaves it unsaved.

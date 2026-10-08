@@ -228,7 +228,7 @@ fn arrows_move_the_selection_and_enter_opens_it_in_a_tab() {
     glyph.send_keys("enter");
     glyph.wait_for_text("1 │ pub fn help() {}", WAIT);
     glyph.wait_for_screen("both files in the tab bar", WAIT, |screen| {
-        screen[0].contains("README.md") && screen[0].contains("helpers.rs")
+        screen[1].contains("README.md") && screen[1].contains("helpers.rs")
     });
 }
 
@@ -317,9 +317,10 @@ fn gt_lists_only_commands_with_their_keys_and_enter_runs_one() {
     );
     glyph.send_keys("enter");
     glyph.wait_for_text_gone("cast · commands", WAIT);
-    // Two editors on the file, side by side.
+    // Two editors on the file, side by side; text starts on row 3, under the
+    // pills and the thread.
     glyph.wait_for_screen("two splits", WAIT, |screen| {
-        screen[1].matches("1 │ line 1").count() == 2
+        screen[3].matches("1 │ line 1").count() == 2
     });
 }
 

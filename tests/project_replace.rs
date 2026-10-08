@@ -196,7 +196,7 @@ fn an_open_buffer_is_edited_in_place_and_left_unsaved() -> std::io::Result<()> {
     glyph.send_keys("esc");
     glyph.wait_for_text_gone(FOOTER, WAIT);
     glyph.wait_for_text("2 │     // done tidy", WAIT);
-    glyph.wait_for_text("app.rs ●", WAIT);
+    glyph.wait_for_text("app.rs •", WAIT);
     assert_eq!(fs::read(&code)?, code_before);
 
     // One undo takes it all back.

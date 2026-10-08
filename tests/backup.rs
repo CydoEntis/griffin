@@ -149,7 +149,7 @@ fn recover_after_a_crash_loads_the_backup() {
     glyph.type_text("r");
     glyph.wait_for_text_gone(QUESTION, WAIT);
     glyph.wait_for_text("xyhello", WAIT);
-    glyph.wait_for_text("a.txt ●", WAIT);
+    glyph.wait_for_text("a.txt •", WAIT);
     assert!(status_line(&glyph).contains("a.txt •"));
     // The backup stays until the recovered text is saved.
     assert_eq!(setup.backup_files().len(), 1);
@@ -194,7 +194,7 @@ fn quitting_cleanly_deletes_the_backup() {
     let mut glyph = setup.launch();
     glyph.wait_for_text("Ln 1, Col 1", START);
     glyph.type_text("x");
-    glyph.wait_for_text("a.txt ●", WAIT);
+    glyph.wait_for_text("a.txt •", WAIT);
     glyph.wait_for_files("a backup file", WAIT, || !setup.backup_files().is_empty());
     glyph.send_keys("ctrl+q");
     glyph.wait_for_text("has unsaved changes", WAIT);

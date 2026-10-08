@@ -47,7 +47,7 @@ use crate::ui::prompt::{Outcome, PromptBar};
 use crate::ui::run::{RunStatus, RunView, render_run_panel};
 use crate::ui::search::{ProjectSearch, Searched};
 use crate::ui::status::{Status, Tone, render_status};
-use crate::ui::tabs::{TabLabel, render_tabs, tab_at};
+use crate::ui::tabs::{HEADER_HEIGHT, TabLabel, render_tabs, tab_at};
 use crate::ui::tree::{
     TREE_WIDTH, TreeMarks, nodes_area, project_label, render_divider, render_tree,
 };
@@ -558,7 +558,7 @@ impl Tabs {
         self.restore();
     }
 
-    /// What split `split`'s tab bar shows.
+    /// What split `split`'s pills show.
     fn labels(&self, split: usize) -> Vec<TabLabel> {
         self.splits[split]
             .tabs
@@ -2414,7 +2414,7 @@ impl App {
     }
 
     /// Click, drag, double-click and wheel in the editor panes, clicks on the tab
-    /// bars. A press in a split focuses it. `now` is when the event arrived, passed
+    /// pills. A press in a split focuses it. `now` is when the event arrived, passed
     /// in so double-click timing is testable.
     fn handle_mouse(&mut self, mouse: MouseEvent, now: Instant) {
         let panes = self.panes();
@@ -2425,8 +2425,8 @@ impl App {
             self.handle_tree_mouse(mouse, tree);
             return;
         }
-        if let Some(split) = panes.splits.iter().position(|s| s.tabs.contains(at)) {
-            self.handle_tab_mouse(mouse, split, panes.splits[split].tabs);
+        if let Some(split) = panes.splits.iter().position(|s| s.header.contains(at)) {
+            self.handle_tab_mouse(mouse, split, panes.splits[split].header);
             return;
         }
         let hovered = panes.splits.iter().position(|s| s.editor.contains(at));
@@ -2512,11 +2512,11 @@ impl App {
     /// A left click selects the tab under it, focusing its split; a middle click
     /// closes it, asking first (about that tab, now active) when it has unsaved
     /// changes.
-    fn handle_tab_mouse(&mut self, mouse: MouseEvent, split: usize, area: Rect) {
+    fn handle_tab_mouse(&mut self, mouse: MouseEvent, split: usize, header: Rect) {
         self.reset_mouse();
         let labels = self.tabs.labels(split);
         let active = self.tabs.splits[split].active;
-        let Some(index) = tab_at(&labels, active, area, mouse.column) else {
+        let Some(index) = tab_at(&labels, active, header, mouse.column, mouse.row) else {
             return;
         };
         match mouse.kind {
@@ -2978,7 +2978,7 @@ impl App {
                 &self.tabs.labels(split),
                 tabs.active,
                 split == focused,
-                area.tabs,
+                area.header,
                 frame,
             );
             // Matches belong to the active buffer, which the focused split shows.
@@ -3137,15 +3137,16 @@ fn file_name(path: &Path) -> String {
     )
 }
 
-/// One editor split's place on screen: its tab bar row and the editor below it.
+/// One editor split's place on screen: its tab header (a blank row, the pills and
+/// the aurora thread) and the editor below it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SplitArea {
-    tabs: Rect,
+    header: Rect,
     editor: Rect,
 }
 
 /// Where each part of the screen goes: the tree (when shown) from row 0 down, a
-/// blank column, then the editor splits, each with its tab bar on row 0 and a `│`
+/// blank column, then the editor splits, each with its tab header on rows 0-2 and a `│`
 /// between the two; below them the run panel (while shown, the full width and
 /// about 30% of the height), the prompt bar (while open) and a one-row status
 /// line.
@@ -3211,9 +3212,10 @@ impl Panes {
         let splits = columns
             .into_iter()
             .map(|column| {
-                let [tabs, editor] =
-                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(column);
-                SplitArea { tabs, editor }
+                let [header, editor] =
+                    Layout::vertical([Constraint::Length(HEADER_HEIGHT), Constraint::Min(0)])
+                        .areas(column);
+                SplitArea { header, editor }
             })
             .collect();
         Panes {
@@ -3389,12 +3391,12 @@ mod tests {
             ..App::default()
         };
         app.handle_event(key("pagedown"));
-        // The editor pane is 28 rows: the tab bar and status line take two.
-        assert_eq!(app.buffer().cursor_line_col(), (28, 0));
+        // The editor pane is 26 rows: the tab header takes three, the status line one.
+        assert_eq!(app.buffer().cursor_line_col(), (26, 0));
         assert_eq!(app.view().scroll_row, 1);
         app.handle_event(key("ctrl+end"));
         assert_eq!(app.buffer().cursor_line_col(), (100, 0));
-        assert_eq!(app.view().scroll_row, 73);
+        assert_eq!(app.view().scroll_row, 75);
         app.handle_event(key("ctrl+home"));
         assert_eq!(app.buffer().cursor, 0);
         assert_eq!(app.view().scroll_row, 0);
@@ -3572,13 +3574,13 @@ mod tests {
 
     #[test]
     fn click_places_the_cursor_past_the_gutter() {
-        // Gutter " 1 │ " is 5 cells; the tab bar takes row 0.
+        // Gutter " 1 │ " is 5 cells; the tab header takes rows 0-2.
         let mut app = app_with(
             "hello
 world",
             &FakeClipboard::default(),
         );
-        click(&mut app, 7, 2, Instant::now());
+        click(&mut app, 7, 4, Instant::now());
         assert_eq!(app.buffer().cursor_line_col(), (1, 2));
         assert_eq!(app.buffer().selection(), None);
         // The status line isn't the editor.
@@ -3590,27 +3592,27 @@ world",
     fn double_click_needs_the_same_cell_within_400_ms() {
         let mut app = app_with("hello world", &FakeClipboard::default());
         let t0 = Instant::now();
-        click(&mut app, 6, 1, t0);
-        click(&mut app, 6, 1, t0 + Duration::from_millis(400));
+        click(&mut app, 6, 3, t0);
+        click(&mut app, 6, 3, t0 + Duration::from_millis(400));
         assert_eq!(app.buffer().selected_text().as_deref(), Some("hello"));
 
         // Too slow: a second plain click.
         let t1 = t0 + Duration::from_secs(5);
-        click(&mut app, 12, 1, t1);
-        click(&mut app, 12, 1, t1 + Duration::from_millis(401));
+        click(&mut app, 12, 3, t1);
+        click(&mut app, 12, 3, t1 + Duration::from_millis(401));
         assert_eq!(app.buffer().selection(), None);
         assert_eq!(app.buffer().cursor, 7);
 
         // Another cell: a plain click.
         let t2 = t1 + Duration::from_secs(5);
-        click(&mut app, 12, 1, t2);
-        click(&mut app, 13, 1, t2 + Duration::from_millis(10));
+        click(&mut app, 12, 3, t2);
+        click(&mut app, 13, 3, t2 + Duration::from_millis(10));
         assert_eq!(app.buffer().selection(), None);
 
         // A third quick click is a plain click again.
         let t3 = t2 + Duration::from_secs(5);
         for i in 0..3 {
-            click(&mut app, 6, 1, t3 + Duration::from_millis(i * 10));
+            click(&mut app, 6, 3, t3 + Duration::from_millis(i * 10));
         }
         assert_eq!(app.buffer().selection(), None);
         assert_eq!(app.buffer().cursor, 1);
@@ -3620,20 +3622,20 @@ world",
     fn drag_selects_from_press_to_release() {
         let mut app = app_with("hello world", &FakeClipboard::default());
         let now = Instant::now();
-        app.handle_mouse(mouse(LEFT_DOWN, 11, 1), now);
-        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 7, 1), now);
-        app.handle_mouse(mouse(LEFT_UP, 7, 1), now);
+        app.handle_mouse(mouse(LEFT_DOWN, 11, 3), now);
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 7, 3), now);
+        app.handle_mouse(mouse(LEFT_UP, 7, 3), now);
         assert_eq!(app.buffer().selected_text().as_deref(), Some("llo "));
         assert_eq!(app.buffer().cursor, 2);
         // A drag without a press in the editor selects nothing.
-        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 15, 1), now);
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 15, 3), now);
         assert_eq!(app.buffer().cursor, 2);
     }
 
     #[test]
     fn ctrl_click_places_the_cursor_and_asks_for_the_definition() {
         let mut app = app_with("hello", &FakeClipboard::default());
-        let mut event = mouse(LEFT_DOWN, 8, 1);
+        let mut event = mouse(LEFT_DOWN, 8, 3);
         event.modifiers = KeyModifiers::CONTROL;
         app.handle_mouse(event, Instant::now());
         assert_eq!(app.buffer().cursor, 3);
@@ -4075,15 +4077,20 @@ world",
     fn tab_bar_click_selects_and_middle_click_closes() {
         let mut app = app_with("one", &FakeClipboard::default());
         press(&mut app, &["ctrl+n"]);
-        // " untitled " is 10 cells wide; the second tab starts at column 10.
+        // The pills sit on row 1: " untitled " and its caps are 12 cells from
+        // column 1, then a gap, so the second pill starts at column 14.
         app.handle_mouse(mouse(LEFT_DOWN, 2, 0), Instant::now());
+        assert_eq!(app.tabs.split().active, 1);
+        app.handle_mouse(mouse(LEFT_DOWN, 2, 1), Instant::now());
         assert_eq!(app.tabs.split().active, 0);
         let middle = MouseEventKind::Down(MouseButton::Middle);
-        app.handle_mouse(mouse(middle, 12, 0), Instant::now());
+        app.handle_mouse(mouse(middle, 13, 1), Instant::now());
+        assert_eq!(app.tabs.split().tabs.len(), 2);
+        app.handle_mouse(mouse(middle, 14, 1), Instant::now());
         assert_eq!(app.tabs.split().tabs.len(), 1);
         assert_eq!(app.buffer().rope.to_string(), "one");
         press(&mut app, &["x"]);
-        app.handle_mouse(mouse(middle, 2, 0), Instant::now());
+        app.handle_mouse(mouse(middle, 2, 1), Instant::now());
         assert_eq!(app.prompt, Some(Prompt::UnsavedClose));
     }
 
@@ -4156,7 +4163,7 @@ world",
         // In the tree `a` opens the bar; inside the bar `a`, `r`, `d` are text.
         press(&mut app, &["a"]);
         assert!(app.name_prompt.is_some());
-        assert_eq!(app.panes().splits[0].editor.height, 27);
+        assert_eq!(app.panes().splits[0].editor.height, 25);
         type_keys(&mut app, "dra.txt");
         press(&mut app, &["enter"]);
         assert_eq!(app.name_prompt, None);
@@ -4200,11 +4207,11 @@ world",
     #[test]
     fn the_tree_takes_29_columns_from_the_editor_while_shown() -> Result<()> {
         let (_dir, mut app) = project()?;
-        assert_eq!(app.panes().splits[0].editor, Rect::new(29, 1, 71, 28));
-        assert_eq!(app.panes().splits[0].tabs, Rect::new(29, 0, 71, 1));
+        assert_eq!(app.panes().splits[0].editor, Rect::new(29, 3, 71, 26));
+        assert_eq!(app.panes().splits[0].header, Rect::new(29, 0, 71, 3));
         assert_eq!(app.panes().tree, Some(Rect::new(0, 0, 28, 29)));
         press(&mut app, &["ctrl+b"]);
-        assert_eq!(app.panes().splits[0].editor, Rect::new(0, 1, 100, 28));
+        assert_eq!(app.panes().splits[0].editor, Rect::new(0, 3, 100, 26));
         assert_eq!(app.panes().tree, None);
         assert_eq!(app.focus, Focus::Editor);
         // Ctrl+E brings a hidden tree back with focus.
@@ -4228,8 +4235,8 @@ world",
         );
         // Roughly half each, with a one-column divider between.
         let panes = app.panes();
-        assert_eq!(panes.splits[0].editor, Rect::new(0, 1, 50, 28));
-        assert_eq!(panes.splits[1].editor, Rect::new(51, 1, 49, 28));
+        assert_eq!(panes.splits[0].editor, Rect::new(0, 3, 50, 26));
+        assert_eq!(panes.splits[1].editor, Rect::new(51, 3, 49, 26));
         assert_eq!(panes.split_divider, Some(Rect::new(50, 0, 1, 29)));
 
         // New tabs go to the focused split only.
@@ -4297,16 +4304,16 @@ world",
         let (_dir, mut app) = project()?;
         press(&mut app, &["enter", "alt+v"]);
         assert_eq!(app.tabs.focused, 1);
-        // The left split's editor starts at column 31.
-        click(&mut app, 40, 1, Instant::now());
+        // The left split's editor starts at column 29, below its three header rows.
+        click(&mut app, 40, 3, Instant::now());
         assert_eq!(app.tabs.focused, 0);
         // Opening b.txt from the tree puts it in the left split only.
         press(&mut app, &["ctrl+e", "down", "enter"]);
         assert_eq!(tab_names(&app), ["a.txt", "b.txt"]);
         assert_eq!(app.tabs.labels(1).len(), 1);
-        // A click on the right split's tab bar focuses that split.
-        let right = app.panes().splits[1].tabs;
-        app.handle_mouse(mouse(LEFT_DOWN, right.x + 1, 0), Instant::now());
+        // A click on the right split's pill focuses that split.
+        let right = app.panes().splits[1].header;
+        app.handle_mouse(mouse(LEFT_DOWN, right.x + 2, 1), Instant::now());
         assert_eq!(app.tabs.focused, 1);
         assert_eq!(app.buffer().rope.to_string(), "a");
         Ok(())
@@ -4435,10 +4442,13 @@ world",
 
         let buffer = terminal.backend().buffer();
         let row = |y: u16| -> String { (0..100).map(|x| buffer[(x, y)].symbol()).collect() };
-        // The tab bar, then an empty buffer: one numbered line and nothing below.
-        assert_eq!(row(0).trim(), "untitled");
-        assert_eq!(row(1).trim(), "1 │");
-        for y in 2..29 {
+        // A blank row, the pill, the thread, then an empty buffer: one numbered
+        // line and nothing below.
+        assert_eq!(row(0).trim(), "");
+        assert_eq!(row(1).trim(), "▐ untitled ▌");
+        assert!(row(2).chars().all(|c| c == '─'));
+        assert_eq!(row(3).trim(), "1 │");
+        for y in 4..29 {
             assert_eq!(row(y).trim(), "", "row {y} should be blank");
         }
         assert!(row(29).starts_with(" ✦ glyph"));

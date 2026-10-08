@@ -95,7 +95,7 @@ fn enter_in_replace_replaces_the_current_match_and_moves_to_the_next() {
     glyph.wait_for_text("1 │ one bar", WAIT);
     wait_for_count(&glyph, "1/2");
     wait_for_position(&glyph, 2, 5);
-    glyph.wait_for_reversed(1, "", WAIT);
+    glyph.wait_for_reversed(3, "", WAIT);
     glyph.wait_for_text("2 │ two foo three", WAIT);
 
     glyph.send_keys("enter");
@@ -104,7 +104,7 @@ fn enter_in_replace_replaces_the_current_match_and_moves_to_the_next() {
     wait_for_position(&glyph, 3, 1);
     glyph.wait_for_text("3 │ foo", WAIT);
     // The buffer has unsaved changes now.
-    glyph.wait_for_text("find.txt ●", WAIT);
+    glyph.wait_for_text("find.txt •", WAIT);
 }
 
 #[test]

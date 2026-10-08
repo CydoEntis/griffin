@@ -133,7 +133,7 @@ fn a_creates_a_file_beside_the_selected_file_and_opens_it() {
     wait_for_status(&glyph, "✓ created notes.md");
     wait_for_status(&glyph, "Ln 1, Col 1");
     let screen = glyph.screen();
-    let editor: String = screen[1].chars().skip(TREE + 1).collect();
+    let editor: String = screen[3].chars().skip(TREE + 1).collect();
     assert_eq!(editor.trim_end(), " 1 │", "{screen:#?}");
     assert_eq!(
         fs::read(dir.path().join("notes.md")).expect("read new file"),

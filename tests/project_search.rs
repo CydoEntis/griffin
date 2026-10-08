@@ -251,7 +251,7 @@ fn arrows_move_through_hits_and_enter_opens_the_file_at_the_match() {
     // `    // TODO`: the match starts in column 8.
     wait_for_position(&glyph, 2, 8);
     glyph.wait_for_screen("main.rs in the tab bar", WAIT, |screen| {
-        screen[0].contains("main.rs")
+        screen[1].contains("main.rs")
     });
 
     // Another hit opens beside it in a second tab.
@@ -262,7 +262,7 @@ fn arrows_move_through_hits_and_enter_opens_the_file_at_the_match() {
     glyph.wait_for_text("1 │ //! Fixture library.", WAIT);
     wait_for_position(&glyph, 3, 4);
     glyph.wait_for_screen("both files in the tab bar", WAIT, |screen| {
-        screen[0].contains("main.rs") && screen[0].contains("lib.rs")
+        screen[1].contains("main.rs") && screen[1].contains("lib.rs")
     });
 }
 

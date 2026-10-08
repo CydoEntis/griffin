@@ -158,11 +158,12 @@ pub fn render_tree(
     selected_at
 }
 
-/// A vertical `│` down `area`, in the theme's `line` colour.
+/// A vertical `│` down `area` in `guide`: the rule between two splits, the only
+/// vertical one on screen (README §5.6).
 pub fn render_divider(theme: &Theme, area: Rect, frame: &mut Frame) {
     let out = frame.buffer_mut();
     for y in area.top()..area.bottom() {
-        out.set_string(area.x, y, "│", Style::new().fg(theme.line));
+        out.set_string(area.x, y, "│", Style::new().fg(theme.guide));
     }
 }
 
