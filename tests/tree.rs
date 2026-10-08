@@ -288,6 +288,34 @@ fn arrows_browse_and_enter_opens_a_file() {
 }
 
 #[test]
+fn page_keys_move_the_selection_by_the_rows_the_tree_shows() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    for i in 0..60 {
+        fs::write(dir.path().join(format!("f{i:02}.txt")), "").expect("write file");
+    }
+    let path = dir.path().to_str().expect("temp path is UTF-8");
+    let mut glyph = Glyph::spawn(&[path]);
+    glyph.wait_for_text("f00.txt", START);
+    // Node rows run from FIRST to the row above the status line.
+    let last = ROWS - 2;
+    let visible = usize::from(last - FIRST + 1);
+    wait_for_selected(&glyph, FIRST, "    f00.txt");
+    glyph.wait_for_text(&format!("f{:02}.txt", visible - 1), WAIT);
+
+    // One page lands on the first row that wasn't showing, at the bottom: no
+    // row is skipped unseen.
+    glyph.send_keys("pagedown");
+    wait_for_selected(&glyph, last, &format!("    f{visible:02}.txt"));
+    assert_eq!(
+        tree_text(&glyph.screen()[usize::from(FIRST)]),
+        "    f01.txt"
+    );
+
+    glyph.send_keys("pageup");
+    wait_for_selected(&glyph, FIRST, "    f00.txt");
+}
+
+#[test]
 fn clicking_selects_rows_and_opens_files() {
     let mut glyph = open_project();
     wait_for_tree(&glyph, TOP);

@@ -1473,9 +1473,15 @@ impl App {
         self.follow_cursor();
     }
 
-    /// Rows one PageUp/PageDown moves in the tree.
+    /// Rows one PageUp/PageDown moves in the tree: the node rows below the brand,
+    /// so a page never skips rows the user hasn't seen.
     fn tree_page(&self) -> isize {
-        isize::try_from(self.editor_area().height).unwrap_or(isize::MAX)
+        let rows = self
+            .panes()
+            .tree
+            .map_or(0, |area| nodes_area(area).height)
+            .max(1);
+        isize::try_from(rows).unwrap_or(isize::MAX)
     }
 
     fn follow_tree(&mut self) {
