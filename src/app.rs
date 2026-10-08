@@ -142,8 +142,6 @@ enum BarOp {
     Rename(PathBuf),
     /// A path, relative to the project root, to save the active buffer to.
     SaveAs(AfterSave),
-    /// A line number to move the cursor to.
-    GoToLine,
 }
 
 /// The prompt bar while it asks for a name.
@@ -1578,10 +1576,8 @@ impl App {
             Action::SaveAs => self.start_save_as(AfterSave::Nothing),
             Action::ToggleSplit => self.toggle_split(),
             Action::CycleFocus => self.cycle_focus(),
-            Action::GoToFile => self.open_picker(),
-            Action::GoToLine => {
-                self.open_name_prompt(BarOp::GoToLine, PromptBar::new("Go to line", ""));
-            }
+            Action::GoToFile => self.open_picker(""),
+            Action::GoToLine => self.open_picker(":"),
             Action::Find => self.open_find(false),
             Action::Replace => self.open_find(true),
             Action::ProjectSearch => self.project_search = Some(ProjectSearch::new()),
@@ -1716,12 +1712,6 @@ impl App {
             self.after_save(after, saved);
             return;
         }
-        if op == BarOp::GoToLine {
-            if outcome == Outcome::Submit {
-                self.go_to_line(bar.text());
-            }
-            return;
-        }
         if outcome == Outcome::Cancel {
             return;
         }
@@ -1731,7 +1721,7 @@ impl App {
             BarOp::NewFolder(dir) => ops::create_folder(dir, name),
             BarOp::Rename(path) => ops::rename(path, name),
             // Handled above.
-            BarOp::SaveAs(_) | BarOp::GoToLine => return,
+            BarOp::SaveAs(_) => return,
         };
         let path = match result {
             Ok(path) => path,
@@ -1752,21 +1742,15 @@ impl App {
                 self.say(Tone::Ok, format!("renamed to {name}"));
                 self.follow_rename(&old, &path);
             }
-            BarOp::SaveAs(_) | BarOp::GoToLine => {}
+            BarOp::SaveAs(_) => {}
         }
     }
 
-    /// Moves the cursor to the line `text` names, counting from 1; past the end
-    /// means the last line.
-    fn go_to_line(&mut self, text: &str) {
-        match text.trim().parse::<usize>() {
-            Ok(line) => {
-                self.focus = Focus::Editor;
-                self.buffer_mut().go_to_line(line);
-                self.follow_cursor();
-            }
-            Err(_) => self.say(Tone::Err, format!("not a line number: {}", text.trim())),
-        }
+    /// Moves the cursor to `line`, counting from 1.
+    fn go_to_line(&mut self, line: usize) {
+        self.focus = Focus::Editor;
+        self.buffer_mut().go_to_line(line);
+        self.follow_cursor();
     }
 
     /// Ctrl+F (or Ctrl+R, `replace`, which adds the Replace field): opens the find
@@ -1849,12 +1833,23 @@ impl App {
         }
     }
 
-    /// Ctrl+P: opens the picker and lists the project's files on a background
-    /// thread, so a large project never stalls typing (ADR-0001). Outside the
-    /// event loop (unit tests) the walk runs inline.
-    fn open_picker(&mut self) {
+    /// Ctrl+P (or Ctrl+G, with `:` typed): opens the cast palette holding
+    /// `query`, with every global command and its key, and lists the project's
+    /// files on a background thread, so a large project never stalls typing
+    /// (ADR-0001). The files are walked whatever the query, as deleting its
+    /// prefix goes back to listing them. Outside the event loop (unit tests) the
+    /// walk runs inline.
+    fn open_picker(&mut self, query: &str) {
         self.picker_for = PickerFor::File;
-        let mut picker = Picker::new();
+        let commands = Action::commands()
+            .map(|action| picker::Command {
+                action,
+                title: action.title(),
+                key: self.keymap.key_label(action),
+            })
+            .collect();
+        let lines = self.buffer().rope.len_lines();
+        let mut picker = Picker::cast(commands, lines, query);
         let root = self.tree.root().to_path_buf();
         match &self.events {
             Some(events) => {
@@ -1866,6 +1861,17 @@ impl App {
             None => picker.set_files(list_files(&root)),
         }
         self.picker = Some(picker);
+    }
+
+    /// Cast's `/text`: opens project search holding `text` and, as Enter was
+    /// already pressed on it, searches for it.
+    fn open_project_search(&mut self, text: &str) {
+        let panel = ProjectSearch::with_query(text);
+        let query = panel.query();
+        self.project_search = Some(panel);
+        if !query.pattern.is_empty() {
+            self.start_project_search(query);
+        }
     }
 
     /// Follows what a key did in the project search panel.
@@ -2087,13 +2093,26 @@ impl App {
         }
     }
 
-    /// Closes the picker and, on Enter, opens the chosen file in a tab or runs
-    /// the chosen command.
+    /// Closes the picker and, on Enter, opens the chosen file in a tab, runs the
+    /// chosen command or action, goes to the line or searches the project.
     fn finish_picker(&mut self, picked: Picked) {
         self.picker = None;
         let picker_for = std::mem::take(&mut self.picker_for);
-        let Picked::Open(choice) = picked else {
-            return;
+        let choice = match picked {
+            Picked::Open(choice) => choice,
+            Picked::Close => return,
+            Picked::Run(action) => {
+                self.handle_action(action);
+                return;
+            }
+            Picked::Line(line) => {
+                self.go_to_line(line);
+                return;
+            }
+            Picked::Search(text) => {
+                self.open_project_search(&text);
+                return;
+            }
         };
         match picker_for {
             PickerFor::File => {

@@ -31,8 +31,18 @@ const QUERY_X: u16 = 13;
 /// Where the card's right-aligned text ends: four cells in from its edge.
 const RIGHT: u16 = 89;
 const SCOPE: &str = "cast · files · commands";
-/// With five file rows, a blank, then the footer.
-const FOOTER_ROW: u16 = 15;
+/// With no prefix, after five file rows: a blank, `COMMANDS` and two command
+/// rows.
+const COMMANDS_ROW: u16 = 15;
+/// Then a blank and the footer.
+const FOOTER_ROW: u16 = 19;
+/// Where the one row of a `>`, `:` or `/` section is, under its header.
+const MODE_ROW: u16 = 9;
+/// The default theme's `err` and `muted`.
+const ERR: Color = Color::Rgb(0xff, 0x6b, 0x6b);
+const MUTED: Color = Color::Rgb(0x71, 0x80, 0x8f);
+/// Three lines in two of its files hold `TODO`.
+const SEARCH_PROJECT: &str = "tests/fixtures/search";
 const PREFIXES: &str = "> commands   : line   / text";
 const KEYS: &str = "↑↓  ⏎  esc";
 
@@ -136,6 +146,20 @@ fn ctrl_p_casts_a_card_of_project_files_respecting_gitignore() {
     assert!(!screen.contains("HEAD"), "{screen}");
     // The first file starts selected.
     wait_for_selected(&glyph, FIRST_ROW, ".gitignore");
+
+    // Then the first two commands, each with its key right-aligned in `muted`.
+    assert_eq!(glyph.text_col(COMMANDS_ROW, "COMMANDS"), Some(TEXT_X));
+    assert_eq!(glyph.bold_text(COMMANDS_ROW).trim_end(), "COMMANDS");
+    for (i, (name, key)) in [("Quit", "Ctrl+Q"), ("Save", "Ctrl+S")]
+        .into_iter()
+        .enumerate()
+    {
+        let y = COMMANDS_ROW + 1 + u16::try_from(i).unwrap();
+        assert_eq!(glyph.text_col(y, name), Some(TEXT_X), "{name}");
+        let key_x = RIGHT - key.chars().count() as u16;
+        assert_eq!(glyph.text_col(y, key), Some(key_x), "{key}");
+        assert_eq!(glyph.fg_at(key_x, y), MUTED, "{key}");
+    }
 
     assert_eq!(glyph.text_col(FOOTER_ROW, PREFIXES), Some(TEXT_X));
     assert_eq!(glyph.bold_text(FOOTER_ROW).replace(' ', ""), ">:/");
@@ -253,32 +277,130 @@ fn mono_dims_with_the_modifier_and_reverses_the_selected_row() {
     assert!(!glyph.dim_at(TEXT_X, HEADER_ROW), "the card isn't");
 }
 
+/// `LONG` open on its own: 200 lines, the tree hidden.
+fn open_long() -> Glyph {
+    let glyph = Glyph::spawn(&[LONG]);
+    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph
+}
+
 #[test]
-fn ctrl_g_prompts_for_a_line_and_moves_the_cursor_there() {
-    let mut glyph = Glyph::spawn(&[LONG]);
-    glyph.wait_for_text("line 1", START);
-    glyph.send_keys("ctrl+g");
-    glyph.wait_for_text("Go to line:", WAIT);
-    glyph.type_text("120");
-    glyph.wait_for_text("Go to line: 120", WAIT);
+fn gt_lists_only_commands_with_their_keys_and_enter_runs_one() {
+    let mut glyph = open_long();
+    open_picker(&mut glyph);
+    glyph.type_text(">");
+    glyph.wait_for_text("cast · commands", WAIT);
+    glyph.wait_for_text_gone("FILES", WAIT);
+    assert_eq!(glyph.text_col(HEADER_ROW, "COMMANDS"), Some(TEXT_X));
+    // Every global command in order, the first selected with its key left of
+    // `⏎`.
+    assert_eq!(glyph.text_col(FIRST_ROW, "Quit"), Some(TEXT_X));
+    assert_eq!(glyph.text_col(FIRST_ROW, "Ctrl+Q  ⏎"), Some(RIGHT - 9));
+    assert_eq!(glyph.text_col(FIRST_ROW + 1, "Save"), Some(TEXT_X));
+    assert_eq!(glyph.text_col(FIRST_ROW + 1, "Ctrl+S"), Some(RIGHT - 6));
+
+    glyph.type_text("split");
+    glyph.wait_for_screen("Split right selected", WAIT, |screen| {
+        screen[usize::from(FIRST_ROW)]
+            .chars()
+            .skip(usize::from(TEXT_X))
+            .collect::<String>()
+            .starts_with("Split right ")
+    });
+    assert_eq!(glyph.text_col(FIRST_ROW, "Alt+V  ⏎"), Some(RIGHT - 8));
+    assert_eq!(
+        glyph.fg_text(FIRST_ROW, ACCENT).replace(['⏎', ' '], ""),
+        "Split"
+    );
     glyph.send_keys("enter");
-    glyph.wait_for_text_gone("Go to line:", WAIT);
+    glyph.wait_for_text_gone("cast · commands", WAIT);
+    // Two editors on the file, side by side.
+    glyph.wait_for_screen("two splits", WAIT, |screen| {
+        screen[1].matches("1 │ line 1").count() == 2
+    });
+}
+
+#[test]
+fn ctrl_g_casts_with_a_colon_and_enter_goes_to_the_line() {
+    let mut glyph = open_long();
+    glyph.send_keys("ctrl+g");
+    glyph.wait_for_text("cast · line", WAIT);
+    assert_eq!(glyph.text_col(QUERY_ROW, "✦ :"), Some(TEXT_X));
+    glyph.wait_for_cursor(QUERY_X + 1, QUERY_ROW, WAIT);
+    assert_eq!(glyph.text_col(HEADER_ROW, "LINE"), Some(TEXT_X));
+    assert_eq!(
+        glyph.text_col(MODE_ROW, "type a line number, 1–200"),
+        Some(TEXT_X)
+    );
+    // The bottom bar it used to open is gone.
+    let screen = glyph.screen().join("\n");
+    assert!(!screen.contains("Go to line:"), "{screen}");
+
+    glyph.type_text("120");
+    glyph.wait_for_text("Go to line 120  of 200", WAIT);
+    wait_for_glow(&glyph, MODE_ROW);
+    glyph.send_keys("enter");
+    glyph.wait_for_text_gone("cast · line", WAIT);
     glyph.wait_for_text("Ln 120, Col 1", WAIT);
     glyph.wait_for_text("line 120", WAIT);
 
-    // Something that isn't a number leaves the cursor where it was and says so.
+    // Esc closes it and moves nothing.
     glyph.send_keys("ctrl+g");
-    glyph.wait_for_text("Go to line:", WAIT);
-    glyph.type_text("abc");
-    glyph.send_keys("enter");
-    glyph.wait_for_text("not a line number: abc", WAIT);
-    assert!(status_line(&glyph).contains("Ln 120, Col 1"));
-
-    // Esc closes the prompt and moves nothing.
-    glyph.send_keys("ctrl+g");
-    glyph.wait_for_text("Go to line:", WAIT);
+    glyph.wait_for_text("cast · line", WAIT);
     glyph.type_text("5");
+    glyph.wait_for_text("Go to line 5  of 200", WAIT);
     glyph.send_keys("esc");
-    glyph.wait_for_text_gone("Go to line:", WAIT);
+    glyph.wait_for_text_gone("cast · line", WAIT);
     assert!(status_line(&glyph).contains("Ln 120, Col 1"));
+}
+
+/// Waits for row `y` to be the glow row with `⏎` at its right.
+fn wait_for_glow(glyph: &Glyph, y: u16) {
+    glyph.wait_for_bg(CARD_X, y, glow(), WAIT);
+    assert_eq!(glyph.text_col(y, "⏎"), Some(RIGHT - 1));
+}
+
+#[test]
+fn a_line_out_of_range_shows_in_err_and_enter_keeps_the_cast_open() {
+    let mut glyph = open_long();
+    glyph.send_keys("ctrl+g");
+    glyph.wait_for_text("cast · line", WAIT);
+    glyph.type_text("999");
+    glyph.wait_for_text("999  is out of range: lines 1–200", WAIT);
+    assert_eq!(glyph.text_col(MODE_ROW, "999"), Some(TEXT_X));
+    assert_eq!(glyph.fg_text(MODE_ROW, ERR).replace(' ', ""), "999");
+    assert_eq!(glyph.fg_text(QUERY_ROW, ERR).replace(' ', ""), ":999");
+    assert_eq!(glyph.bg_at(CARD_X, MODE_ROW), RAISED, "no glow");
+
+    glyph.send_keys("enter");
+    // Still open and taking keys: the query can be fixed.
+    for _ in 0..3 {
+        glyph.send_keys("backspace");
+    }
+    glyph.type_text("7");
+    glyph.wait_for_text("Go to line 7  of 200", WAIT);
+    assert!(status_line(&glyph).contains("Ln 1, Col 1"));
+    glyph.send_keys("enter");
+    glyph.wait_for_text_gone("cast · line", WAIT);
+    glyph.wait_for_text("Ln 7, Col 1", WAIT);
+}
+
+#[test]
+fn slash_text_opens_project_search_for_the_text() {
+    let mut glyph = Glyph::spawn_in(Path::new(SEARCH_PROJECT), &[]);
+    glyph.wait_for_text("Ln 1, Col 1", START);
+    open_picker(&mut glyph);
+    glyph.type_text("/TODO");
+    glyph.wait_for_text("cast · text", WAIT);
+    assert_eq!(glyph.text_col(HEADER_ROW, "TEXT"), Some(TEXT_X));
+    assert_eq!(
+        glyph.text_col(MODE_ROW, "Search the project for TODO"),
+        Some(TEXT_X)
+    );
+    wait_for_glow(&glyph, MODE_ROW);
+    glyph.send_keys("enter");
+    glyph.wait_for_text_gone("cast · text", WAIT);
+    // The panel holds the text and has searched for it.
+    glyph.wait_for_text("Search   TODO", WAIT);
+    glyph.wait_for_text("3 matches in 2 files", WAIT);
 }
