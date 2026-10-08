@@ -90,6 +90,11 @@ pub struct Row {
     pub state: State,
     /// The command that installs it, if one is known.
     pub install: Option<String>,
+    /// The languages it serves, whose failed starts an install makes Glyph
+    /// forget.
+    pub langs: &'static [&'static str],
+    /// The install command has to be run by the user (see `servers::copy_only`).
+    pub copy_only: bool,
 }
 
 /// What a key did to the catalog, when it did more than move.
@@ -101,6 +106,20 @@ pub enum Step {
     Copy(String),
     /// `c` on a row with no install command: the status line says so.
     NoInstall(&'static str),
+    /// Enter on a `missing` row: run its install command in the run panel.
+    Install(Install),
+}
+
+/// An install Enter asked for: what to run, and what to check once it's done.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Install {
+    /// The row's name, which titles the run and the messages.
+    pub name: &'static str,
+    pub langs: &'static [&'static str],
+    /// The command that starts the server, looked up on PATH afterwards.
+    pub command: String,
+    /// The command that installs it.
+    pub install: String,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +160,8 @@ impl Catalog {
                     command: server.command.unwrap_or_default(),
                     state,
                     install: install.install,
+                    langs,
+                    copy_only: install.copy_only,
                 }
             })
             .collect();
@@ -153,7 +174,8 @@ impl Catalog {
     }
 
     /// ↑ and ↓ move the selection, stopping at either end; `c` copies the
-    /// selected row's install command; Esc closes. Enter waits for installing.
+    /// selected row's install command; Enter installs a `missing` server, or
+    /// copies the command when Glyph can't run it; Esc closes.
     pub fn handle(&mut self, input: Input) -> Option<Step> {
         match input {
             Input::Action(Action::Move(Motion::Up)) => {
@@ -170,6 +192,27 @@ impl Catalog {
                     Some(install) => Step::Copy(install.clone()),
                     None => Step::NoInstall(row.name),
                 })
+            }
+            Input::Action(Action::Newline) => {
+                let row = self.rows.get(self.selected)?;
+                // Nothing to do for a server that's already there.
+                if matches!(row.state, State::Installed | State::Running) {
+                    return None;
+                }
+                let Some(install) = &row.install else {
+                    return Some(Step::NoInstall(row.name));
+                };
+                // The run panel can't answer a prompt, and an install whose
+                // tool is missing would only fail: the user runs it instead.
+                if row.copy_only || matches!(row.state, State::Needs(_)) {
+                    return Some(Step::Copy(install.clone()));
+                }
+                Some(Step::Install(Install {
+                    name: row.name,
+                    langs: row.langs,
+                    command: row.command.clone(),
+                    install: install.clone(),
+                }))
             }
             Input::Action(Action::Cancel) => Some(Step::Close),
             _ => None,
@@ -412,9 +455,8 @@ mod tests {
                 "go install github.com/sqls-server/sqls@latest".into()
             ))
         );
-        // Typed letters and Enter do nothing here yet.
+        // Typed letters do nothing here.
         assert_eq!(c.handle(Input::Text('x')), None);
-        assert_eq!(press(&mut c, Action::Newline), None);
         assert_eq!(press(&mut c, Action::Cancel), Some(Step::Close));
         Ok(())
     }
@@ -433,6 +475,57 @@ mod tests {
             c.handle(Input::Action(Action::CatalogCopy)),
             Some(Step::NoInstall("Rust"))
         );
+    }
+
+    #[test]
+    fn enter_installs_a_missing_row_copies_what_it_cant_run_and_skips_the_rest()
+    -> anyhow::Result<()> {
+        // Rust needs rustup, Go is installed, TypeScript is running, Python
+        // is missing with npm there, and HTML's install needs sudo.
+        let dir = tempfile::tempdir()?;
+        for program in ["gopls", "npm"] {
+            touch(&dir.path().join(exe(program)))?;
+        }
+        let config = BTreeMap::from([(
+            "html".to_string(),
+            LspServer {
+                command: Some("vscode-html-language-server".into()),
+                install: Some("sudo npm install -g vscode-langservers-extracted".into()),
+                ..LspServer::default()
+            },
+        )]);
+        let mut c = Catalog::new(
+            &config,
+            |lang| lang == "tsx",
+            Some(dir.path().as_os_str()),
+            None,
+        );
+        let mut enter_on = |row: usize| {
+            c.selected = row;
+            c.handle(Input::Action(Action::Newline))
+        };
+        assert_eq!(
+            enter_on(0),
+            Some(Step::Copy("rustup component add rust-analyzer".into()))
+        );
+        assert_eq!(enter_on(1), None);
+        assert_eq!(enter_on(2), None);
+        assert_eq!(
+            enter_on(3),
+            Some(Step::Install(Install {
+                name: "Python",
+                langs: &["python"],
+                command: "pyright-langserver".into(),
+                install: "npm install -g pyright".into(),
+            }))
+        );
+        assert_eq!(
+            enter_on(4),
+            Some(Step::Copy(
+                "sudo npm install -g vscode-langservers-extracted".into()
+            ))
+        );
+        Ok(())
     }
 
     fn draw(c: &Catalog, theme: &Theme) -> anyhow::Result<Buffer> {

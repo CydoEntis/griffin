@@ -35,7 +35,7 @@ use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
 use crate::lsp::{
     CompletionItem, Diagnostic, FormatRequest, HoverText, Location, Lsp, LspEvent, LspNews,
-    Severity, char_index, diagnostic_at, diagnostic_jump,
+    Severity, char_index, diagnostic_at, diagnostic_jump, servers,
 };
 use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
@@ -828,6 +828,9 @@ pub struct App {
     /// How many runs have started, numbering them so output from an earlier one
     /// is dropped.
     runs: u64,
+    /// The catalog install going on in the run panel, by run number, so its
+    /// exit can start the server it installed.
+    install: Option<(u64, catalog::Install)>,
     run_panel_visible: bool,
     /// The find bar, while it's open; it takes every key, so the active buffer
     /// can't change under its matches.
@@ -949,6 +952,12 @@ impl App {
     /// Starts language servers from `[lsp.<lang>]` as files of each language open.
     pub fn with_lsp(mut self, lsp: Lsp) -> Self {
         self.lsp = lsp;
+        self
+    }
+
+    /// Copies and pastes through `clipboard` instead of the OS one.
+    pub fn with_clipboard(mut self, clipboard: Box<dyn Clipboard>) -> Self {
+        self.clipboard = clipboard;
         self
     }
 
@@ -1200,11 +1209,19 @@ impl App {
             }
             // A stopped run keeps saying so rather than show the kill's exit code.
             AppEvent::RunExited { run, code } => {
+                let mut stopped = false;
                 if let Some(view) = &mut self.run
                     && view.id == run
-                    && view.status == RunStatus::Running
                 {
-                    view.status = RunStatus::Exited(code);
+                    stopped = view.status == RunStatus::Stopped;
+                    if view.status == RunStatus::Running {
+                        view.status = RunStatus::Exited(code);
+                    }
+                }
+                if let Some((_, install)) = self.install.take_if(|(id, _)| *id == run)
+                    && !stopped
+                {
+                    self.installed(&install, code);
                 }
             }
             AppEvent::Dap(event) => {
@@ -2316,6 +2333,71 @@ impl App {
             catalog::Step::NoInstall(name) => {
                 self.say(Tone::Warn, format!("no install command for {name}"));
             }
+            catalog::Step::Install(install) => self.start_install(install),
+        }
+    }
+
+    /// Runs a catalog install in the run panel, titled `install <server>`. The
+    /// panel holds one run at a time, so a command still going is never killed
+    /// for it; the catalog stays open under the refusal.
+    fn start_install(&mut self, install: catalog::Install) {
+        if let Some(run) = &self.run
+            && run.status == RunStatus::Running
+        {
+            self.say(
+                Tone::Warn,
+                format!("{} is running; stop it first", run.name),
+            );
+            return;
+        }
+        self.catalog = None;
+        let entry = RunEntry {
+            name: format!("install {}", install.name),
+            command: install.install.clone(),
+            cwd: None,
+        };
+        let before = self.runs;
+        self.start_entry(entry, false);
+        // `start_entry` numbers the run only when it started.
+        if self
+            .run
+            .as_ref()
+            .is_some_and(|r| r.id != before && r.id == self.runs)
+        {
+            self.install = Some((self.runs, install));
+        }
+    }
+
+    /// What an install's exit means. On success the server's failed starts are
+    /// forgotten, so the `sync_lsp` after this event starts it for the open
+    /// files. Glyph's PATH was read when it started and doesn't change, so a
+    /// server installed into a folder added to PATH since can't be found yet.
+    fn installed(&mut self, install: &catalog::Install, code: Option<i32>) {
+        match code {
+            Some(0) => {
+                let path = std::env::var_os("PATH");
+                let pathext = std::env::var_os("PATHEXT");
+                if servers::find(&install.command, path.as_deref(), pathext.as_deref()).is_some() {
+                    for lang in install.langs {
+                        self.lsp.forget_failed(lang);
+                    }
+                    self.say(Tone::Ok, format!("{} installed", install.name));
+                } else {
+                    self.say(
+                        Tone::Warn,
+                        format!(
+                            "installed, but {} isn't on PATH; restart your terminal",
+                            install.command
+                        ),
+                    );
+                }
+            }
+            Some(code) => self.say(
+                Tone::Err,
+                format!("install failed (exit {code}); see the run panel"),
+            ),
+            // Killed by a signal: there's no exit code to give.
+            None => self.say(Tone::Err, "install failed; see the run panel"),
         }
     }
 
@@ -2756,6 +2838,13 @@ impl App {
         self.runs += 1;
         match crate::run::spawn(self.runs, &entry, self.tree.root(), events) {
             Ok(tree) => {
+                // Ctrl+F5 on an install runs it again; its exit still counts.
+                // Any other run leaves an earlier install behind.
+                self.install = self
+                    .install
+                    .take()
+                    .filter(|_| restarted)
+                    .map(|(_, install)| (self.runs, install));
                 self.run_tree = Some(tree);
                 let mut view = RunView::new(self.runs, entry.name.clone(), entry.command.clone());
                 if restarted {

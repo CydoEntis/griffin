@@ -222,3 +222,253 @@ fn mono_reverses_the_selected_row() {
     glyph.wait_for_reversed(FIRST_ROW + 1, &go, WAIT);
     assert_eq!(glyph.reversed_text(FIRST_ROW), "");
 }
+
+/// `command` as the platform shell runs it, so the install's first word (the
+/// tool the catalog looks for) is a program on PATH: `cmd` or `sh`.
+fn shell(command: &str) -> String {
+    if cfg!(windows) {
+        format!("cmd /C {command}")
+    } else {
+        format!("sh -c '{command}'")
+    }
+}
+
+/// `config.toml` giving Rust the server `command` and the install `install`.
+/// Triple-quoted literals, so backslashes and quotes stay as they are. The
+/// missing server is called `nope` so the messages naming it fit the 100-cell
+/// status line beside the cursor position.
+fn rust_install(command: &str, install: &str) -> String {
+    format!("[lsp.rust]\ncommand = '''{command}'''\ninstall = '''{install}'''\n")
+}
+
+/// Glyph on an empty project with `config`, the PATH it inherits, and its
+/// clipboard in the file `clipboard`.
+fn with_config(project: &Path, config: &str, clipboard: &Path) -> Glyph {
+    let env = [("GLYPH_CLIPBOARD_FILE", OsString::from(clipboard))];
+    let glyph = Glyph::spawn_in_with_config_and_env(project, config, &env, &["."]);
+    glyph.wait_for_text("Open directory", START);
+    glyph
+}
+
+/// At 30 rows the run panel's title is row 20 and its output starts on row 21.
+const RUN_TITLE_ROW: u16 = 20;
+const RUN_OUTPUT_ROW: u16 = 21;
+
+/// Waits for the first server row to say `missing`.
+fn wait_missing(glyph: &Glyph) {
+    glyph.wait_for_screen("Rust missing", WAIT, |screen| {
+        screen[usize::from(FIRST_ROW)].contains("missing")
+    });
+}
+
+#[test]
+fn enter_on_a_missing_row_runs_its_install_in_the_run_panel() {
+    let project = tempfile::tempdir().expect("create project");
+    let clip = tempfile::tempdir().expect("create clipboard dir");
+    let config = rust_install("nope", &shell("echo installing rust"));
+    let mut glyph = with_config(project.path(), &config, &clip.path().join("clip"));
+    open_catalog(&mut glyph);
+    wait_missing(&glyph);
+    glyph.send_keys("enter");
+
+    // The card closes and the panel, hidden until now, shows the install.
+    glyph.wait_for_text_gone(HEADER, WAIT);
+    glyph.wait_for_screen("the install's title and output", WAIT, |screen| {
+        screen[usize::from(RUN_TITLE_ROW)].contains("install Rust")
+            && screen[usize::from(RUN_OUTPUT_ROW)].contains("installing rust")
+    });
+    // It exited 0, but the server is still nowhere on PATH.
+    glyph.wait_for_text(
+        "installed, but nope isn't on PATH; restart your terminal",
+        WAIT,
+    );
+}
+
+#[test]
+fn a_failed_install_says_its_exit_code() {
+    let project = tempfile::tempdir().expect("create project");
+    let clip = tempfile::tempdir().expect("create clipboard dir");
+    let config = rust_install("nope", &shell("exit 3"));
+    let mut glyph = with_config(project.path(), &config, &clip.path().join("clip"));
+    open_catalog(&mut glyph);
+    wait_missing(&glyph);
+    glyph.send_keys("enter");
+    glyph.wait_for_text("install failed (exit 3); see the run panel", WAIT);
+    assert!(row(&glyph, RUN_TITLE_ROW).contains("install Rust"));
+}
+
+#[test]
+fn an_install_waits_for_the_running_command() {
+    let project = tempfile::tempdir().expect("create project");
+    let clip = tempfile::tempdir().expect("create clipboard dir");
+    // Long enough to still be running when Enter is pressed again; it's
+    // stopped below, never waited out.
+    let long = if cfg!(windows) {
+        shell("\"echo started & ping -n 60 127.0.0.1 >nul\"")
+    } else {
+        shell("echo started; sleep 60")
+    };
+    let config = rust_install("nope", &long);
+    let mut glyph = with_config(project.path(), &config, &clip.path().join("clip"));
+    open_catalog(&mut glyph);
+    wait_missing(&glyph);
+    glyph.send_keys("enter");
+    glyph.wait_for_screen("the install running", WAIT, |screen| {
+        screen[usize::from(RUN_OUTPUT_ROW)].contains("started")
+    });
+
+    open_catalog(&mut glyph);
+    wait_missing(&glyph);
+    glyph.send_keys("enter");
+    glyph.wait_for_text("install Rust is running; stop it first", WAIT);
+    // The catalog stays open under the message.
+    assert_eq!(glyph.text_col(HEADER_ROW, HEADER), Some(TEXT_X));
+
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(HEADER, WAIT);
+    glyph.send_keys("shift+f5");
+    glyph.wait_for_screen("the install stopped", WAIT, |screen| {
+        screen[usize::from(RUN_TITLE_ROW)].contains("stopped")
+    });
+}
+
+#[test]
+fn enter_copies_a_command_it_cant_run() {
+    let project = tempfile::tempdir().expect("create project");
+    let clip = tempfile::tempdir().expect("create clipboard dir");
+    let clipboard = clip.path().join("clip");
+
+    // `needs rustup`: the PATH holds nothing.
+    let path = programs(&[]);
+    let env = [
+        ("PATH", OsString::from(path.path())),
+        ("GLYPH_CLIPBOARD_FILE", OsString::from(&clipboard)),
+    ];
+    let mut glyph = Glyph::spawn_in_with_env(project.path(), &env, &["."]);
+    glyph.wait_for_text("Open directory", START);
+    open_catalog(&mut glyph);
+    glyph.send_keys("enter");
+    glyph.wait_for_text("copied: rustup component add rust-analyzer", WAIT);
+    assert_eq!(
+        fs::read_to_string(&clipboard).expect("read clipboard"),
+        "rustup component add rust-analyzer"
+    );
+    // The catalog stays, and nothing ran.
+    assert_eq!(glyph.text_col(HEADER_ROW, HEADER), Some(TEXT_X));
+    assert!(!glyph.screen().iter().any(|l| l.contains("install Rust")));
+    drop(glyph);
+
+    // `sudo` would ask for a password the run panel can't take: copied too.
+    let sudo = format!("sudo {}", shell("echo hi"));
+    let config = rust_install("nope", &sudo);
+    let mut glyph = with_config(project.path(), &config, &clipboard);
+    open_catalog(&mut glyph);
+    wait_missing(&glyph);
+    glyph.send_keys("enter");
+    glyph.wait_for_text(&format!("copied: {sudo}"), WAIT);
+    assert_eq!(
+        fs::read_to_string(&clipboard).expect("read clipboard"),
+        sudo
+    );
+}
+
+/// Presses Enter on the selected row, then ↓: keys are handled in order, so
+/// once the selection has moved, Enter has been handled too.
+fn enter_then_down(glyph: &mut Glyph) {
+    let lit = mix(RAISED, ACCENT, 0.3);
+    glyph.wait_for_bg(CARD_X, FIRST_ROW, lit, WAIT);
+    glyph.send_keys("enter");
+    glyph.send_keys("down");
+    glyph.wait_for_bg(CARD_X, FIRST_ROW + 1, lit, WAIT);
+}
+
+#[test]
+fn enter_on_an_installed_row_does_nothing() {
+    let project = tempfile::tempdir().expect("create project");
+    let path = programs(&["rust-analyzer"]);
+    let mut glyph = with_path(project.path(), path.path());
+    open_catalog(&mut glyph);
+    enter_then_down(&mut glyph);
+    assert_eq!(glyph.text_col(HEADER_ROW, HEADER), Some(TEXT_X));
+    let screen = glyph.screen();
+    assert!(
+        !screen.iter().any(|l| l.contains("install Rust")),
+        "{screen:#?}"
+    );
+    assert!(!screen.iter().any(|l| l.contains("copied")), "{screen:#?}");
+}
+
+#[test]
+fn enter_on_a_running_row_does_nothing() {
+    let project = tempfile::tempdir().expect("create project");
+    fs::write(project.path().join("a.rs"), "fn a() {}\n").expect("write a.rs");
+    let log = tempfile::tempdir().expect("create log dir");
+    let config = rust_install(env!("CARGO_BIN_EXE_fake_lsp"), &shell("echo again"));
+    let env = [(
+        "FAKE_LSP_LOG",
+        log.path().join("log.jsonl").into_os_string(),
+    )];
+    let mut glyph = Glyph::spawn_in_with_config_and_env(project.path(), &config, &env, &["a.rs"]);
+    glyph.wait_for_text("Ln 1, Col 1", START);
+    open_catalog(&mut glyph);
+    glyph.wait_for_screen("Rust running", WAIT, |screen| {
+        screen[usize::from(FIRST_ROW)].contains("running")
+    });
+    enter_then_down(&mut glyph);
+    assert_eq!(glyph.text_col(HEADER_ROW, HEADER), Some(TEXT_X));
+    assert!(!glyph.screen().iter().any(|l| l.contains("install Rust")));
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(HEADER, WAIT);
+    // Quit cleanly so the fake server exits too.
+    glyph.send_keys("ctrl+q");
+    glyph.wait_exit(WAIT);
+}
+
+#[test]
+fn a_server_found_after_its_install_starts_for_the_open_files() {
+    let project = tempfile::tempdir().expect("create project");
+    fs::write(project.path().join("a.rs"), "fn a() {}\n").expect("write a.rs");
+    let files = tempfile::tempdir().expect("create server dir");
+    let log = files.path().join("log.jsonl");
+    // The fake server, copied into place by the install: absent until then.
+    let server = files.path().join(if cfg!(windows) {
+        "glyph-fake-server.exe"
+    } else {
+        "glyph-fake-server"
+    });
+    let fake = env!("CARGO_BIN_EXE_fake_lsp");
+    let install = if cfg!(windows) {
+        shell(&format!("copy /Y \"{fake}\" \"{}\"", server.display()))
+    } else {
+        format!("cp '{fake}' '{}'", server.display())
+    };
+    let config = rust_install(&server.display().to_string(), &install);
+    let env = [("FAKE_LSP_LOG", log.clone().into_os_string())];
+    let mut glyph = Glyph::spawn_in_with_config_and_env(project.path(), &config, &env, &["a.rs"]);
+    glyph.wait_for_text("rust: server not found", START);
+
+    open_catalog(&mut glyph);
+    wait_missing(&glyph);
+    glyph.send_keys("enter");
+    glyph.wait_for_text("Rust installed", WAIT);
+    // Without restarting Glyph, the server now follows a.rs.
+    glyph.wait_for_files("the server to open a.rs", WAIT, || {
+        fs::read_to_string(&log)
+            .is_ok_and(|log| log.contains("textDocument/didOpen") && log.contains("a.rs"))
+    });
+    // Quit cleanly so the server exits and its folder can go.
+    glyph.send_keys("ctrl+q");
+    glyph.wait_exit(WAIT);
+}
+
+#[test]
+fn server_not_found_says_the_catalog_installs_it() {
+    let project = tempfile::tempdir().expect("create project");
+    fs::write(project.path().join("a.rs"), "fn a() {}\n").expect("write a.rs");
+    let config = "[lsp.rust]\ncommand = 'nope'\n";
+    let glyph = Glyph::spawn_in_with_config(project.path(), config, &["a.rs"]);
+    glyph.wait_for_text(
+        "rust: server not found (nope) · >language servers installs it",
+        START,
+    );
+}

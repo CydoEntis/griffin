@@ -83,6 +83,9 @@ async fn main() -> Result<()> {
         .with_theme(theme)
         .with_lsp(lsp)
         .with_backups(backups)
+        .with_clipboard(clipboard::from_env(std::env::var_os(
+            "GLYPH_CLIPBOARD_FILE",
+        )))
         .run(&mut terminal)
         .await;
     let restored = restore_terminal();

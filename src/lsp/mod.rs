@@ -793,7 +793,8 @@ impl Lsp {
             }
             Err(err) => {
                 messages.push(if err.kind() == io::ErrorKind::NotFound {
-                    format!("{lang}: server not found ({command})")
+                    // Said where it's noticed, so the fix is one step away.
+                    format!("{lang}: server not found ({command}) · >language servers installs it")
                 } else {
                     format!("{lang}: cannot start server ({command}): {err}")
                 });
@@ -1083,10 +1084,6 @@ impl Lsp {
     /// `sync` tries starting it again: a server installed since then starts
     /// without reopening the project. Running servers are left alone. Returns
     /// whether anything was forgotten.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the catalog's install calls it once it lands")
-    )]
     pub fn forget_failed(&mut self, lang: &str) -> bool {
         let failed: HashSet<u64> = self
             .by_root
@@ -1207,7 +1204,10 @@ mod tests {
         };
 
         let first = lsp.sync(dir.path(), &[(1, &a), (2, &notes)]);
-        assert_eq!(first, ["rust: server not found (glyph-no-such-server)"]);
+        assert_eq!(
+            first,
+            ["rust: server not found (glyph-no-such-server) · >language servers installs it"]
+        );
         assert!(
             lsp.sync(dir.path(), &[(1, &a), (2, &notes), (3, &b)])
                 .is_empty()
