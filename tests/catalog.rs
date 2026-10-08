@@ -513,9 +513,10 @@ fn path_with_shell(dir: &Path) -> OsString {
     std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(system)).expect("join PATH")
 }
 
-/// Glyph on an empty project with `path` as its PATH, an empty LLVM folder (so
-/// an LLVM installed on this machine doesn't count), and its clipboard in the
-/// file `clipboard`.
+/// Glyph on an empty project with `path` as its PATH, an empty LLVM folder, and
+/// its clipboard in the file `clipboard`. Windows can still hand Glyph the real
+/// `ProgramFiles` (CI's windows-latest has LLVM there), so a test that asserts
+/// lldb-dap's state asks `lldb_state` what to expect.
 fn with_adapters_path(project: &Path, path: OsString, clipboard: &Path) -> (Glyph, TempDir) {
     let program_files = tempfile::tempdir().expect("create Program Files");
     let env = [
@@ -526,6 +527,22 @@ fn with_adapters_path(project: &Path, path: OsString, clipboard: &Path) -> (Glyp
     let glyph = Glyph::spawn_in_with_env(project, &env, &["."]);
     glyph.wait_for_text("Open directory", START);
     (glyph, program_files)
+}
+
+/// lldb-dap's state when it isn't on PATH: `installed` when LLVM's own folder
+/// on this machine has it, as on CI's Windows runner, else `missing`.
+fn lldb_state() -> &'static str {
+    let program_files =
+        std::env::var_os("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".into());
+    let lldb = Path::new(&program_files)
+        .join("LLVM")
+        .join("bin")
+        .join("lldb-dap.exe");
+    if cfg!(windows) && lldb.is_file() {
+        "installed"
+    } else {
+        "missing"
+    }
 }
 
 /// Moves the selection from the first row down to row `y`.
@@ -561,7 +578,7 @@ fn debuggers_are_listed_under_their_heading_and_copy_their_install() {
     // redraw in pieces), so wait for every adapter's state and the footer.
     glyph.wait_for_screen("the debuggers' states", WAIT, |screen| {
         let at = |y: u16| &screen[usize::from(y)];
-        at(DEBUGGERS_ROW + 1).contains("missing")
+        at(DEBUGGERS_ROW + 1).contains(lldb_state())
             && at(DEBUGGERS_ROW + 2).contains("missing")
             && at(LAST_ROW).contains("needs go")
             && at(FOOTER_ROW).contains(FOOTER)
@@ -571,7 +588,7 @@ fn debuggers_are_listed_under_their_heading_and_copy_their_install() {
     assert_eq!(glyph.text_col(DEBUGGERS_ROW, "debuggers"), Some(TEXT_X));
     assert!(glyph.bold_at(TEXT_X, DEBUGGERS_ROW));
     let expect = [
-        ("lldb-dap", "lldb-dap", "missing"),
+        ("lldb-dap", "lldb-dap", lldb_state()),
         ("debugpy", "python -m debugpy.adapter", "missing"),
         ("dlv", "dlv dap", "needs go"),
     ];
