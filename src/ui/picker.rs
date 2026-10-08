@@ -6,7 +6,7 @@ use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Matcher, Utf32Str};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Clear;
 use unicode_width::UnicodeWidthStr;
 
@@ -29,6 +29,20 @@ pub enum Picked {
     Close,
 }
 
+/// One entry of a list of choices, such as a run command: picked by its name,
+/// listed with a detail and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choice {
+    pub name: String,
+    pub detail: String,
+    pub source: &'static str,
+}
+
+/// Tallest the card for a list of choices gets (SPEC_V1_LAYOUT §9).
+const CHOICES_HEIGHT: u16 = 8;
+/// Where a choice's detail starts, from the card's left edge.
+const DETAIL_X: u16 = 14;
+
 /// One file the query matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Match {
@@ -45,6 +59,9 @@ pub struct Picker {
     files: Option<Vec<String>>,
     /// Shown when nothing matches the query.
     no_match: &'static str,
+    /// For a list of choices, each one's detail and source, in `files` order;
+    /// `None` for go to file.
+    choices: Option<Vec<Choice>>,
     /// The files the query matches, best first.
     matches: Vec<Match>,
     /// Index into `matches`.
@@ -65,23 +82,27 @@ impl Picker {
             query: PromptBar::new("Go to file", ""),
             files: None,
             no_match: " no matching files",
+            choices: None,
             matches: Vec::new(),
             selected: 0,
             matcher: Matcher::new(Config::DEFAULT.match_paths()),
         }
     }
 
-    /// A picker titled `title` over `choices`, listed in the order given.
-    pub fn choices(title: &'static str, choices: Vec<String>) -> Self {
+    /// A picker titled `title` over `choices`, listed in the order given and
+    /// matched by name. It's drawn as a dialog over the dimmed screen.
+    pub fn choices(title: &'static str, choices: Vec<Choice>) -> Self {
+        let names = choices.iter().map(|c| c.name.clone()).collect();
         let mut picker = Picker {
             query: PromptBar::new(title, ""),
             files: None,
-            no_match: " no match",
+            no_match: "no match",
+            choices: Some(choices),
             matches: Vec::new(),
             selected: 0,
             matcher: Matcher::new(Config::DEFAULT),
         };
-        picker.set_files(choices);
+        picker.set_files(names);
         picker
     }
 
@@ -184,10 +205,155 @@ impl Picker {
         }
     }
 
+    /// Where the card for a list of choices goes in `area`: as wide as go to
+    /// file's, up to eight rows tall (SPEC_V1_LAYOUT §9), centred.
+    fn choices_card(area: Rect) -> Rect {
+        let width = (area.width * 3 / 5).clamp(40, MAX_WIDTH).min(area.width);
+        let height = CHOICES_HEIGHT.min(area.height.saturating_sub(4));
+        Rect {
+            x: area.x + (area.width - width) / 2,
+            y: area.y + (area.height - height) / 2,
+            width,
+            height,
+        }
+    }
+
+    /// The positions of `text`'s letters the query matches, sorted.
+    fn matched(&self, text: &str) -> Vec<u32> {
+        let pattern = Pattern::parse(self.query.text(), CaseMatching::Smart, Normalization::Smart);
+        let mut matcher = self.matcher.clone();
+        let mut chars = Vec::new();
+        let mut indices = Vec::new();
+        pattern.indices(Utf32Str::new(text, &mut chars), &mut matcher, &mut indices);
+        indices.sort_unstable();
+        indices.dedup();
+        indices
+    }
+
+    /// Dims `area` and draws a list of choices as a dialog over it (README §5.1,
+    /// SPEC_V1_LAYOUT §9): the lit top edge, the query on an input row, then one
+    /// row per match (its name with the matched letters in the accent, the
+    /// detail in `muted` and the source right-aligned), the selected one as the
+    /// glow row, and the key hints with the count. Returns where the cursor goes.
+    fn render_choices(
+        &self,
+        theme: &Theme,
+        frame: &mut Frame,
+        area: Rect,
+        choices: &[Choice],
+    ) -> (u16, u16) {
+        crate::ui::dim(theme, frame.buffer_mut(), area);
+        let card = Self::choices_card(area);
+        crate::ui::dialog_card(theme, frame, card);
+        // The edge, the query, one choice and the footer.
+        if card.height < 4 || card.width < 20 {
+            return (card.x, card.y);
+        }
+        let label_width = u16::try_from(self.query.label.width()).unwrap_or(0);
+        let cursor = crate::ui::input_row(
+            theme,
+            frame,
+            Rect {
+                y: card.y + 1,
+                height: 1,
+                ..card
+            },
+            self.query.label,
+            label_width,
+            &self.query,
+            true,
+        );
+        let out = frame.buffer_mut();
+        let muted = Style::new().fg(theme.muted);
+        let total = self.files.as_ref().map_or(0, Vec::len);
+        crate::ui::footer(theme, out, card, "↑↓ select   ⏎ run   esc close");
+        let count = format!("{} of {total}", self.matches.len());
+        let count_x = card
+            .right()
+            .saturating_sub(2 + u16::try_from(count.width()).unwrap_or(0));
+        out.set_string(count_x, card.bottom() - 1, count, muted);
+
+        let list = Rect {
+            y: card.y + 2,
+            height: card.height - 3,
+            ..card
+        };
+        if self.matches.is_empty() {
+            out.set_stringn(
+                list.x + 2,
+                list.y,
+                self.no_match,
+                usize::from(list.width.saturating_sub(4)),
+                muted,
+            );
+            return cursor;
+        }
+        let rows = usize::from(list.height);
+        // Scrolls just far enough to keep the selection on the last row.
+        let first = self.selected.saturating_sub(rows.saturating_sub(1));
+        let ramps = theme.ramps();
+        for (line, (index, m)) in self
+            .matches
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(rows)
+            .enumerate()
+        {
+            let Some(choice) = choices.get(m.file) else {
+                continue;
+            };
+            let y = list.y + u16::try_from(line).unwrap_or(u16::MAX);
+            let selected = index == self.selected;
+            if selected {
+                crate::ui::glow_row(theme, out, card.x, card.right(), y);
+                crate::ui::enter_mark(theme, out, card.right() - 4, y);
+            }
+            // In mono the selected row is reverse video, which colours of its
+            // own would break up.
+            let plain = selected && !ramps;
+            let style = |style: Style| if plain { Style::new() } else { style };
+            let name_style = style(Style::new().fg(if selected { theme.strong } else { theme.fg }));
+            let hit_style = style(Style::new().fg(theme.accent)).add_modifier(Modifier::BOLD);
+            let dim_style = style(Style::new().fg(if selected { theme.text } else { theme.muted }));
+
+            // The source ends two cells short of where `⏎` goes.
+            let source_end = card.right().saturating_sub(7);
+            let source_width = u16::try_from(choice.source.width()).unwrap_or(0);
+            let source_x = source_end.saturating_sub(source_width);
+            out.set_string(source_x, y, choice.source, dim_style);
+            let text_end = source_x.saturating_sub(2);
+
+            let indices = self.matched(&choice.name);
+            let mut x = card.x + 2;
+            for (at, ch) in choice.name.chars().enumerate() {
+                let cell = ch.to_string();
+                let cells = u16::try_from(cell.width()).unwrap_or(1);
+                if x + cells > text_end {
+                    break;
+                }
+                let hit = u32::try_from(at).is_ok_and(|at| indices.binary_search(&at).is_ok());
+                out.set_string(x, y, &cell, if hit { hit_style } else { name_style });
+                x += cells;
+            }
+            // A detected command is named after itself; saying it twice tells
+            // nothing.
+            if choice.detail != choice.name {
+                let detail_x = (card.x + DETAIL_X).max(x + 2);
+                let room = usize::from(text_end.saturating_sub(detail_x));
+                out.set_stringn(detail_x, y, &choice.detail, room, dim_style);
+            }
+        }
+        cursor
+    }
+
     /// Draws the card centred in `area` on `card`: a border, the query line, then
     /// the matches with their matched letters in `accent` and the selected one
     /// filled with `hov`. Returns where the cursor goes, in the query.
     pub fn render(&self, theme: &Theme, frame: &mut Frame, area: Rect) -> (u16, u16) {
+        if let Some(choices) = &self.choices {
+            return self.render_choices(theme, frame, area, choices);
+        }
         let card = Self::card(area);
         frame.render_widget(Clear, card);
         let block = crate::ui::card_block(theme);
@@ -286,6 +452,8 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    use crate::theme::mix;
+
     fn picker(files: &[&str]) -> Picker {
         let mut picker = Picker::new();
         picker.set_files(files.iter().map(|f| f.to_string()).collect());
@@ -353,9 +521,59 @@ mod tests {
         assert_eq!(p.handle(Input::Action(Action::Newline)), None);
     }
 
+    fn run_choices() -> Vec<Choice> {
+        [("dev", "npm run dev"), ("test", "cargo test")]
+            .map(|(name, detail)| Choice {
+                name: name.into(),
+                detail: detail.into(),
+                source: ".glyph.toml",
+            })
+            .to_vec()
+    }
+
+    #[test]
+    fn choices_are_a_dialog_with_details_sources_and_the_glow() -> anyhow::Result<()> {
+        let p = Picker::choices("Run", run_choices());
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+        terminal.draw(|frame| {
+            p.render(&theme, frame, frame.area());
+        })?;
+        let buffer = terminal.backend().buffer();
+        // 60 wide, 8 tall, centred.
+        let card = Rect::new(20, 11, 60, 8);
+        assert_eq!(Picker::choices_card(Rect::new(0, 0, 100, 30)), card);
+        let row = |y: u16| -> String {
+            (card.x..card.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect()
+        };
+        assert_eq!(buffer[(card.x, card.y)].symbol(), "▀");
+        assert!(
+            row(card.y + 1).starts_with("  ✦ Run  "),
+            "{:?}",
+            row(card.y + 1)
+        );
+        let first = row(card.y + 2);
+        assert!(first.starts_with("  dev         npm run dev"), "{first:?}");
+        assert!(first.ends_with(".glyph.toml  ⏎    "), "{first:?}");
+        assert_eq!(
+            buffer[(card.x, card.y + 2)].bg,
+            mix(theme.raised, theme.accent, 0.3)
+        );
+        assert_eq!(buffer[(card.x + 14, card.y + 3)].fg, theme.muted);
+        let footer = row(card.bottom() - 1);
+        assert!(
+            footer.starts_with("  ↑↓ select   ⏎ run   esc close"),
+            "{footer:?}"
+        );
+        assert!(footer.ends_with("2 of 2  "), "{footer:?}");
+        Ok(())
+    }
+
     #[test]
     fn choices_are_listed_in_order_and_picked_by_name() {
-        let mut p = Picker::choices("Run", vec!["dev".into(), "test".into()]);
+        let mut p = Picker::choices("Run", run_choices());
         assert_eq!(p.matches().collect::<Vec<_>>(), ["dev", "test"]);
         type_query(&mut p, "te");
         assert_eq!(

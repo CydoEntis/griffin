@@ -83,7 +83,7 @@ fn assert_gone(pid: u32, glyph: &Glyph) {
 /// Starts `dev` and returns the grandchild's pid once the script has printed it.
 fn run_dev(glyph: &mut Glyph) -> u32 {
     glyph.send_keys("f5");
-    glyph.wait_for_text("dev · running", WAIT);
+    glyph.wait_for_text("● dev  running", WAIT);
     glyph.wait_for_text("grandchild ", WAIT);
     let screen = glyph.screen();
     let pid = screen
@@ -109,7 +109,7 @@ fn stop_kills_grandchild() {
     let pid = run_dev(&mut glyph);
     let _leftover = Leftover(pid);
     glyph.send_keys("shift+f5");
-    glyph.wait_for_text("dev · stopped", WAIT);
+    glyph.wait_for_text("■ dev  stopped", WAIT);
     assert_gone(pid, &glyph);
     glyph.assert_running_for(Duration::from_millis(100));
 }

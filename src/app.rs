@@ -41,7 +41,7 @@ use crate::ui::completion::{self, Completion};
 use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
 use crate::ui::find::{FindBar, Step};
 use crate::ui::hover::render_hover;
-use crate::ui::picker::{Picked, Picker};
+use crate::ui::picker::{self, Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
 use crate::ui::run::{RunStatus, RunView, render_run_panel};
 use crate::ui::search::{ProjectSearch, Searched};
@@ -2115,8 +2115,20 @@ impl App {
                 self.run_entry(entry);
             }
             _ => {
-                let names = entries.iter().map(|e| e.name.clone()).collect();
-                self.picker = Some(Picker::choices("Run", names));
+                let source = if configured {
+                    config::PROJECT_FILE
+                } else {
+                    "detected"
+                };
+                let choices = entries
+                    .iter()
+                    .map(|e| picker::Choice {
+                        name: e.name.clone(),
+                        detail: e.command.clone(),
+                        source,
+                    })
+                    .collect();
+                self.picker = Some(Picker::choices("Run", choices));
                 self.picker_for = PickerFor::Run(entries);
             }
         }
@@ -2140,9 +2152,9 @@ impl App {
         match crate::run::spawn(self.runs, &entry, self.tree.root(), events) {
             Ok(tree) => {
                 self.run_tree = Some(tree);
-                let mut view = RunView::new(self.runs, entry.name.clone());
+                let mut view = RunView::new(self.runs, entry.name.clone(), entry.command.clone());
                 if restarted {
-                    view.mark_restarted();
+                    view.mark_restarted(chrono::Local::now().format("%H:%M:%S").to_string());
                 }
                 self.run = Some(view);
                 self.run_entry = Some(entry);
