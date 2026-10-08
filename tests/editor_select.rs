@@ -37,8 +37,13 @@ fn wait_for_lines(glyph: &Glyph, lines: &[&str]) {
 
 /// Opens a scratch file holding `text`.
 fn open(text: &str) -> (tempfile::TempDir, Glyph) {
+    open_as("select.txt", text)
+}
+
+/// Opens a scratch file called `name` holding `text`.
+fn open_as(name: &str, text: &str) -> (tempfile::TempDir, Glyph) {
     let dir = tempfile::tempdir().expect("create temp dir");
-    let path = dir.path().join("select.txt");
+    let path = dir.path().join(name);
     fs::write(&path, text).expect("write fixture");
     let path = path.to_str().expect("temp path is UTF-8").to_string();
     let glyph = Glyph::spawn_with_config("", &[&path]);
@@ -102,4 +107,30 @@ fn paste_is_one_undo_step() {
     wait_for_lines(&glyph, &["xyz"]);
     glyph.send_keys("ctrl+z");
     wait_for_lines(&glyph, &["ab"]);
+}
+
+#[test]
+fn selection_keeps_the_syntax_colours_on_sel() {
+    /// hydra's `sel` and `keyword`.
+    const SEL: vt100::Color = vt100::Color::Rgb(0x2a, 0x3a, 0x4c);
+    const KEYWORD: vt100::Color = vt100::Color::Rgb(0xa5, 0x93, 0xff);
+    /// Text starts after the gutter `   1  `.
+    const TEXT_X: u16 = 6;
+    let (_dir, mut glyph) = open_as("select.rs", "fn main() {}\nx");
+    glyph.wait_for_fg_at(TEXT_X, 3, KEYWORD, WAIT);
+
+    // The first line and its line break.
+    glyph.send_keys("shift+down");
+    wait_for_position(&glyph, 2, 1);
+    glyph.wait_for_reversed(3, "fn main() {} ", WAIT);
+    assert_eq!(glyph.reversed_text(4), "");
+    // Selection is reverse video over swapped colours, so a cell's background
+    // slot holds the colour its text shows in and the foreground slot `sel`:
+    // `fn` keeps the keyword colour on `sel`.
+    assert_eq!(glyph.fg_at(TEXT_X, 3), SEL);
+    assert_eq!(glyph.bg_at(TEXT_X, 3), KEYWORD);
+    // The line break is one `sel` cell past the line's end. Its text colour
+    // isn't checked: a blank shows none, and ConPTY doesn't keep it for blanks.
+    let past_end = TEXT_X + 12;
+    assert_eq!(glyph.fg_at(past_end, 3), SEL);
 }
