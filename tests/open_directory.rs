@@ -305,10 +305,12 @@ fn opening_a_folder_makes_it_the_project() {
     glyph.send_keys("esc");
     glyph.wait_for_text_gone("cast · files · commands", WAIT);
 
-    // F5 runs the new folder's `.glyph.toml`.
-    glyph.send_keys("f5");
+    // The old run isn't restarted in the new folder: Ctrl+F5 is F5 again,
+    // which runs the new folder's `.glyph.toml`.
+    glyph.send_keys("ctrl+f5");
     glyph.wait_for_screen("the new command's output", WAIT, |screen| {
-        screen[usize::from(TITLE_ROW + 1)].starts_with(" switched-ok")
+        screen[usize::from(TITLE_ROW)].contains("hello")
+            && screen[usize::from(TITLE_ROW + 1)].starts_with(" switched-ok")
     });
 }
 

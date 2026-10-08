@@ -66,9 +66,12 @@ pub enum AppEvent {
     BackupDue,
     /// How a backup write went.
     BackupWritten(io::Result<()>),
-    /// The background walk for the go-to-file picker finished: every file in the
-    /// project, relative to the root.
-    FilesListed(Vec<String>),
+    /// File walk number `walk` for the go-to-file picker finished: every file in
+    /// the project, relative to the root it walked.
+    FilesListed {
+        walk: u64,
+        files: Vec<String>,
+    },
     /// A batch of hits from project search number `search`.
     SearchHits {
         search: u64,
@@ -734,6 +737,9 @@ pub struct App {
     find: Option<FindBar>,
     /// The project search panel, while it's open; it takes every key.
     project_search: Option<ProjectSearch>,
+    /// How many Ctrl+P file walks have started, numbering them so a list from
+    /// one that was overtaken (perhaps of the old project) is dropped.
+    walks: u64,
     /// How many project searches have started, numbering them so hits from one
     /// that was replaced are dropped.
     searches: u64,
@@ -1038,10 +1044,13 @@ impl App {
             AppEvent::BackupDue => self.back_up(),
             AppEvent::BackupWritten(result) => self.backup_written(result),
             // A list for a picker that has since closed is dropped; the next
-            // Ctrl+P walks again.
-            AppEvent::FilesListed(files) => {
+            // Ctrl+P walks again. So is one from an older walk: it may be of a
+            // folder that is no longer the project, and its paths would be
+            // joined onto the new root.
+            AppEvent::FilesListed { walk, files } => {
                 if let Some(picker) = &mut self.picker
                     && self.picker_for == PickerFor::File
+                    && walk == self.walks
                 {
                     picker.set_files(files);
                 }
@@ -1947,11 +1956,14 @@ impl App {
         let lines = self.buffer().rope.len_lines();
         let mut picker = Picker::cast(commands, lines, query);
         let root = self.tree.root().to_path_buf();
+        self.walks += 1;
+        let walk = self.walks;
         match &self.events {
             Some(events) => {
                 let events = events.clone();
                 tokio::task::spawn_blocking(move || {
-                    let _ = events.send(AppEvent::FilesListed(list_files(&root)));
+                    let files = list_files(&root);
+                    let _ = events.send(AppEvent::FilesListed { walk, files });
                 });
             }
             None => picker.set_files(list_files(&root)),
@@ -2000,6 +2012,9 @@ impl App {
         if let Some(tree) = self.run_tree.take() {
             tree.kill();
         }
+        // Ctrl+F5 would run the old command in the new folder; without it,
+        // Ctrl+F5 is F5, which reads the new folder's `.glyph.toml`.
+        self.run_entry = None;
         self.close_project_search();
         self.find = None;
         self.hover = None;
@@ -4084,8 +4099,28 @@ world",
         assert_eq!(app.focus, Focus::Editor);
         assert_eq!(app.buffer().rope.to_string(), "deep");
         // A walk that finishes after the picker closed changes nothing.
-        app.handle_event(AppEvent::FilesListed(vec!["a.txt".into()]));
+        app.handle_event(AppEvent::FilesListed {
+            walk: app.walks,
+            files: vec!["a.txt".into()],
+        });
         assert!(app.picker.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_list_from_an_older_walk_is_dropped() -> Result<()> {
+        let (_dir, mut app) = project()?;
+        press(&mut app, &["ctrl+p"]);
+        let stale = app.walks;
+        press(&mut app, &["esc", "ctrl+p"]);
+        app.handle_event(AppEvent::FilesListed {
+            walk: stale,
+            files: vec!["gone.txt".into()],
+        });
+        press(&mut app, &["g", "o", "n", "e"]);
+        let picker = app.picker.as_ref().expect("picker is open");
+        // Commands match the query too, so only the file is looked for.
+        assert_ne!(picker.selected(), Some("gone.txt"));
         Ok(())
     }
 
