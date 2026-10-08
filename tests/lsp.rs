@@ -122,11 +122,11 @@ fn syncs_document() {
 
     // A second Rust file in the same root goes to the same server.
     glyph.send_keys("ctrl+p");
-    glyph.wait_for_text("Go to file:", WAIT);
+    glyph.wait_for_text("cast · files · commands", WAIT);
     glyph.type_text("b.rs");
-    glyph.wait_for_text("Go to file: b.rs", WAIT);
+    glyph.wait_for_text("✦ b.rs", WAIT);
     glyph.send_keys("enter");
-    glyph.wait_for_text_gone("Go to file:", WAIT);
+    glyph.wait_for_text_gone("cast · files · commands", WAIT);
     project.wait_for(&glyph, "textDocument/didOpen", "b.rs");
 
     // Back to a.rs, which is saved, and close it.
@@ -219,11 +219,11 @@ fn missing_server_keeps_editing() {
 
     // Another Rust file doesn't try again or say it again.
     glyph.send_keys("ctrl+p");
-    glyph.wait_for_text("Go to file:", WAIT);
+    glyph.wait_for_text("cast · files · commands", WAIT);
     glyph.type_text("b.rs");
-    glyph.wait_for_text("Go to file: b.rs", WAIT);
+    glyph.wait_for_text("✦ b.rs", WAIT);
     glyph.send_keys("enter");
-    glyph.wait_for_text_gone("Go to file:", WAIT);
+    glyph.wait_for_text_gone("cast · files · commands", WAIT);
     glyph.type_text("z");
     glyph.wait_for_text("b.rs ●", WAIT);
     let status = status_line(&glyph);

@@ -447,6 +447,17 @@ impl Glyph {
         }
     }
 
+    /// The text of the bold cells on `row`, in order.
+    pub fn bold_text(&self, row: u16) -> String {
+        let parser = self.parser();
+        let screen = parser.screen();
+        (0..COLS)
+            .filter_map(|col| screen.cell(row, col))
+            .filter(|cell| cell.bold() && !cell.is_wide_continuation())
+            .map(|cell| cell.contents().to_string())
+            .collect()
+    }
+
     /// Whether the cell at (`col`, `row`) has the DIM attribute.
     pub fn dim_at(&self, col: u16, row: u16) -> bool {
         self.parser()
