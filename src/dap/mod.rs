@@ -6,8 +6,8 @@
 //! `adapters` says which adapter debugs each language and how the program is
 //! launched.
 
-// Stepping, the call stack and the variables have no keys or screens yet: they
-// come with the debugger tickets that follow this one.
+// The call stack and the variables have no screen yet: they come with the
+// debug panel.
 #![allow(dead_code)]
 
 pub mod adapters;

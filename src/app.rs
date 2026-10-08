@@ -1854,7 +1854,10 @@ impl App {
                 | Action::StopRun
                 | Action::RestartRun
                 | Action::ClearBreakpoints
-                | Action::DebugStop => {}
+                | Action::DebugStop
+                | Action::StepOver
+                | Action::StepInto
+                | Action::StepOut => {}
                 // The rest act on a buffer, and the splash and the key list
                 // stand for there being none.
                 _ => return,
@@ -1956,8 +1959,13 @@ impl App {
                 self.tabs.clear_breakpoints();
                 self.send_breakpoints(&had);
             }
+            // One key starts a session and continues it (glyph-debugger spec).
+            Action::DebugStart if self.debug.is_some() => self.debug_step(Session::resume),
             Action::DebugStart => self.start_debugging(),
             Action::DebugStop => self.stop_debugging(),
+            Action::StepOver => self.debug_step(Session::next),
+            Action::StepInto => self.debug_step(Session::step_in),
+            Action::StepOut => self.debug_step(Session::step_out),
             Action::GoToDefinition => self.request_definition(),
             Action::JumpBack => self.jump_back(),
             Action::Hover => self.request_hover(),
@@ -3089,6 +3097,22 @@ impl App {
             self.toggle_run_panel();
         }
         self.debug = Some(DebugSession::new(session, launch, self.runs));
+    }
+
+    /// Continue or a step: `step` sends its request for the stopped thread.
+    /// While the program runs there's no stopped thread, so they do nothing.
+    fn debug_step(&mut self, step: fn(&mut Session, i64) -> Option<i64>) {
+        let Some(debug) = &mut self.debug else {
+            return;
+        };
+        let Some(thread) = debug.paused.as_ref().and_then(|p| p.thread) else {
+            return;
+        };
+        // The marker goes as the program runs, not when the adapter gets round
+        // to answering; the next `stopped` brings it back.
+        if step(&mut debug.session, thread).is_some() {
+            debug.paused = None;
+        }
     }
 
     /// Alt+F6: ends the session and the program, or stops the build one is
