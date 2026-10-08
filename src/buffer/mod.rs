@@ -48,7 +48,7 @@ pub struct Buffer {
     pub rope: Rope,
     pub path: Option<PathBuf>,
     pub line_ending: LineEnding,
-    /// Set by every edit, cleared by saving; the status line marks it with `●`.
+    /// Set by every edit, cleared by saving; the status bar marks it with ` •`.
     pub dirty: bool,
     /// Char index into `rope`; at most `rope.len_chars()`.
     pub cursor: usize,

@@ -10,8 +10,12 @@ use tempfile::TempDir;
 const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(5);
 const PROMPT: &str = "has unsaved changes";
-/// The tree's width plus its divider: the tab bar starts in this column.
-const BAR_X: u16 = 31;
+/// The tree's width plus the blank column after it: the tab bar starts in this
+/// column.
+const BAR_X: u16 = 29;
+/// The tree rows of `a.txt` and `b.txt`, below its brand row.
+const A_ROW: u16 = 3;
+const B_ROW: u16 = 4;
 
 /// A temp folder holding `a.txt` ("alpha") and `b.txt` ("bravo"), opened as the
 /// project with the tree showing, cwd inside it.
@@ -24,11 +28,11 @@ fn open_project() -> (TempDir, Glyph) {
     (dir, glyph)
 }
 
-/// Opens both files from the tree (rows 1 and 2), leaving b.txt active.
+/// Opens both files from the tree, leaving b.txt active.
 fn open_both(glyph: &mut Glyph) {
-    glyph.click(3, 1);
+    glyph.click(3, A_ROW);
     glyph.wait_for_text("1 │ alpha", WAIT);
-    glyph.click(3, 2);
+    glyph.click(3, B_ROW);
     glyph.wait_for_text("1 │ bravo", WAIT);
     wait_for_tabs(glyph, " a.txt  b.txt");
 }
@@ -72,11 +76,11 @@ fn row_0_shows_each_buffer_with_the_active_one_and_dirty_marks() {
     assert!(BAR_X <= a && a < b, "{:#?}", glyph.screen());
 
     // Opening an already-open file switches to its tab instead of opening another.
-    glyph.click(3, 1);
+    glyph.click(3, A_ROW);
     wait_for_active(&glyph, " a.txt ");
     glyph.wait_for_text("1 │ alpha", WAIT);
     wait_for_tabs(&glyph, " a.txt  b.txt ●");
-    glyph.click(3, 2);
+    glyph.click(3, B_ROW);
     glyph.wait_for_text("1 │ xbravo", WAIT);
     wait_for_tabs(&glyph, " a.txt  b.txt ●");
 }
@@ -216,7 +220,7 @@ fn ctrl_q_asks_about_each_dirty_tab_in_turn() {
     let (dir, mut glyph) = open_project();
     open_both(&mut glyph);
     glyph.type_text("2");
-    glyph.click(3, 1);
+    glyph.click(3, A_ROW);
     glyph.wait_for_text("1 │ alpha", WAIT);
     glyph.type_text("1");
     // A clean untitled tab in between is never asked about.

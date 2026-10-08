@@ -22,6 +22,15 @@ use tempfile::{NamedTempFile, TempDir};
 pub const COLS: u16 = 100;
 pub const ROWS: u16 = 30;
 
+/// Whether `status` shows `position` (`Ln 3, Col 1`) whole: not as the start of
+/// a longer column like `Col 12`. The language follows the position, so it no
+/// longer ends the status line.
+pub fn shows_position(status: &str, position: &str) -> bool {
+    status
+        .match_indices(position)
+        .any(|(at, _)| !status[at + position.len()..].starts_with(|c: char| c.is_ascii_digit()))
+}
+
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 /// Device status report "where is the cursor?".
@@ -375,6 +384,17 @@ impl Glyph {
     /// The text of the cells on `row` whose foreground is `color`, in order.
     pub fn fg_text(&self, row: u16, color: vt100::Color) -> String {
         fg_cells(&self.parser(), row, color)
+    }
+
+    /// The text of the bold cells on `row`, in order.
+    pub fn bold_text(&self, row: u16) -> String {
+        let parser = self.parser();
+        let screen = parser.screen();
+        (0..COLS)
+            .filter_map(|col| screen.cell(row, col))
+            .filter(|cell| cell.bold() && !cell.is_wide_continuation())
+            .map(|cell| cell.contents().to_string())
+            .collect()
     }
 
     /// The foreground colour of the cell at (`col`, `row`).

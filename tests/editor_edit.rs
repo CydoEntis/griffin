@@ -9,14 +9,14 @@ const WAIT: Duration = Duration::from_secs(5);
 /// The editor's first row, below the tab bar.
 const TOP: u16 = 1;
 
-/// Waits for the status line to end with `Ln <line>, Col <col>`.
+/// Waits for the status line to show `Ln <line>, Col <col>` (see `shows_position`).
 fn wait_for_position(glyph: &Glyph, line: usize, col: usize) {
     let position = format!("Ln {line}, Col {col}");
     glyph.wait_for_text(&position, WAIT);
     let status = glyph.screen()[usize::from(ROWS - 1)].clone();
     assert!(
-        status.trim_end().ends_with(&position),
-        "status line {status:?} should end with {position:?}"
+        harness::shows_position(&status, &position),
+        "status line {status:?} should show {position:?}"
     );
 }
 

@@ -109,6 +109,32 @@ fn assert_exits(glyph: &mut Glyph) {
 }
 
 #[test]
+fn the_save_message_holds_the_path_slot_until_the_next_key() {
+    // aurora's `ok` and `strong`.
+    const OK: vt100::Color = vt100::Color::Rgb(0x7f, 0xe3, 0xc9);
+    const STRONG: vt100::Color = vt100::Color::Rgb(0xf4, 0xf2, 0xfb);
+    let dir = tempfile::tempdir().expect("create temp dir");
+    fs::write(dir.path().join("a.txt"), "hello").expect("write a.txt");
+    let mut glyph = Glyph::spawn_in_with_config(dir.path(), "theme = \"aurora\"\n", &["a.txt"]);
+    glyph.wait_for_text("Ln 1, Col 1", START);
+    let status_row = ROWS - 1;
+    assert_eq!(glyph.text_col(status_row, "a.txt"), Some(20));
+
+    glyph.type_text("x");
+    glyph.send_keys("ctrl+s");
+    glyph.wait_for_text("✓ saved a.txt", WAIT);
+    assert_eq!(glyph.text_col(status_row, "✓ saved a.txt"), Some(20));
+    assert_eq!(glyph.fg_at(20, status_row), OK);
+
+    // Any key gives the slot back to the path.
+    glyph.send_keys("left");
+    glyph.wait_for_text("Ln 1, Col 1", WAIT);
+    glyph.wait_for_text_gone("saved a.txt", WAIT);
+    assert_eq!(glyph.text_col(status_row, "a.txt"), Some(20));
+    assert_eq!(glyph.fg_at(20, status_row), STRONG);
+}
+
+#[test]
 fn ctrl_s_saves() {
     let (dir, mut glyph) = open_a(b"hello\r\nworld");
     assert!(!status_line(&glyph).contains('●'));
@@ -138,7 +164,7 @@ fn ctrl_s_on_an_untitled_buffer_asks_for_a_path() {
     // Esc leaves it unsaved.
     glyph.send_keys("esc");
     glyph.wait_for_text_gone("Save as:", WAIT);
-    assert!(status_line(&glyph).contains("untitled ●"));
+    assert!(status_line(&glyph).contains("untitled •"));
     assert_eq!(fs::read_dir(dir.path()).expect("list dir").count(), 0);
 
     glyph.send_keys("ctrl+q");

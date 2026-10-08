@@ -357,6 +357,16 @@ impl Theme {
         matches!(self.scrim, Color::Rgb(..))
     }
 
+    /// Whether the glows can't be drawn: `mono` uses terminal colours, which
+    /// `mix` can't blend, so it draws flat with bold and reverse video instead
+    /// (README §4).
+    pub fn flat(&self) -> bool {
+        !matches!(
+            (self.surface, self.accent, self.accent2),
+            (Color::Rgb(..), Color::Rgb(..), Color::Rgb(..))
+        )
+    }
+
     /// The theme called `name`, if there is one.
     pub fn named(name: &str) -> Option<Theme> {
         let theme = match name {
@@ -1104,6 +1114,14 @@ mod tests {
         assert_eq!(mono.gutter, Color::DarkGray);
         assert_eq!(mono.cur_line, Color::Reset);
         assert_eq!(mono.info, Color::Blue);
+    }
+
+    #[test]
+    fn only_mono_is_flat() {
+        for name in NAMES {
+            let theme = Theme::named(name).expect("listed themes exist");
+            assert_eq!(theme.flat(), *name == "mono", "{name}");
+        }
     }
 
     #[test]

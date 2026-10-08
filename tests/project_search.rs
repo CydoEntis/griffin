@@ -104,11 +104,11 @@ fn wait_for_selected(glyph: &Glyph, y: u16, hit: (&str, &str)) {
     assert_eq!(glyph.text_col(y, &hit_row(hit)), Some(LIST_X), "{hit:?}");
 }
 
-/// Waits for the status line to end with `Ln <line>, Col <col>`.
+/// Waits for the status line to show `Ln <line>, Col <col>` (see `shows_position`).
 fn wait_for_position(glyph: &Glyph, line: usize, col: usize) {
     let position = format!("Ln {line}, Col {col}");
     glyph.wait_for_screen(&position, WAIT, |lines| {
-        lines[usize::from(ROWS - 1)].ends_with(&position)
+        harness::shows_position(&lines[usize::from(ROWS - 1)], &position)
     });
 }
 
