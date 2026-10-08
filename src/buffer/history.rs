@@ -46,11 +46,15 @@ impl Change {
         }
     }
 
-    /// Whether `next` is typing that continues straight on from this change.
+    /// Whether `next` is typing that continues straight on from this change. Typing
+    /// inside the change counts too: an auto-paired `()` leaves the cursor between
+    /// its brackets, and what is typed there belongs to the same run.
     fn continued_by(&self, next: &Change) -> bool {
+        let len = self.inserted.chars().count();
         self.removed.is_empty()
             && next.removed.is_empty()
-            && next.at == self.at + self.inserted.chars().count()
+            && next.at > self.at
+            && next.at <= self.at + len
     }
 }
 

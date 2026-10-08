@@ -96,6 +96,30 @@ impl Buffer {
         }
     }
 
+    /// A typed character, with bracket pairing when `auto_pairs` is on: an opener
+    /// brings its closer along when nothing but whitespace or a closer follows,
+    /// and a closer typed in front of the same closer steps over it.
+    pub fn type_char(&mut self, ch: char, auto_pairs: bool) {
+        let next = (self.cursor < self.rope.len_chars()).then(|| self.rope.char(self.cursor));
+        if auto_pairs && self.selection().is_none() {
+            if CLOSERS.contains(&ch) && next == Some(ch) {
+                self.place_cursor(self.cursor + 1);
+                return;
+            }
+            if let Some(closer) = closer_of(ch)
+                && next.is_none_or(|c| c.is_whitespace() || CLOSERS.contains(&c))
+            {
+                // One change for the pair, so the typing after it joins the same
+                // undo step even though the cursor sits inside it.
+                let at = self.cursor;
+                self.insert_as(&format!("{ch}{closer}"), EditKind::Typing);
+                self.cursor = at + 1;
+                return;
+            }
+        }
+        self.type_text(ch.encode_utf8(&mut [0; 4]));
+    }
+
     /// Inserts `text` at the cursor.
     pub fn insert(&mut self, text: &str) {
         self.insert_as(text, EditKind::Other);
@@ -219,6 +243,19 @@ impl Buffer {
     }
 }
 
+/// The closing brackets `auto_pairs` inserts and steps over.
+const CLOSERS: [char; 3] = [')', ']', '}'];
+
+/// The closer `auto_pairs` inserts after an opening bracket.
+fn closer_of(opener: char) -> Option<char> {
+    match opener {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +300,103 @@ mod tests {
         assert_eq!(show(&b), "ab|c");
         b.insert("日本");
         assert_eq!(show(&b), "ab日本|c");
+    }
+
+    /// Types `text` one char at a time, as the keyboard does.
+    fn type_all(b: &mut Buffer, text: &str, auto_pairs: bool) {
+        for ch in text.chars() {
+            b.type_char(ch, auto_pairs);
+        }
+    }
+
+    #[test]
+    fn an_opener_brings_its_closer_before_whitespace_or_a_closer() {
+        for (before, typed, after) in [
+            ("|", '(', "(|)"),
+            ("a| b", '[', "a[|] b"),
+            ("x|\ny", '{', "x{|}\ny"),
+            ("f(|)", '(', "f((|))"),
+            ("[|]", '{', "[{|}]"),
+            ("a|\tb", '(', "a(|)\tb"),
+        ] {
+            let mut b = buf(before);
+            b.type_char(typed, true);
+            assert_eq!(show(&b), after, "typing {typed:?} in {before:?}");
+        }
+    }
+
+    #[test]
+    fn an_opener_before_other_text_comes_alone() {
+        for (before, typed, after) in [
+            ("|foo", '(', "(|foo"),
+            ("|.x", '[', "[|.x"),
+            ("|\"s\"", '{', "{|\"s\""),
+        ] {
+            let mut b = buf(before);
+            b.type_char(typed, true);
+            assert_eq!(show(&b), after, "typing {typed:?} in {before:?}");
+        }
+    }
+
+    #[test]
+    fn quotes_and_other_chars_never_pair() {
+        let mut b = buf("|");
+        type_all(&mut b, "\"'`<", true);
+        assert_eq!(show(&b), "\"'`<|");
+    }
+
+    #[test]
+    fn a_closer_steps_over_the_same_closer() {
+        let mut b = buf("|");
+        type_all(&mut b, "foo(bar)", true);
+        assert_eq!(show(&b), "foo(bar)|");
+
+        // Whether or not Glyph inserted it.
+        let mut b = buf("a|]");
+        b.type_char(']', true);
+        assert_eq!(show(&b), "a]|");
+    }
+
+    #[test]
+    fn a_closer_before_a_different_char_is_inserted() {
+        let mut b = buf("a|)");
+        b.type_char(']', true);
+        assert_eq!(show(&b), "a]|)");
+    }
+
+    #[test]
+    fn nested_brackets_type_through() {
+        let mut b = buf("|");
+        type_all(&mut b, "f(g[{x}])", true);
+        assert_eq!(show(&b), "f(g[{x}])|");
+    }
+
+    #[test]
+    fn one_undo_removes_the_run_with_its_closer() {
+        let mut b = buf("x |");
+        b.seal_undo_group();
+        type_all(&mut b, "foo(bar", true);
+        assert_eq!(show(&b), "x foo(bar|)");
+        b.undo();
+        assert_eq!(show(&b), "x |");
+        assert!(
+            !b.history.can_undo(),
+            "the closer should not be a step of its own"
+        );
+    }
+
+    #[test]
+    fn without_auto_pairs_typing_is_plain() {
+        let mut b = buf("|)");
+        type_all(&mut b, "f(x)", false);
+        assert_eq!(show(&b), "f(x)|)");
+    }
+
+    #[test]
+    fn a_paste_never_pairs() {
+        let mut b = buf("|");
+        b.paste("(");
+        assert_eq!(show(&b), "(|");
     }
 
     #[test]
