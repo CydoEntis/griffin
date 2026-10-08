@@ -402,16 +402,21 @@ fn quitting_shuts_the_server_down() {
 /// A Rust file with something to complain about on lines 2 and 3.
 const DIAG_FILE: &str = "fn main() {\n    let x = 1;\n    let y = 2;\n}\n";
 
-/// The theme with `err` and `working` pinned, so the colours are known.
+/// The theme with the severity colours pinned, so they're known.
 fn diag_config() -> String {
     format!(
-        "{}[theme_overrides]\nerr = \"#ff0000\"\nworking = \"#ffaa00\"\n",
+        "{}[theme_overrides]\nerr = \"#ff0000\"\nworking = \"#ffaa00\"\ninfo = \"#0000ff\"\n\
+         err_soft = \"#880000\"\nwarn_soft = \"#885500\"\ninfo_soft = \"#000088\"\n",
         rust_server(fake())
     )
 }
 
 const ERR: vt100::Color = vt100::Color::Rgb(0xff, 0x00, 0x00);
 const WORKING: vt100::Color = vt100::Color::Rgb(0xff, 0xaa, 0x00);
+const INFO: vt100::Color = vt100::Color::Rgb(0x00, 0x00, 0xff);
+const ERR_SOFT: vt100::Color = vt100::Color::Rgb(0x88, 0x00, 0x00);
+const WARN_SOFT: vt100::Color = vt100::Color::Rgb(0x88, 0x55, 0x00);
+const INFO_SOFT: vt100::Color = vt100::Color::Rgb(0x00, 0x00, 0x88);
 
 /// A `publishDiagnostics` for the file just received, one entry per
 /// `(line, start, end, severity, message)`.
@@ -461,21 +466,29 @@ fn diagnostics_are_underlined_marked_and_counted() {
     glyph.wait_for_text("✕ 1  ⚠ 1", WAIT);
 
     glyph.wait_for_underlined(Y_ROW, "y", WAIT);
-    assert_eq!(glyph.fg_at(VAR_COL, Y_ROW), ERR);
     glyph.wait_for_underlined(X_ROW, "x", WAIT);
-    assert_eq!(glyph.fg_at(VAR_COL, X_ROW), WORKING);
     // Nothing else is underlined.
     assert_eq!(glyph.underlined_text(3), "");
     assert_eq!(glyph.underlined_text(6), "");
+    // The underline is curly and in the severity's colour. vt100 keeps neither,
+    // so the bytes are checked. The Windows pseudo-console re-encodes the output
+    // and drops both, so there only the straight underline above reaches us.
+    if cfg!(not(windows)) {
+        glyph.wait_for_output(b"\x1b[58:2::255:0:0m\x1b[4:3my", WAIT);
+        glyph.wait_for_output(b"\x1b[58:2::255:170:0m\x1b[4:3mx", WAIT);
+    }
+    // The text keeps its own colour.
+    assert_ne!(glyph.fg_at(VAR_COL, Y_ROW), ERR);
+    assert_ne!(glyph.fg_at(VAR_COL, X_ROW), WORKING);
 
     // The gutter marks both lines in their colour, and only them.
     let screen = glyph.screen();
     assert!(
-        screen[usize::from(X_ROW)].starts_with("●  2  "),
+        screen[usize::from(X_ROW)].starts_with("◆  2  "),
         "{screen:#?}"
     );
     assert!(
-        screen[usize::from(Y_ROW)].starts_with("●  3  "),
+        screen[usize::from(Y_ROW)].starts_with("◆  3  "),
         "{screen:#?}"
     );
     assert!(screen[3].starts_with("   1  "), "{screen:#?}");
@@ -490,6 +503,97 @@ fn diagnostics_are_underlined_marked_and_counted() {
     let err = glyph.text_col(status_row, "✕ 1").expect("error count");
     assert_eq!(glyph.fg_at(warn, status_row), WORKING);
     assert_eq!(glyph.fg_at(err, status_row), ERR);
+}
+
+/// `    let x = 1;` is 14 cells and the text starts at column 6, so a lens on it
+/// starts 4 cells past its end.
+const LENS_COL: u16 = 6 + 14 + 4;
+
+#[test]
+fn the_lens_shows_the_most_severe_message_after_the_line() {
+    // Line 2 has a warning and then an error; line 1 an information.
+    let script = format!(
+        r#"{{"notify": {{"textDocument/didOpen": [{}]}}}}"#,
+        publish(&[
+            (0, 3, 7, 3, "main is fine"),
+            (1, 8, 9, 2, "unused variable: x"),
+            (1, 12, 13, 1, "expected bool"),
+            (2, 8, 9, 2, "unused variable: y"),
+        ])
+    );
+    let (_project, glyph) = diag_project(&script);
+    glyph.wait_for_text("◈ expected bool", WAIT);
+
+    // The error wins over the warning before it, for the lens and the mark.
+    assert_eq!(glyph.text_col(X_ROW, "◈ expected bool"), Some(LENS_COL));
+    assert!(!glyph.screen()[usize::from(X_ROW)].contains("unused"));
+    assert_eq!(glyph.fg_at(0, X_ROW), ERR);
+    assert_eq!(glyph.fg_at(LENS_COL, X_ROW), ERR);
+    assert_eq!(glyph.fg_at(LENS_COL + 2, X_ROW), ERR_SOFT);
+    assert!(glyph.italic_at(LENS_COL + 2, X_ROW));
+    assert!(!glyph.italic_at(LENS_COL, X_ROW));
+
+    assert_eq!(
+        glyph.text_col(Y_ROW, "◈ unused variable: y"),
+        Some(LENS_COL)
+    );
+    assert_eq!(glyph.fg_at(LENS_COL, Y_ROW), WORKING);
+    assert_eq!(glyph.fg_at(LENS_COL + 2, Y_ROW), WARN_SOFT);
+
+    // `fn main() {` is 11 cells.
+    let info_col = 6 + 11 + 4;
+    assert_eq!(glyph.text_col(3, "◈ main is fine"), Some(info_col));
+    assert_eq!(glyph.fg_at(0, 3), INFO);
+    assert_eq!(glyph.fg_at(info_col, 3), INFO);
+    assert_eq!(glyph.fg_at(info_col + 2, 3), INFO_SOFT);
+    assert!(glyph.italic_at(info_col + 2, 3));
+}
+
+#[test]
+fn a_long_message_is_cut_and_a_long_line_has_no_lens() {
+    // Line 1 ends at column 76, so its lens starts at 80: 16 cells are left for
+    // the message. Line 2 ends at 84, and a lens at 88 would be too close to the
+    // right edge (100 - 12).
+    let near = format!("let a = \"{}\";", "a".repeat(59));
+    let far = format!("let b = \"{}\";", "b".repeat(67));
+    assert_eq!((near.len(), far.len()), (70, 78));
+    let message = "this message is much too long to fit";
+    let script = format!(
+        r#"{{"notify": {{"textDocument/didOpen": [{}]}}}}"#,
+        publish(&[(0, 4, 5, 1, message), (1, 4, 5, 1, message)])
+    );
+    let project = Project::new(Some(&script));
+    fs::write(project.dir.path().join("c.rs"), format!("{near}\n{far}\n")).expect("write c.rs");
+    let glyph = project.open(&diag_config(), "c.rs");
+    glyph.wait_for_text("◈ this message is…", WAIT);
+
+    assert_eq!(glyph.text_col(3, "◈ this message is…"), Some(80));
+    let screen = glyph.screen();
+    assert!(
+        screen[3].trim_end().ends_with("◈ this message is…"),
+        "{screen:#?}"
+    );
+    // The long line is still marked and underlined, but has no lens.
+    glyph.wait_for_underlined(4, "b", WAIT);
+    assert!(screen[4].starts_with("◆  2  "), "{screen:#?}");
+    assert!(!screen[4].contains('◈'), "{screen:#?}");
+}
+
+#[test]
+fn mono_draws_the_lens_message_in_muted() {
+    let script = format!(r#"{{"notify": {{"textDocument/didOpen": [{}]}}}}"#, both());
+    let project = Project::new(Some(&script));
+    fs::write(project.dir.path().join("c.rs"), DIAG_FILE).expect("write c.rs");
+    let config = format!("theme = \"mono\"\n{}", rust_server(fake()));
+    let glyph = project.open(&config, "c.rs");
+    glyph.wait_for_text("◈ mismatched types", WAIT);
+
+    // Mono's `muted` is the terminal's dark grey; its `err` is red.
+    let muted = vt100::Color::Idx(8);
+    assert_eq!(glyph.fg_at(LENS_COL, Y_ROW), vt100::Color::Idx(1));
+    assert_eq!(glyph.fg_at(LENS_COL + 2, Y_ROW), muted);
+    assert!(glyph.italic_at(LENS_COL + 2, Y_ROW));
+    assert_eq!(glyph.fg_at(LENS_COL + 2, X_ROW), muted);
 }
 
 #[test]
@@ -524,7 +628,10 @@ fn the_diagnostic_under_the_cursor_shows_its_message() {
     glyph.wait_for_text("⚠ unused variable: x", WAIT);
     glyph.send_keys("f8");
     glyph.wait_for_text("✕ mismatched types", WAIT);
-    glyph.wait_for_text_gone("unused variable", WAIT);
+    // The lenses keep both messages in the text area; the status line drops one.
+    glyph.wait_for_screen("the warning gone from the status line", WAIT, |lines| {
+        !lines[usize::from(ROWS - 1)].contains("unused variable")
+    });
     // It holds the path slot, its glyph in the severity's colour.
     let status_row = ROWS - 1;
     assert_eq!(glyph.text_col(status_row, "✕ mismatched types"), Some(20));
@@ -533,7 +640,9 @@ fn the_diagnostic_under_the_cursor_shows_its_message() {
     // Off the diagnostic, the message goes and the path comes back.
     glyph.send_keys("right");
     glyph.wait_for_text("Ln 3, Col 10", WAIT);
-    glyph.wait_for_text_gone("mismatched types", WAIT);
+    glyph.wait_for_screen("the error gone from the status line", WAIT, |lines| {
+        !lines[usize::from(ROWS - 1)].contains("mismatched types")
+    });
     assert_eq!(glyph.text_col(status_row, "c.rs"), Some(20));
 }
 
@@ -848,10 +957,12 @@ fn an_empty_hover_shows_nothing() {
     project.wait_for(&glyph, "textDocument/hover", "main.rs");
     glyph.wait_for_text("✕ 0  ⚠ 1", WAIT);
 
-    // No card anywhere: the text area is as it was, but for the gutter mark
-    // the publish put on line 1.
+    // No card anywhere: the text area is as it was, but for the gutter mark and
+    // the lens the publish put on line 1.
     let after = glyph.screen();
-    assert_eq!(after[3].replacen('●', " ", 1), before[3], "{after:#?}");
+    let line = after[3].replacen('◆', " ", 1);
+    let lens = line.find('◈').expect("a lens on line 1");
+    assert_eq!(line[..lens].trim_end(), before[3].trim_end(), "{after:#?}");
     assert_eq!(&after[..3], &before[..3]);
     assert_eq!(
         &after[4..usize::from(ROWS - 1)],

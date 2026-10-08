@@ -61,6 +61,9 @@ const CURSOR_QUERY: &[u8] = b"[6n";
 struct Shared {
     parser: Mutex<vt100::Parser>,
     changed: Condvar,
+    /// Every byte glyph wrote, for what vt100 doesn't keep (underline colour and
+    /// style). Appended under the `parser` lock, so waiting on `changed` covers it.
+    raw: Mutex<Vec<u8>>,
 }
 
 /// A running `glyph` inside a pseudo-terminal. Dropping it kills the process.
@@ -177,6 +180,7 @@ impl Glyph {
         let shared = Arc::new(Shared {
             parser: Mutex::new(vt100::Parser::new(ROWS, COLS, 0)),
             changed: Condvar::new(),
+            raw: Mutex::new(Vec::new()),
         });
 
         let writer: SharedWriter = Arc::new(Mutex::new(
@@ -509,6 +513,37 @@ impl Glyph {
         }
     }
 
+    /// Waits until glyph's raw output, escape sequences and all, has contained
+    /// `bytes`. For what the screen model doesn't keep, such as underline colours.
+    /// Panics with the screen on timeout.
+    pub fn wait_for_output(&self, bytes: &[u8], timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut parser = self.parser();
+        loop {
+            let seen = find(
+                &self.shared.raw.lock().expect("output lock poisoned"),
+                bytes,
+            );
+            if seen.is_some() {
+                return;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                panic!(
+                    "timed out after {timeout:?} waiting for output {:?}\n{}",
+                    String::from_utf8_lossy(bytes),
+                    dump(&screen_lines(&parser))
+                );
+            }
+            parser = self
+                .shared
+                .changed
+                .wait_timeout(parser, deadline - now)
+                .expect("screen lock poisoned")
+                .0;
+        }
+    }
+
     /// Whether the cell at (`col`, `row`) is bold.
     pub fn bold_at(&self, col: u16, row: u16) -> bool {
         self.parser()
@@ -812,6 +847,9 @@ fn feed_output(
                 return;
             };
             gate.feed(&mut parser, &chunk);
+            if let Ok(mut raw) = shared.raw.lock() {
+                raw.extend_from_slice(&chunk);
+            }
             parser.screen().cursor_position()
         };
         shared.changed.notify_all();
@@ -920,17 +958,51 @@ impl FrameGate {
                 .min();
             match next {
                 Some((pos, marker_len)) => {
-                    parser.process(&rest[..pos]);
+                    parser.process(&plain_underlines(&rest[..pos]));
                     rest = &rest[pos + marker_len..];
                 }
                 None => {
-                    parser.process(rest);
+                    parser.process(&plain_underlines(rest));
                     rest = &[];
                 }
             }
         }
         self.pending.drain(..len);
     }
+}
+
+/// `bytes` with each underline style (`4:1` curly and the rest, `4:0` off) in an
+/// SGR sequence turned into the plain `4` or `24` vt100 knows; it ignores the
+/// styled forms. A curly diagnostic underline is still an underline to a test,
+/// and ConPTY re-emits glyph's `4` + `4:3` as `4:3` alone (CI run 37715924579).
+fn plain_underlines(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while let Some(pos) = find(&bytes[at..], b"[") {
+        let params_start = at + pos + 2;
+        out.extend_from_slice(&bytes[at..params_start]);
+        let params_len = bytes[params_start..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit() || matches!(b, b';' | b':'))
+            .count();
+        let params = &bytes[params_start..params_start + params_len];
+        if bytes.get(params_start + params_len) == Some(&b'm') {
+            let groups: Vec<&[u8]> = params
+                .split(|b| *b == b';')
+                .map(|group| match group {
+                    b"4:0" => b"24".as_slice(),
+                    [b'4', b':', ..] => b"4".as_slice(),
+                    group => group,
+                })
+                .collect();
+            out.extend_from_slice(&groups.join(&b';'));
+        } else {
+            out.extend_from_slice(params);
+        }
+        at = params_start + params_len;
+    }
+    out.extend_from_slice(&bytes[at..]);
+    out
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1295,6 +1367,18 @@ mod tests {
     }
 
     #[test]
+    fn underline_styles_read_as_plain_underlines() {
+        assert_eq!(
+            plain_underlines(b"a[4:3mb[1;4:1;58:2::1:2:3mc[4:0md[2Ke"),
+            b"a[4mb[1;4;58:2::1:2:3mc[24md[2Ke"
+        );
+        let mut parser = vt100::Parser::new(1, 10, 0);
+        parser.process(&plain_underlines(b"[4:3mx[0my"));
+        assert!(parser.screen().cell(0, 0).is_some_and(|c| c.underline()));
+        assert!(parser.screen().cell(0, 1).is_some_and(|c| !c.underline()));
+    }
+
+    #[test]
     fn frames_are_shown_whole() {
         let mut parser = vt100::Parser::new(2, 10, 0);
         let mut gate = FrameGate::new(true);
@@ -1353,6 +1437,7 @@ mod tests {
         let shared = Arc::new(Shared {
             parser: Mutex::new(vt100::Parser::new(ROWS, COLS, 0)),
             changed: Condvar::new(),
+            raw: Mutex::new(Vec::new()),
         });
         let (tx, rx) = mpsc::channel();
         let feeder = Arc::clone(&shared);

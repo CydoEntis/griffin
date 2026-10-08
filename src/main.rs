@@ -28,7 +28,6 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 
 use crate::app::App;
 use crate::backup::Backups;
@@ -36,8 +35,9 @@ use crate::config::EditorConfig;
 use crate::keymap::Keymap;
 use crate::lsp::Lsp;
 use crate::theme::Theme;
+use crate::view::UndercurlBackend;
 
-pub type Tui = Terminal<CrosstermBackend<Stdout>>;
+pub type Tui = Terminal<UndercurlBackend<Stdout>>;
 
 /// Glyph, a non-modal terminal text editor.
 #[derive(Debug, Parser)]
@@ -144,7 +144,7 @@ fn setup_terminal() -> Result<Tui> {
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+    let mut terminal = Terminal::new(UndercurlBackend::new(stdout))?;
     terminal.clear()?;
     Ok(terminal)
 }

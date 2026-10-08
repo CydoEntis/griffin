@@ -13,7 +13,7 @@ pub mod tree;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Clear};
 
 use crate::theme::{Theme, grad, mix};
@@ -32,7 +32,7 @@ pub fn card_block(theme: &Theme) -> Block<'static> {
 const DIM: f64 = 0.6;
 
 /// Dims everything already drawn in `area`, so a dialog drawn after it stands
-/// out: each fg and bg mixed `DIM` towards `scrim`, or the DIM modifier where the
+/// out: each fg, bg and underline colour mixed `DIM` towards `scrim`, or the DIM modifier where the
 /// theme's colours can't be blended (`mono`).
 pub fn dim(theme: &Theme, buf: &mut Buffer, area: Rect) {
     let area = area.intersection(buf.area);
@@ -43,6 +43,12 @@ pub fn dim(theme: &Theme, buf: &mut Buffer, area: Rect) {
             if ramps {
                 cell.fg = mix(cell.fg, theme.scrim, DIM);
                 cell.bg = mix(cell.bg, theme.scrim, DIM);
+                // A diagnostic's colour lives in its curly underline, so leaving
+                // it alone would draw full-strength squiggles through the dim.
+                // `Reset` stays: it means "no underline colour", not a colour.
+                if cell.underline_color != Color::Reset {
+                    cell.underline_color = mix(cell.underline_color, theme.scrim, DIM);
+                }
             } else {
                 cell.modifier.insert(Modifier::DIM);
             }
@@ -155,7 +161,6 @@ pub fn footer(theme: &Theme, buf: &mut Buffer, card: Rect, hints: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::Color;
 
     #[test]
     fn dim_mixes_towards_the_scrim_or_sets_dim_in_mono() {
@@ -173,6 +178,27 @@ mod tests {
         dim(&mono, &mut buf, area);
         assert!(buf[(1, 0)].modifier.contains(Modifier::DIM));
         assert_eq!(buf[(1, 0)].fg, Color::Gray);
+    }
+
+    #[test]
+    fn dim_mixes_a_diagnostic_underline_towards_the_scrim_too() {
+        let theme = Theme::default();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 2, 1));
+        let area = buf.area;
+        buf.set_style(area, Style::new().fg(theme.fg).bg(theme.bg));
+        buf[(0, 0)].set_style(
+            Style::new()
+                .underline_color(theme.err)
+                .add_modifier(Modifier::UNDERLINED),
+        );
+        dim(&theme, &mut buf, area);
+        assert_eq!(
+            buf[(0, 0)].underline_color,
+            mix(theme.err, theme.scrim, 0.6)
+        );
+        assert_ne!(buf[(0, 0)].underline_color, theme.err);
+        // A cell without an underline colour keeps none.
+        assert_eq!(buf[(1, 0)].underline_color, Color::Reset);
     }
 
     #[test]

@@ -1,3 +1,5 @@
+mod undercurl;
+
 use std::ops::Range;
 
 use ratatui::Frame;
@@ -11,6 +13,9 @@ use crate::buffer::movement::{char_col_at, char_width, display_col};
 use crate::highlight::Role;
 use crate::lsp::{Diagnostic, Severity};
 use crate::theme::{Theme, grad, mix};
+use crate::ui::tree::cut;
+
+pub use undercurl::UndercurlBackend;
 
 /// Ranges drawn over a buffer's text, by char index.
 #[derive(Debug, Default, Clone)]
@@ -26,18 +31,42 @@ pub struct Marks<'a> {
     pub diagnostics: &'a [Diagnostic],
 }
 
-/// The colour a diagnostic of `severity` is drawn in: errors in `err`, warnings
-/// in Hydra's `working`, the milder kinds muted.
+/// The colour a diagnostic of `severity` is drawn in (README §2.4): its gutter
+/// mark, its underline and its lens glyph.
 fn severity_color(theme: &Theme, severity: Severity) -> Color {
     match severity {
         Severity::Error => theme.err,
-        Severity::Warning => theme.warning,
-        Severity::Information | Severity::Hint => theme.muted,
+        Severity::Warning => theme.warn,
+        Severity::Information | Severity::Hint => theme.info,
+    }
+}
+
+/// The colour of a lens message: the severity softened towards `bg`, so the
+/// message reads as an aside next to the code. `mono` can't soften its terminal
+/// colours, so every message there is `muted`.
+fn lens_color(theme: &Theme, severity: Severity) -> Color {
+    if theme.flat() {
+        return theme.muted;
+    }
+    match severity {
+        Severity::Error => theme.err_soft,
+        Severity::Warning => theme.warn_soft,
+        Severity::Information | Severity::Hint => theme.info_soft,
     }
 }
 
 /// In the gutter's first cell, on a line with a diagnostic.
-const GUTTER_MARK: &str = "●";
+const GUTTER_MARK: &str = "◆";
+
+/// Starts the inline lens, before the message.
+const LENS_MARK: &str = "◈ ";
+
+/// Blank cells between a line's end and its lens.
+const LENS_GAP: u16 = 4;
+
+/// A lens must start this many cells before the pane's right edge, or it's left
+/// out: any closer and there's no room for a message worth reading.
+const LENS_MIN_ROOM: u16 = 12;
 
 /// Which part of a buffer the editor pane shows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -226,7 +255,12 @@ pub fn render_buffer(
         }
         let line_start = buf.rope.line_to_char(line_idx);
         let line_end = line_start + buf.rope.line(line_idx).len_chars();
-        let mut worst: Option<Severity> = None;
+        // The first of the most severe diagnostics touching the line picks the
+        // gutter mark's colour. The lens only shows one that starts on the line,
+        // as glyph-magic.js `code()` does, so a range over many lines (a long
+        // signature, an inactive `#[cfg]` item) gets one lens, not one per line.
+        let mut worst: Option<&Diagnostic> = None;
+        let mut lens: Option<&Diagnostic> = None;
         for diagnostic in diagnostics.iter().take_while(|d| d.range.start < line_end) {
             let range = &diagnostic.range;
             // An empty range (a missing `;`, say) still gets one cell to show it.
@@ -238,10 +272,17 @@ pub fn render_buffer(
             if range.end <= line_start {
                 continue;
             }
-            let severity = diagnostic.severity;
-            worst = Some(worst.map_or(severity, |w| w.min(severity)));
+            if worst.is_none_or(|w| diagnostic.severity < w.severity) {
+                worst = Some(diagnostic);
+            }
+            if range.start >= line_start && lens.is_none_or(|l| diagnostic.severity < l.severity) {
+                lens = Some(diagnostic);
+            }
+            // The text keeps its syntax colour; the underline alone carries the
+            // severity. The underline colour is what the terminal backend turns
+            // into a curly underline, so nothing else sets one.
             let style = Style::new()
-                .fg(severity_color(theme, diagnostic.severity))
+                .underline_color(severity_color(theme, diagnostic.severity))
                 .add_modifier(Modifier::UNDERLINED);
             let cells = selected_cells(buf, line_idx, &range, tab_width);
             let from = cells.start.max(view.scroll_col);
@@ -254,14 +295,18 @@ pub fn render_buffer(
                 }
             }
         }
-        if let Some(severity) = worst {
+        if let Some(diagnostic) = worst {
             out.set_stringn(
                 area.x,
                 y,
                 GUTTER_MARK,
                 usize::from(area.width),
-                Style::new().fg(severity_color(theme, severity)),
+                Style::new().fg(severity_color(theme, diagnostic.severity)),
             );
+        }
+        if let Some(diagnostic) = lens {
+            let line_cells = line_width(buf.rope.line(line_idx), tab_width);
+            draw_lens(theme, diagnostic, x, line_cells, view, area, y, out);
         }
         let paint = |out: &mut ratatui::buffer::Buffer,
                      range: &Range<usize>,
@@ -297,6 +342,65 @@ pub fn render_buffer(
     if let Some((x, y)) = cursor_cell(buf, view, tab_width, area) {
         frame.set_cursor_position((x, y));
     }
+}
+
+/// The display width of `line` without its line break.
+fn line_width(line: RopeSlice, tab_width: usize) -> usize {
+    let mut chars = line.len_chars();
+    while chars > 0 && matches!(line.char(chars - 1), '\n' | '\r') {
+        chars -= 1;
+    }
+    display_col(line, chars, tab_width)
+}
+
+/// The inline lens (README §2.4): `◈ ` in the severity's colour `LENS_GAP` cells
+/// past the end of a line `line_cells` wide whose text starts at `text_x`, then
+/// the diagnostic's message in italic, cut with `…` to keep clear of the right
+/// edge. Left out when the line leaves too little room for it.
+#[allow(clippy::too_many_arguments)]
+fn draw_lens(
+    theme: &Theme,
+    diagnostic: &Diagnostic,
+    text_x: u16,
+    line_cells: usize,
+    view: &View,
+    area: Rect,
+    y: u16,
+    out: &mut ratatui::buffer::Buffer,
+) {
+    let right = area.x.saturating_add(area.width);
+    let shown = line_cells.saturating_sub(view.scroll_col);
+    let Some(lx) = u16::try_from(shown)
+        .ok()
+        .and_then(|shown| text_x.checked_add(shown))
+        .and_then(|end| end.checked_add(LENS_GAP))
+    else {
+        return;
+    };
+    if lx >= right.saturating_sub(LENS_MIN_ROOM) {
+        return;
+    }
+    out.set_stringn(
+        lx,
+        y,
+        LENS_MARK,
+        usize::from(right - lx),
+        Style::new().fg(severity_color(theme, diagnostic.severity)),
+    );
+    // A multi-line message shows its first line; the rest is one F8 away.
+    let message = diagnostic.message.lines().next().unwrap_or("");
+    // `lx` is at least `LENS_MIN_ROOM` cells from the right edge, so this can't
+    // underflow.
+    let room = usize::from(right - lx - LENS_GAP);
+    out.set_stringn(
+        lx + 2,
+        y,
+        cut(message, room),
+        room,
+        Style::new()
+            .fg(lens_color(theme, diagnostic.severity))
+            .add_modifier(Modifier::ITALIC),
+    );
 }
 
 /// A find match: `find_match_bg` (README §5.5) behind text that keeps its colour.
@@ -962,6 +1066,127 @@ mod tests {
         assert_eq!(screen[(0, 1)].bg, Color::Reset);
         assert_eq!(screen[(20, 1)].bg, Color::Reset);
         assert!(screen[(3, 1)].modifier.contains(Modifier::BOLD));
+        Ok(())
+    }
+
+    /// Draws `text` 40 cells wide, scrolled `scroll_col` across, with
+    /// `diagnostics`, and returns each row's text with the cells.
+    fn draw_diagnostics(
+        theme: &Theme,
+        text: &str,
+        scroll_col: usize,
+        diagnostics: &[Diagnostic],
+    ) -> Result<(Vec<String>, ratatui::buffer::Buffer)> {
+        let buf = buffer_at(text, 0);
+        let mut terminal = Terminal::new(TestBackend::new(40, 3))?;
+        let view = View {
+            scroll_row: 0,
+            scroll_col,
+        };
+        let marks = Marks {
+            diagnostics,
+            ..Marks::default()
+        };
+        terminal.draw(|frame| {
+            render_buffer(theme, &buf, &view, 4, marks, false, frame.area(), frame)
+        })?;
+        let screen = terminal.backend().buffer().clone();
+        let rows = (0..3)
+            .map(|y| (0..40).map(|x| screen[(x, y)].symbol()).collect())
+            .collect();
+        Ok((rows, screen))
+    }
+
+    fn diagnostic(range: Range<usize>, severity: Severity, message: &str) -> Diagnostic {
+        Diagnostic {
+            range,
+            severity,
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_diagnostic_is_underlined_in_its_colour_over_the_syntax_colour() -> Result<()> {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let diagnostics = [diagnostic(4..5, Severity::Warning, "unused")];
+        let (rows, screen) = draw_diagnostics(&theme, "let x = 1;\n", 0, &diagnostics)?;
+        assert!(
+            rows[0].starts_with("◆  1  let x = 1;    ◈ unused"),
+            "{rows:?}"
+        );
+        let x = &screen[(10, 0)];
+        assert!(x.modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(x.underline_color, theme.warn);
+        assert_ne!(x.fg, theme.warn);
+        assert_eq!(screen[(0, 0)].fg, theme.warn);
+        // Nothing else carries an underline colour, which marks a curly cell.
+        assert_eq!(screen[(9, 0)].underline_color, Color::Reset);
+        assert_eq!(screen[(20, 0)].underline_color, Color::Reset);
+        Ok(())
+    }
+
+    #[test]
+    fn the_lens_follows_the_line_as_it_scrolls_and_is_cut_to_fit() -> Result<()> {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let diagnostics = [
+            diagnostic(0..1, Severity::Hint, "a hint"),
+            diagnostic(2..3, Severity::Error, "the error with a long message"),
+        ];
+        // The line ends at 6 + 10 = 16, so the lens is at 20 and the message has
+        // 40 - 20 - 4 = 16 cells.
+        let (rows, screen) = draw_diagnostics(&theme, "abcdefghij\n", 0, &diagnostics)?;
+        assert_eq!(rows[0].trim_end(), "◆  1  abcdefghij    ◈ the error with …");
+        assert_eq!(screen[(0, 0)].fg, theme.err);
+        assert_eq!(screen[(20, 0)].fg, theme.err);
+        assert_eq!(screen[(22, 0)].fg, theme.err_soft);
+        assert!(screen[(22, 0)].modifier.contains(Modifier::ITALIC));
+        // Scrolled 3 across, the line ends 3 cells sooner and so does the lens.
+        let (rows, _) = draw_diagnostics(&theme, "abcdefghij\n", 3, &diagnostics)?;
+        assert_eq!(rows[0].trim_end(), "◆  1  defghij    ◈ the error with a l…");
+        Ok(())
+    }
+
+    #[test]
+    fn no_lens_within_twelve_cells_of_the_right_edge() -> Result<()> {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let diagnostics = [diagnostic(0..1, Severity::Error, "too far")];
+        // 6 + 17 + 4 = 27: the last column a lens may start in is 40 - 12 - 1.
+        let (rows, _) = draw_diagnostics(&theme, &"a".repeat(17), 0, &diagnostics)?;
+        assert!(rows[0].trim_end().ends_with("◈ too far"), "{rows:?}");
+        let (rows, _) = draw_diagnostics(&theme, &"a".repeat(18), 0, &diagnostics)?;
+        assert!(!rows[0].contains('◈'), "{rows:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_diagnostic_over_two_lines_shows_its_lens_on_the_first_only() -> Result<()> {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        // From `c` on line 1 to `e` on line 2.
+        let diagnostics = [diagnostic(2..6, Severity::Error, "spans")];
+        let (rows, screen) = draw_diagnostics(
+            &theme,
+            "abc
+def
+",
+            0,
+            &diagnostics,
+        )?;
+        assert_eq!(rows[0].trim_end(), "◆  1  abc    ◈ spans");
+        assert_eq!(rows[1].trim_end(), "◆  2  def");
+        // Both lines keep their gutter mark and underline.
+        assert_eq!(screen[(0, 1)].fg, theme.err);
+        assert_eq!(screen[(6, 1)].underline_color, theme.err);
+        Ok(())
+    }
+
+    #[test]
+    fn mono_draws_the_lens_message_in_muted() -> Result<()> {
+        let theme = Theme::named("mono").expect("mono exists");
+        let diagnostics = [diagnostic(0..1, Severity::Warning, "careful")];
+        let (_, screen) = draw_diagnostics(&theme, "abc", 0, &diagnostics)?;
+        assert_eq!(screen[(13, 0)].fg, theme.warn);
+        assert_eq!(screen[(15, 0)].fg, theme.muted);
+        assert!(screen[(15, 0)].modifier.contains(Modifier::ITALIC));
         Ok(())
     }
 }
