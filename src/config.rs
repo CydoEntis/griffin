@@ -33,6 +33,9 @@ pub struct LspServer {
     /// Ctrl+S formats the buffer through this server before writing it. Off
     /// unless asked for, since a formatter rewrites the user's text.
     pub format_on_save: bool,
+    /// The shell command that installs the server. `servers::with_defaults`
+    /// fills in the default for a built-in server; set here, it replaces it.
+    pub install: Option<String>,
 }
 
 /// `[editor]`.
@@ -281,6 +284,7 @@ mod tests {
                 command: Some("pyright-langserver".into()),
                 args: vec!["--stdio".into()],
                 format_on_save: false,
+                install: None,
             }
         );
         assert_eq!(
@@ -292,6 +296,17 @@ mod tests {
         let on = parse("[lsp.rust]\nformat_on_save = true\n");
         assert!(on.config.lsp["rust"].format_on_save);
         assert!(parse("").config.lsp.is_empty());
+    }
+
+    #[test]
+    fn an_lsp_table_reads_its_install_command() {
+        let loaded = parse("[lsp.python]\ninstall = \"pip install pyright\"\n");
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert_eq!(
+            loaded.config.lsp["python"].install.as_deref(),
+            Some("pip install pyright")
+        );
+        assert_eq!(parse("[lsp.go]\n").config.lsp["go"].install, None);
     }
 
     #[test]

@@ -2216,7 +2216,8 @@ impl App {
         }
     }
 
-    /// Opens `dir` as the project, whatever the tabs hold.
+    /// Opens `dir` as the project, whatever the tabs hold, landing on its tree
+    /// beside an empty untitled pane.
     fn switch_project(&mut self, dir: &Path) {
         // The run's command was started in the old folder and belongs to it.
         if let Some(view) = &mut self.run
@@ -2251,11 +2252,12 @@ impl App {
         drop(self.lsp.stop_root(&absolute(self.tree.root())));
         self.tree = Tree::new(dir);
         self.project = project_label(dir, std::env::home_dir().as_deref());
-        // Land as `glyph <dir>` starts: the tree beside the splash, which
-        // takes the keys.
-        self.splash = Some(Splash::default());
+        // Someone who just picked a folder wants to look through it, so land
+        // on its tree beside the empty untitled pane rather than the splash a
+        // bare start shows.
+        self.splash = None;
         self.tree_visible = true;
-        self.focus = Focus::Editor;
+        self.focus = Focus::Tree;
         self.reset_mouse();
         self.follow_cursor();
         self.follow_tree();
@@ -4370,15 +4372,15 @@ world",
         assert_eq!(tab_names(&app), ["untitled"]);
         assert_eq!(app.tabs.docs.len(), 1);
         assert!(app.tree_visible);
-        // It lands as `glyph <folder>` starts: on the splash, which has the keys.
-        assert!(app.splash.is_some());
-        assert_eq!(app.focus, Focus::Editor);
+        // It lands on the tree beside the empty pane, not on the splash.
+        assert!(app.splash.is_none());
+        assert_eq!(app.focus, Focus::Tree);
         assert_eq!(selected_name(&app), Some("c.txt"));
         Ok(())
     }
 
     #[test]
-    fn open_directory_on_the_splash_opens_a_folder_onto_a_fresh_splash() -> Result<()> {
+    fn open_directory_on_the_splash_opens_a_folder_onto_its_tree() -> Result<()> {
         let (_dir, mut app) = project()?;
         let other = tempfile::tempdir()?;
         assert!(app.splash.is_some());
@@ -4386,12 +4388,9 @@ world",
         assert!(app.folders.is_some());
         app.folders_step(Browsed::Open(other.path().to_path_buf()));
         assert_eq!(app.tree.root(), other.path());
-        // A new splash, its selection back on the first row.
-        assert_eq!(
-            app.splash.as_ref().map(Splash::selected),
-            Some(splash::Item::NewFile)
-        );
-        assert_eq!(app.focus, Focus::Editor);
+        assert!(app.splash.is_none());
+        assert_eq!(tab_names(&app), ["untitled"]);
+        assert_eq!(app.focus, Focus::Tree);
         Ok(())
     }
 
@@ -4418,8 +4417,8 @@ world",
         let fresh = dir.path().join("fresh");
         assert!(fresh.is_dir());
         assert_eq!(app.tree.root(), fresh);
-        assert!(app.splash.is_some());
-        assert_eq!(app.focus, Focus::Editor);
+        assert!(app.splash.is_none());
+        assert_eq!(app.focus, Focus::Tree);
         assert_eq!(app.message.as_deref(), Some("created fresh"));
         Ok(())
     }
