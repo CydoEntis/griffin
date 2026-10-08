@@ -812,6 +812,9 @@ struct DebugSession {
     configured: bool,
     /// While the program is stopped.
     paused: Option<Paused>,
+    /// The pause a continue or step request left, until the adapter answers:
+    /// if it refuses, the program never moved and this is put back.
+    stepping: Option<Paused>,
     /// Output since its last newline: adapters send output in pieces that
     /// don't follow lines.
     partial: String,
@@ -827,6 +830,7 @@ impl DebugSession {
             run,
             configured: false,
             paused: None,
+            stepping: None,
             partial: String::new(),
             panel: DebugPanel::default(),
         }
@@ -1958,7 +1962,13 @@ impl App {
                 | Action::StopRun
                 | Action::RestartRun
                 | Action::ClearBreakpoints
-                | Action::DebugStop => {}
+                | Action::DebugStop
+                | Action::StepOver
+                | Action::StepInto
+                | Action::StepOut => {}
+                // Alt+F5 continues a paused session, which needs no buffer;
+                // starting one does, as the file shown picks the adapter.
+                Action::DebugStart if self.debug.is_some() => {}
                 // The rest act on a buffer, and the splash and the key list
                 // stand for there being none.
                 _ => return,
@@ -2060,8 +2070,13 @@ impl App {
                 self.tabs.clear_breakpoints();
                 self.send_breakpoints(&had);
             }
+            // One key starts a session and continues it (glyph-debugger spec).
+            Action::DebugStart if self.debug.is_some() => self.debug_step(Session::resume),
             Action::DebugStart => self.start_debugging(),
             Action::DebugStop => self.stop_debugging(),
+            Action::StepOver => self.debug_step(Session::next),
+            Action::StepInto => self.debug_step(Session::step_in),
+            Action::StepOut => self.debug_step(Session::step_out),
             Action::GoToDefinition => self.request_definition(),
             Action::JumpBack => self.jump_back(),
             Action::Hover => self.request_hover(),
@@ -3204,6 +3219,23 @@ impl App {
         self.debug = Some(DebugSession::new(session, launch, self.runs));
     }
 
+    /// Continue or a step: `step` sends its request for the stopped thread.
+    /// While the program runs there's no stopped thread, so they do nothing.
+    fn debug_step(&mut self, step: fn(&mut Session, i64) -> Option<i64>) {
+        let Some(debug) = &mut self.debug else {
+            return;
+        };
+        let Some(thread) = debug.paused.as_ref().and_then(|p| p.thread) else {
+            return;
+        };
+        // The marker goes as the program runs, not when the adapter gets round
+        // to answering; the next `stopped` brings it back. The pause is kept
+        // aside in case the adapter refuses, as then nothing ran.
+        if step(&mut debug.session, thread).is_some() {
+            debug.stepping = debug.paused.take();
+        }
+    }
+
     /// Alt+F6: ends the session and the program, or stops the build one is
     /// waiting on.
     fn stop_debugging(&mut self) {
@@ -3267,6 +3299,7 @@ impl App {
             }
             DapNews::Initialized => self.configure_debugging(),
             DapNews::Stopped { thread, .. } => {
+                debug.stepping = None;
                 debug.paused = Some(Paused { thread, at: None });
                 debug.panel.clear();
                 // Without a thread there's no stack to ask for yet.
@@ -3279,6 +3312,7 @@ impl App {
             DapNews::StackTrace { frames, .. } => self.show_paused(frames),
             DapNews::Resumed(_) => {
                 debug.paused = None;
+                debug.stepping = None;
                 debug.panel.clear();
                 // The panel has nothing to select until the next stop, so
                 // keys typed now belong to the editor.
@@ -3324,6 +3358,13 @@ impl App {
                 self.say(Tone::Err, format!("debugger: {command} failed: {message}"));
             }
             DapNews::Refused { command, message } => {
+                // A refused continue or step left the program where it was
+                // stopped, so the pause, its marker and its thread come back.
+                if matches!(command.as_str(), "continue" | "next" | "stepIn" | "stepOut")
+                    && debug.paused.is_none()
+                {
+                    debug.paused = debug.stepping.take();
+                }
                 self.say(Tone::Warn, format!("debugger: {command} failed: {message}"));
             }
             // A missing or crashed adapter is said once and costs nothing else:

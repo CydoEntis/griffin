@@ -6,7 +6,8 @@
 //! `adapters` says which adapter debugs each language and how the program is
 //! launched.
 
-// Stepping has no keys yet: it comes with the debugger ticket that adds them.
+// A few helpers (`is_over`, `adapters::LANGUAGES`) wait on later debugger
+// tickets.
 #![allow(dead_code)]
 
 pub mod adapters;

@@ -98,6 +98,12 @@ pub enum Action {
     DebugStart,
     /// Ends the debug session and the program with it.
     DebugStop,
+    /// While paused: runs the stopped thread to its next line in this function.
+    StepOver,
+    /// While paused: runs the stopped thread into the call on its line.
+    StepInto,
+    /// While paused: runs the stopped thread until its function returns.
+    StepOut,
     /// Asks the language server where the symbol under the cursor is defined and
     /// goes there.
     GoToDefinition,
@@ -253,6 +259,9 @@ impl Action {
         Action::ClearBreakpoints,
         Action::DebugStart,
         Action::DebugStop,
+        Action::StepOver,
+        Action::StepInto,
+        Action::StepOut,
         Action::GoToDefinition,
         Action::JumpBack,
         Action::Hover,
@@ -399,6 +408,9 @@ impl Action {
             Action::ClearBreakpoints => "clear_breakpoints",
             Action::DebugStart => "debug_start",
             Action::DebugStop => "debug_stop",
+            Action::StepOver => "step_over",
+            Action::StepInto => "step_into",
+            Action::StepOut => "step_out",
             Action::GoToDefinition => "go_to_definition",
             Action::JumpBack => "jump_back",
             Action::Hover => "hover",
@@ -514,6 +526,9 @@ impl Action {
             Action::ClearBreakpoints => "Clear breakpoints",
             Action::DebugStart => "Start debugging",
             Action::DebugStop => "Stop debugging",
+            Action::StepOver => "Step over",
+            Action::StepInto => "Step into",
+            Action::StepOut => "Step out",
             Action::GoToDefinition => "Go to definition",
             Action::JumpBack => "Jump back",
             Action::Hover => "Show hover",
@@ -642,6 +657,11 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::DebugStart, "alt+f5"),
     // F6 is CycleFocus.
     (Action::DebugStop, "alt+f6"),
+    // F11 is Windows Terminal's full screen key and never reaches Glyph, so
+    // stepping lives on F10 and its Alt and Shift forms (glyph-debugger spec).
+    (Action::StepOver, "f10"),
+    (Action::StepInto, "alt+f10"),
+    (Action::StepOut, "shift+f10"),
     (Action::GoToDefinition, "f12"),
     (Action::JumpBack, "alt+left"),
     (Action::Hover, "alt+k"),
@@ -1086,6 +1106,9 @@ mod tests {
             ("f9", ev(KeyCode::F(9), KeyModifiers::NONE)),
             ("alt+f5", ev(KeyCode::F(5), KeyModifiers::ALT)),
             ("alt+f6", ev(KeyCode::F(6), KeyModifiers::ALT)),
+            ("f10", ev(KeyCode::F(10), KeyModifiers::NONE)),
+            ("alt+f10", ev(KeyCode::F(10), KeyModifiers::ALT)),
+            ("shift+f10", ev(KeyCode::F(10), KeyModifiers::SHIFT)),
             ("alt+/", alt('/')),
         ];
         const DIGITS: [(&str, char); 9] = [
@@ -1173,6 +1196,24 @@ mod tests {
         assert_eq!(Action::DebugStart.title(), "Start debugging");
         assert_eq!(Action::DebugStop.title(), "Stop debugging");
         assert!(Action::commands().any(|a| a == Action::DebugStop));
+    }
+
+    #[test]
+    fn f10_steps_over_alt_f10_into_and_shift_f10_out_by_default() {
+        let map = Keymap::default();
+        for (modifiers, action, title) in [
+            (KeyModifiers::NONE, Action::StepOver, "Step over"),
+            (KeyModifiers::ALT, Action::StepInto, "Step into"),
+            (KeyModifiers::SHIFT, Action::StepOut, "Step out"),
+        ] {
+            assert_eq!(
+                map.resolve(&ev(KeyCode::F(10), modifiers)),
+                Input::Action(action)
+            );
+            assert_eq!(action.title(), title);
+            assert!(Action::commands().any(|a| a == action));
+        }
+        assert_eq!(map.key_label(Action::StepOut).as_deref(), Some("Shift+F10"));
     }
 
     #[test]
