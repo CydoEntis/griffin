@@ -3,6 +3,7 @@ pub mod history;
 pub mod movement;
 pub mod selection;
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -69,6 +70,10 @@ pub struct Buffer {
     pub revision: u64,
     /// Bumped by every successful save, for the same reason.
     pub saves: u64,
+    /// Lines with a breakpoint, by line index. They live on the buffer so every
+    /// edit can move them with their text, and an untitled buffer keeps its own
+    /// when it's saved under a name.
+    pub breakpoints: BTreeSet<usize>,
 }
 
 impl Buffer {
@@ -115,6 +120,7 @@ impl Buffer {
             highlight_for: None,
             revision: 0,
             saves: 0,
+            breakpoints: BTreeSet::new(),
         }
     }
 
@@ -148,6 +154,9 @@ impl Buffer {
             // The text changed under anything following the old one.
             revision: self.revision + 1,
             saves: self.saves,
+            // The backup is this file's text, so its lines are still the lines
+            // the breakpoints were set on.
+            breakpoints: std::mem::take(&mut self.breakpoints),
             ..Self::from_text(text, self.path.take())
         };
     }
@@ -177,6 +186,7 @@ impl Buffer {
         let mut copy = Buffer {
             rope: self.rope.clone(),
             highlighter: self.highlighter.clone(),
+            breakpoints: self.breakpoints.clone(),
             ..Buffer::empty()
         };
         copy.set_caret(caret);
@@ -194,6 +204,17 @@ impl Buffer {
         }
         if let Some(highlighter) = &mut self.highlighter {
             highlighter.parse(&self.rope);
+        }
+    }
+
+    /// Sets a breakpoint on `line`, or takes away the one there. A line past the
+    /// end gets none.
+    pub fn toggle_breakpoint(&mut self, line: usize) {
+        if line >= self.rope.len_lines() {
+            return;
+        }
+        if !self.breakpoints.remove(&line) {
+            self.breakpoints.insert(line);
         }
     }
 

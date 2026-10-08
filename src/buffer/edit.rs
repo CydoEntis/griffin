@@ -46,6 +46,7 @@ impl Buffer {
             let edit = input_edit(&self.rope, change.at, removed_len, &change.inserted);
             highlighter.edit(&edit);
         }
+        self.move_breakpoints(change.at, removed_len, &change.inserted);
         self.rope.remove(change.at..change.at + removed_len);
         self.rope.insert(change.at, &change.inserted);
         self.revision += 1;
@@ -54,6 +55,35 @@ impl Buffer {
         // Positions after the change have shifted, so an old anchor means nothing.
         self.anchor = None;
         self.dirty = true;
+    }
+
+    /// Moves the breakpoints with their lines across replacing `removed_len`
+    /// chars at `at` with `inserted`; called before the rope changes, as it
+    /// reads the old line breaks. A line whose break the change removes joins the
+    /// line the change starts on, and its breakpoint goes with it.
+    fn move_breakpoints(&mut self, at: usize, removed_len: usize, inserted: &str) {
+        if self.breakpoints.is_empty() {
+            return;
+        }
+        let first = self.rope.char_to_line(at);
+        let removed = self.rope.char_to_line(at + removed_len) - first;
+        // Counted the way the rope counts line breaks, which isn't only `\n`.
+        let added = ropey::Rope::from_str(inserted).len_lines() - 1;
+        // Text put in at a line's very start pushes that whole line down, as
+        // Enter there does, so its breakpoint follows it.
+        let pushed = removed_len == 0 && at == self.rope.line_to_char(first);
+        self.breakpoints = std::mem::take(&mut self.breakpoints)
+            .into_iter()
+            .map(|line| {
+                if line < first || (line == first && !pushed) {
+                    line
+                } else if line > first + removed || line == first {
+                    line - removed + added
+                } else {
+                    first
+                }
+            })
+            .collect();
     }
 
     /// Typed text at the cursor, replacing any selection; a run of it undoes as
@@ -419,5 +449,72 @@ foo"
             edit(&mut b);
             assert!(b.dirty, "{}", show(&b));
         }
+    }
+
+    fn breakpoints(b: &Buffer) -> Vec<usize> {
+        b.breakpoints.iter().copied().collect()
+    }
+
+    #[test]
+    fn breakpoints_move_with_lines_inserted_above_them() {
+        let mut b = buf("a|\nb\nc\n");
+        b.toggle_breakpoint(0);
+        b.toggle_breakpoint(2);
+        b.insert("\nnew\n");
+        // Line 0 keeps its breakpoint: the text went in after its start.
+        assert_eq!(breakpoints(&b), [0, 4]);
+        assert_eq!(b.rope.line(4).to_string(), "c\n");
+    }
+
+    #[test]
+    fn enter_at_a_line_start_pushes_its_breakpoint_down() {
+        let mut b = buf("a\n|b\n");
+        b.toggle_breakpoint(1);
+        b.newline();
+        assert_eq!(breakpoints(&b), [2]);
+        assert_eq!(b.rope.line(2).to_string(), "b\n");
+    }
+
+    #[test]
+    fn breakpoints_move_up_with_lines_removed_above_them() {
+        let mut b = buf("|a\nb\nc\nd\n");
+        b.toggle_breakpoint(3);
+        b.apply(Change {
+            at: 0,
+            removed: "a\nb\n".into(),
+            inserted: String::new(),
+        });
+        assert_eq!(breakpoints(&b), [1]);
+        assert_eq!(b.rope.line(1).to_string(), "d\n");
+    }
+
+    #[test]
+    fn joining_a_line_onto_the_one_above_takes_its_breakpoint_along() {
+        let mut b = buf("a\n|b\nc\n");
+        b.toggle_breakpoint(1);
+        b.toggle_breakpoint(2);
+        b.backspace();
+        assert_eq!(breakpoints(&b), [0, 1]);
+    }
+
+    #[test]
+    fn undo_moves_breakpoints_back() {
+        let mut b = buf("|a\nb\n");
+        b.toggle_breakpoint(1);
+        b.insert("x\ny\n");
+        assert_eq!(breakpoints(&b), [3]);
+        b.history.seal();
+        assert!(b.undo());
+        assert_eq!(breakpoints(&b), [1]);
+    }
+
+    #[test]
+    fn toggling_twice_clears_and_past_the_end_does_nothing() {
+        let mut b = buf("|a\nb");
+        b.toggle_breakpoint(1);
+        assert_eq!(breakpoints(&b), [1]);
+        b.toggle_breakpoint(1);
+        b.toggle_breakpoint(5);
+        assert!(b.breakpoints.is_empty());
     }
 }
