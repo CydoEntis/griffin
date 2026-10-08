@@ -204,7 +204,7 @@ fn arrows_move_the_selection_and_enter_opens_it_in_a_tab() {
     assert_eq!(glyph.bg_at(CARD_X, FIRST_ROW + 2), RAISED);
     glyph.send_keys("enter");
     glyph.wait_for_text_gone(SCOPE, WAIT);
-    glyph.wait_for_text("1 │ # Project fixture", WAIT);
+    glyph.wait_for_text("1  # Project fixture", WAIT);
     // The status line is drawn after the editor, so it may lag a moment behind.
     glyph.wait_for_screen("README.md in the status line", WAIT, |screen| {
         screen[usize::from(ROWS) - 1].contains("README.md")
@@ -226,7 +226,7 @@ fn arrows_move_the_selection_and_enter_opens_it_in_a_tab() {
     glyph.type_text("helpers");
     wait_for_selected(&glyph, FIRST_ROW, "helpers.rs  src/util");
     glyph.send_keys("enter");
-    glyph.wait_for_text("1 │ pub fn help() {}", WAIT);
+    glyph.wait_for_text("1  pub fn help() {}", WAIT);
     glyph.wait_for_screen("both files in the tab bar", WAIT, |screen| {
         screen[1].contains("README.md") && screen[1].contains("helpers.rs")
     });
@@ -245,7 +245,7 @@ fn esc_closes_the_picker_without_opening_anything() {
     assert!(status_line(&glyph).contains("untitled"));
     // Typing goes to the editor again, not to a hidden query.
     glyph.type_text("x");
-    glyph.wait_for_text("1 │ x", WAIT);
+    glyph.wait_for_text("1  x", WAIT);
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn gt_lists_only_commands_with_their_keys_and_enter_runs_one() {
     // Two editors on the file, side by side; text starts on row 3, under the
     // pills and the thread.
     glyph.wait_for_screen("two splits", WAIT, |screen| {
-        screen[3].matches("1 │ line 1").count() == 2
+        screen[3].matches("1  line 1").count() == 2
     });
 }
 

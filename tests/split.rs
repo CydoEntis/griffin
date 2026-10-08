@@ -69,7 +69,7 @@ fn project() -> TempDir {
 /// `a.txt` opened on its own, so the tree is hidden.
 fn open_file(dir: &TempDir) -> Glyph {
     let glyph = Glyph::spawn_in(dir.path(), &["a.txt"]);
-    glyph.wait_for_text("1 │ alpha", START);
+    glyph.wait_for_text("1  alpha", START);
     glyph
 }
 
@@ -78,7 +78,7 @@ fn open_folder(dir: &TempDir) -> Glyph {
     let mut glyph = Glyph::spawn_in(dir.path(), &["."]);
     glyph.wait_for_text("b.txt", START);
     glyph.click(3, A_ROW);
-    glyph.wait_for_text("1 │ alpha", WAIT);
+    glyph.wait_for_text("1  alpha", WAIT);
     glyph
 }
 
@@ -144,7 +144,7 @@ fn alt_v_shows_two_editors_side_by_side_and_alt_v_again_closes_the_right_one() {
         divided(screen, DIVIDER)
             && halves(screen, usize::from(PILL_ROW), 0, DIVIDER)
                 == (" ▐ a.txt ▌".into(), " ▐ a.txt ▌".into())
-            && halves(screen, TOP, 0, DIVIDER) == (" 1 │ alpha".into(), " 1 │ alpha".into())
+            && halves(screen, TOP, 0, DIVIDER) == ("   1  alpha".into(), "   1  alpha".into())
     });
     wait_for_focused(&glyph, false, "a.txt");
     assert_eq!(glyph.text_col(PILL_ROW, "a.txt"), Some(3));
@@ -166,7 +166,7 @@ fn alt_v_shows_two_editors_side_by_side_and_alt_v_again_closes_the_right_one() {
     );
     wait_for_focused(&glyph, false, "untitled");
     glyph.wait_for_screen("right split empty", WAIT, |screen| {
-        halves(screen, TOP, 0, DIVIDER) == (" 1 │ alpha".into(), " 1 │".into())
+        halves(screen, TOP, 0, DIVIDER) == ("   1  alpha".into(), "   1".into())
     });
 
     // Alt+V again: one editor, keeping the tab only the right split had.
@@ -186,7 +186,7 @@ fn alt_v_shows_two_editors_side_by_side_and_alt_v_again_closes_the_right_one() {
 fn aurora_splits_have_a_guide_rule_and_the_unfocused_one_is_dimmed() {
     let dir = project();
     let mut glyph = Glyph::spawn_in_with_config(dir.path(), "theme = \"aurora\"\n", &["a.txt"]);
-    glyph.wait_for_text("1 │ alpha", START);
+    glyph.wait_for_text("1  alpha", START);
     glyph.send_keys("alt+v");
     wait_for_focused(&glyph, false, "a.txt");
     glyph.wait_for_screen("two splits", WAIT, |screen| divided(screen, DIVIDER));
@@ -249,7 +249,7 @@ fn f6_cycles_tree_left_right_and_skips_the_hidden_tree() {
         (&["a.txt"], 0),
         (&["a.txt", "b.txt"], 1),
     );
-    glyph.wait_for_text("1 │ bravo", WAIT);
+    glyph.wait_for_text("1  bravo", WAIT);
 
     // From the right split F6 wraps to the tree, where typing edits nothing...
     glyph.send_keys("f6");
@@ -258,10 +258,10 @@ fn f6_cycles_tree_left_right_and_skips_the_hidden_tree() {
     // ...then the left split, then the right one.
     glyph.send_keys("f6");
     glyph.type_text("1");
-    glyph.wait_for_text("1 │ 1alpha", WAIT);
+    glyph.wait_for_text("1  1alpha", WAIT);
     glyph.send_keys("f6");
     glyph.type_text("2");
-    glyph.wait_for_text("1 │ 2bravo", WAIT);
+    glyph.wait_for_text("1  2bravo", WAIT);
     glyph.send_keys("f6");
     glyph.wait_for_cursor(2, B_ROW, WAIT);
 
@@ -270,14 +270,14 @@ fn f6_cycles_tree_left_right_and_skips_the_hidden_tree() {
     glyph.send_keys("f6");
     glyph.type_text("3");
     glyph.wait_for_screen("typed on the left", WAIT, |screen| {
-        halves(screen, TOP, 0, DIVIDER) == (" 1 │ 13alpha".into(), " 1 │ 2bravo".into())
+        halves(screen, TOP, 0, DIVIDER) == ("   1  13alpha".into(), "   1  2bravo".into())
     });
     glyph.send_keys("f6");
     glyph.type_text("4");
-    glyph.wait_for_text("1 │ 24bravo", WAIT);
+    glyph.wait_for_text("1  24bravo", WAIT);
     glyph.send_keys("f6");
     glyph.type_text("5");
-    glyph.wait_for_text("1 │ 135alpha", WAIT);
+    glyph.wait_for_text("1  135alpha", WAIT);
 }
 
 #[test]
@@ -316,7 +316,7 @@ fn a_click_focuses_its_split_and_tab_and_open_actions_go_there() {
     glyph.send_keys("alt+,");
     wait_for_focused(&glyph, true, "a.txt");
     glyph.wait_for_screen("right split back on a.txt", WAIT, |screen| {
-        halves(screen, TOP, LEFT, TREE_DIVIDER) == (" 1 │".into(), " 1 │ alpha".into())
+        halves(screen, TOP, LEFT, TREE_DIVIDER) == ("   1".into(), "   1  alpha".into())
     });
     // Ctrl+W closes the right split's tab; the left split keeps its own a.txt tab.
     glyph.send_keys("ctrl+w");
@@ -335,7 +335,7 @@ fn a_click_focuses_its_split_and_tab_and_open_actions_go_there() {
     // Typing lands at the left split's own cursor, where the click below the text
     // left it on the last line.
     glyph.type_text("z");
-    glyph.wait_for_text("2 │ z", WAIT);
+    glyph.wait_for_text("2  z", WAIT);
     wait_for_bars(
         &glyph,
         LEFT,
@@ -356,7 +356,7 @@ fn edits_to_a_buffer_open_in_both_splits_show_in_both() {
     glyph.send_keys("end");
     glyph.type_text("!");
     glyph.wait_for_screen("edit in both", WAIT, |screen| {
-        halves(screen, TOP, 0, DIVIDER) == (" 1 │ alpha!".into(), " 1 │ alpha!".into())
+        halves(screen, TOP, 0, DIVIDER) == ("   1  alpha!".into(), "   1  alpha!".into())
             && halves(screen, usize::from(PILL_ROW), 0, DIVIDER)
                 == (" ▐ a.txt • ▌".into(), " ▐ a.txt • ▌".into())
     });
@@ -366,7 +366,7 @@ fn edits_to_a_buffer_open_in_both_splits_show_in_both() {
     glyph.send_keys("home");
     glyph.type_text("<");
     glyph.wait_for_screen("second edit in both", WAIT, |screen| {
-        halves(screen, TOP, 0, DIVIDER) == (" 1 │ <alpha!".into(), " 1 │ <alpha!".into())
+        halves(screen, TOP, 0, DIVIDER) == ("   1  <alpha!".into(), "   1  <alpha!".into())
     });
 
     // Saving from either split saves the one buffer.

@@ -2995,6 +2995,7 @@ impl App {
                     highlights,
                     diagnostics: &self.tabs.doc(tabs.active().doc).diagnostics,
                 },
+                split == focused,
                 area.editor,
                 frame,
             );
@@ -3574,13 +3575,13 @@ mod tests {
 
     #[test]
     fn click_places_the_cursor_past_the_gutter() {
-        // Gutter " 1 │ " is 5 cells; the tab header takes rows 0-2.
+        // Gutter "   1  " is 6 cells; the tab header takes rows 0-2.
         let mut app = app_with(
             "hello
 world",
             &FakeClipboard::default(),
         );
-        click(&mut app, 7, 4, Instant::now());
+        click(&mut app, 8, 4, Instant::now());
         assert_eq!(app.buffer().cursor_line_col(), (1, 2));
         assert_eq!(app.buffer().selection(), None);
         // The status line isn't the editor.
@@ -3592,27 +3593,27 @@ world",
     fn double_click_needs_the_same_cell_within_400_ms() {
         let mut app = app_with("hello world", &FakeClipboard::default());
         let t0 = Instant::now();
-        click(&mut app, 6, 3, t0);
-        click(&mut app, 6, 3, t0 + Duration::from_millis(400));
+        click(&mut app, 7, 3, t0);
+        click(&mut app, 7, 3, t0 + Duration::from_millis(400));
         assert_eq!(app.buffer().selected_text().as_deref(), Some("hello"));
 
         // Too slow: a second plain click.
         let t1 = t0 + Duration::from_secs(5);
-        click(&mut app, 12, 3, t1);
-        click(&mut app, 12, 3, t1 + Duration::from_millis(401));
+        click(&mut app, 13, 3, t1);
+        click(&mut app, 13, 3, t1 + Duration::from_millis(401));
         assert_eq!(app.buffer().selection(), None);
         assert_eq!(app.buffer().cursor, 7);
 
         // Another cell: a plain click.
         let t2 = t1 + Duration::from_secs(5);
-        click(&mut app, 12, 3, t2);
-        click(&mut app, 13, 3, t2 + Duration::from_millis(10));
+        click(&mut app, 13, 3, t2);
+        click(&mut app, 14, 3, t2 + Duration::from_millis(10));
         assert_eq!(app.buffer().selection(), None);
 
         // A third quick click is a plain click again.
         let t3 = t2 + Duration::from_secs(5);
         for i in 0..3 {
-            click(&mut app, 6, 3, t3 + Duration::from_millis(i * 10));
+            click(&mut app, 7, 3, t3 + Duration::from_millis(i * 10));
         }
         assert_eq!(app.buffer().selection(), None);
         assert_eq!(app.buffer().cursor, 1);
@@ -3622,20 +3623,20 @@ world",
     fn drag_selects_from_press_to_release() {
         let mut app = app_with("hello world", &FakeClipboard::default());
         let now = Instant::now();
-        app.handle_mouse(mouse(LEFT_DOWN, 11, 3), now);
-        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 7, 3), now);
-        app.handle_mouse(mouse(LEFT_UP, 7, 3), now);
+        app.handle_mouse(mouse(LEFT_DOWN, 12, 3), now);
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 8, 3), now);
+        app.handle_mouse(mouse(LEFT_UP, 8, 3), now);
         assert_eq!(app.buffer().selected_text().as_deref(), Some("llo "));
         assert_eq!(app.buffer().cursor, 2);
         // A drag without a press in the editor selects nothing.
-        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 15, 3), now);
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 16, 3), now);
         assert_eq!(app.buffer().cursor, 2);
     }
 
     #[test]
     fn ctrl_click_places_the_cursor_and_asks_for_the_definition() {
         let mut app = app_with("hello", &FakeClipboard::default());
-        let mut event = mouse(LEFT_DOWN, 8, 3);
+        let mut event = mouse(LEFT_DOWN, 9, 3);
         event.modifiers = KeyModifiers::CONTROL;
         app.handle_mouse(event, Instant::now());
         assert_eq!(app.buffer().cursor, 3);
@@ -4447,7 +4448,7 @@ world",
         assert_eq!(row(0).trim(), "");
         assert_eq!(row(1).trim(), "▐ untitled ▌");
         assert!(row(2).chars().all(|c| c == '─'));
-        assert_eq!(row(3).trim(), "1 │");
+        assert_eq!(row(3).trim_end(), "   1");
         for y in 4..29 {
             assert_eq!(row(y).trim(), "", "row {y} should be blank");
         }

@@ -10,7 +10,7 @@ use crate::buffer::Buffer;
 use crate::buffer::movement::{char_col_at, char_width, display_col};
 use crate::highlight::Role;
 use crate::lsp::{Diagnostic, Severity};
-use crate::theme::Theme;
+use crate::theme::{Theme, grad, mix};
 
 /// Ranges drawn over a buffer's text, by char index.
 #[derive(Debug, Default, Clone, Copy)]
@@ -99,13 +99,21 @@ impl View {
     }
 }
 
-/// Between the line number and the text.
-const GUTTER_SEPARATOR: &str = " │ ";
+/// The fewest cells a line number gets, so the text doesn't shift sideways as a
+/// short file grows past 9 or 99 lines (README §2.4's `D`).
+const MIN_NUMBER_WIDTH: usize = 3;
 
-/// Cells left of the text: one of padding, the widest line number, the separator.
+/// Blank cells between the line number and the text; there's no divider rule.
+const GUTTER_GAP: usize = 2;
+
+/// Cells the line number is right-aligned in: `max(3, digits)`.
+fn number_width(buf: &Buffer) -> usize {
+    buf.rope.len_lines().to_string().len().max(MIN_NUMBER_WIDTH)
+}
+
+/// Cells left of the text: the diagnostic mark cell, the line number, the gap.
 fn gutter_width(buf: &Buffer) -> usize {
-    let digits = buf.rope.len_lines().to_string().len();
-    1 + digits + GUTTER_SEPARATOR.chars().count()
+    1 + number_width(buf) + GUTTER_GAP
 }
 
 /// Cells available for text in `area`.
@@ -113,17 +121,34 @@ fn text_width(buf: &Buffer, area: Rect) -> usize {
     usize::from(area.width).saturating_sub(gutter_width(buf))
 }
 
-/// Draws `buf` into `area`: a right-aligned line-number gutter, then each line cut
-/// at the right edge (Glyph never wraps), and puts the terminal cursor on the
-/// buffer cursor when it's in view. Diagnostics are underlined in their colour and
-/// mark the gutter with the most severe one on the line; the selection and every
-/// highlight get the selection colours on top. Pure: reads its inputs only.
+/// The bg of the cell `dx` cells into a cursor row `width` cells wide (README
+/// §2.4): it lights up out of the gutter and settles into `cur_line` around the
+/// middle, so the eye finds the row without a bright band across the screen.
+fn glow_at(theme: &Theme, dx: u16, width: u16) -> Color {
+    let stops = [
+        mix(theme.bg, theme.accent, 0.20),
+        mix(theme.bg, theme.accent, 0.07),
+        theme.cur_line,
+        theme.cur_line,
+    ];
+    grad(&stops, f64::from(dx) / (f64::from(width) * 0.8))
+}
+
+/// Draws `buf` into `area`: a gutter of diagnostic mark and right-aligned line
+/// number, then each line cut at the right edge (Glyph never wraps), and puts the
+/// terminal cursor on the buffer cursor when it's in view. In the `focused` split
+/// the cursor row glows and its number is lit. Diagnostics are underlined in their
+/// colour and mark the gutter with the most severe one on the line; the selection
+/// and every highlight get the selection colours on top. Pure: reads its inputs
+/// only.
+#[allow(clippy::too_many_arguments)]
 pub fn render_buffer(
     theme: &Theme,
     buf: &Buffer,
     view: &View,
     tab_width: usize,
     marks: Marks,
+    focused: bool,
     area: Rect,
     frame: &mut Frame,
 ) {
@@ -131,10 +156,21 @@ pub fn render_buffer(
         highlights,
         diagnostics,
     } = marks;
-    let digits = buf.rope.len_lines().to_string().len();
+    let digits = number_width(buf);
     let gutter_width = gutter_width(buf);
     let text_width = text_width(buf, area);
-    let gutter_style = Style::new().fg(theme.muted);
+    let number_style = Style::new().fg(theme.gutter);
+    // Only the split being typed in lights its cursor row, so two splits never
+    // look equally active; the other names the row in plain `text`.
+    let cursor_number_style = if focused {
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(theme.text)
+    };
+    // `mono`'s terminal colours can't be blended, so it marks the row by the
+    // number's weight alone.
+    let glow = focused && !theme.flat();
+    let (cursor_line, _) = buf.cursor_line_col();
     let selection = buf.selection();
     let syntax = visible_spans(buf, view, area);
 
@@ -145,8 +181,21 @@ pub fn render_buffer(
     {
         // `take(area.height)` keeps the row inside a u16.
         let y = area.y + screen_row as u16;
-        let gutter = format!(" {:>digits$}{GUTTER_SEPARATOR}", line_idx + 1);
-        out.set_stringn(area.x, y, &gutter, usize::from(area.width), gutter_style);
+        let is_cursor_line = line_idx == cursor_line;
+        if is_cursor_line && glow {
+            for dx in 0..area.width {
+                if let Some(cell) = out.cell_mut((area.x + dx, y)) {
+                    cell.set_bg(glow_at(theme, dx, area.width));
+                }
+            }
+        }
+        let gutter = format!(" {:>digits$}{}", line_idx + 1, " ".repeat(GUTTER_GAP));
+        let style = if is_cursor_line {
+            cursor_number_style
+        } else {
+            number_style
+        };
+        out.set_stringn(area.x, y, &gutter, usize::from(area.width), style);
         if text_width == 0 {
             continue;
         }
@@ -166,7 +215,7 @@ pub fn render_buffer(
                 // Below `text_width`, which fits in the area's u16 width.
                 let cell_x = x + (col - view.scroll_col) as u16;
                 if let Some(cell) = out.cell_mut((cell_x, y)) {
-                    cell.set_style(theme.syntax.style(role));
+                    cell.set_style(role_style(theme, role));
                 }
             }
         }
@@ -230,6 +279,17 @@ pub fn render_buffer(
 
     if let Some((x, y)) = cursor_cell(buf, view, tab_width, area) {
         frame.set_cursor_position((x, y));
+    }
+}
+
+/// How text in `role` is drawn: the theme's syntax style, with comments in
+/// italic (README §2.4) so they read as asides in every theme, `mono` included.
+fn role_style(theme: &Theme, role: Role) -> Style {
+    let style = theme.syntax.style(role);
+    if role == Role::Comment {
+        style.add_modifier(Modifier::ITALIC)
+    } else {
+        style
     }
 }
 
@@ -439,9 +499,9 @@ mod tests {
 
     #[test]
     fn follow_scrolls_sideways_in_display_columns() {
-        // Gutter " 1 │ " is 5 cells, leaving 10 for text.
+        // Gutter "   1  " is 6 cells, leaving 10 for text.
         let mut buf = buffer_at("\tabcdefghijklmnop", 0);
-        let area = Rect::new(0, 0, 15, 5);
+        let area = Rect::new(0, 0, 16, 5);
         let mut view = View::default();
         buf.cursor = 6; // display column 9: the last visible cell
         view.follow(&buf, area, 4);
@@ -474,12 +534,13 @@ mod tests {
                 &View::default(),
                 4,
                 Marks::default(),
+                true,
                 frame.area(),
                 frame,
             )
         })?;
-        // Gutter is 5 cells; the tab and `日` fill 6 more.
-        terminal.backend_mut().assert_cursor_position((11, 1));
+        // Gutter is 6 cells; the tab and `日` fill 6 more.
+        terminal.backend_mut().assert_cursor_position((12, 1));
         Ok(())
     }
 
@@ -511,7 +572,7 @@ mod tests {
             cursor: 7,
             ..Buffer::empty()
         };
-        let mut terminal = Terminal::new(TestBackend::new(20, 3))?;
+        let mut terminal = Terminal::new(TestBackend::new(21, 3))?;
         terminal.draw(|frame| {
             render_buffer(
                 &Theme::default(),
@@ -519,13 +580,14 @@ mod tests {
                 &View::default(),
                 4,
                 Marks::default(),
+                true,
                 frame.area(),
                 frame,
             )
         })?;
         let screen = terminal.backend().buffer();
         let reversed = |y: u16| -> String {
-            (5..20)
+            (6..21)
                 .map(|x| {
                     let cell = &screen[(x, y)];
                     if cell.modifier.contains(ratatui::style::Modifier::REVERSED) {
@@ -536,7 +598,7 @@ mod tests {
                 })
                 .collect()
         };
-        // Gutter is 5 cells.
+        // Gutter is 6 cells.
         assert_eq!(reversed(0), ".#####.........");
         assert_eq!(reversed(1), "#..............");
         assert_eq!(reversed(2), "...............");
@@ -545,24 +607,24 @@ mod tests {
 
     #[test]
     fn screen_to_char_inverts_the_render_columns() {
-        // Gutter " 1 │ " is 5 cells.
+        // Gutter "   1  " is 6 cells.
         let buf = buffer_at("ab\n\t日x\nlast", 0);
         let view = View::default();
         let area = Rect::new(0, 0, 20, 10);
         let at = |col, row| view.screen_to_char(&buf, area, col, row, 4);
-        assert_eq!(at(5, 0), 0);
-        assert_eq!(at(6, 0), 1);
+        assert_eq!(at(6, 0), 0);
+        assert_eq!(at(7, 0), 1);
         // Past the end of `ab`.
-        assert_eq!(at(15, 0), 2);
+        assert_eq!(at(16, 0), 2);
         // In the gutter: the line's start.
         assert_eq!(at(1, 1), 3);
         // Anywhere on the tab is the tab; both cells of `日` are `日`.
-        assert_eq!(at(8, 1), 3);
-        assert_eq!(at(9, 1), 4);
+        assert_eq!(at(9, 1), 3);
         assert_eq!(at(10, 1), 4);
-        assert_eq!(at(11, 1), 5);
+        assert_eq!(at(11, 1), 4);
+        assert_eq!(at(12, 1), 5);
         // Below the last line: the last line, at that column.
-        assert_eq!(at(6, 9), 8);
+        assert_eq!(at(7, 9), 8);
     }
 
     #[test]
@@ -573,7 +635,7 @@ mod tests {
             scroll_row: 10,
             scroll_col: 2,
         };
-        // An area 3 rows down; gutter " 51 │ " is 6 cells.
+        // An area 3 rows down; gutter "  51  " is 6 cells.
         let area = Rect::new(0, 3, 30, 5);
         let pos = view.screen_to_char(&buf, area, 6, 4, 4);
         assert_eq!(pos, buf.rope.line_to_char(11) + 2);
@@ -618,6 +680,7 @@ ab foo foo",
                     highlights: &[0..3, 9..12, 13..16],
                     ..Marks::default()
                 },
+                true,
                 frame.area(),
                 frame,
             )
@@ -658,19 +721,22 @@ ab foo foo",
                 &View::default(),
                 4,
                 Marks::default(),
+                true,
                 frame.area(),
                 frame,
             )
         })?;
         let screen = terminal.backend().buffer();
         let fg = |x: u16, y: u16| screen[(x, y)].fg;
-        // Gutter " 1 │ " is 5 cells.
-        assert_eq!(fg(5, 0), theme.syntax.keyword.fg.unwrap_or_default());
+        // Gutter "   1  " is 6 cells.
         assert_eq!(fg(6, 0), theme.syntax.keyword.fg.unwrap_or_default());
-        assert_eq!(fg(8, 0), theme.syntax.function.fg.unwrap_or_default());
-        // The comment starts after a tab, four cells in.
-        assert_eq!(fg(9, 1), theme.syntax.comment.fg.unwrap_or_default());
-        assert_eq!(fg(12, 1), theme.syntax.comment.fg.unwrap_or_default());
+        assert_eq!(fg(7, 0), theme.syntax.keyword.fg.unwrap_or_default());
+        assert_eq!(fg(9, 0), theme.syntax.function.fg.unwrap_or_default());
+        // The comment starts after a tab, four cells in, and is italic.
+        assert_eq!(fg(10, 1), theme.syntax.comment.fg.unwrap_or_default());
+        assert_eq!(fg(13, 1), theme.syntax.comment.fg.unwrap_or_default());
+        assert!(screen[(10, 1)].modifier.contains(Modifier::ITALIC));
+        assert!(!screen[(6, 0)].modifier.contains(Modifier::ITALIC));
         Ok(())
     }
 
@@ -689,15 +755,88 @@ ab foo foo",
                 &View::default(),
                 4,
                 Marks::default(),
+                true,
                 frame.area(),
                 frame,
             )
         })?;
         let screen = terminal.backend().buffer();
         let row = |y: u16| -> String { (0..40).map(|x| screen[(x, y)].symbol()).collect() };
-        assert!(row(0).starts_with("  1 │ line 1"), "{}", row(0));
-        assert!(row(9).starts_with(" 10 │ line 10"), "{}", row(9));
-        assert!(row(11).starts_with(" 12 │ line 12"), "{}", row(11));
+        // At least three cells for the number, then two blanks and no rule.
+        assert!(row(0).starts_with("   1  line 1"), "{}", row(0));
+        assert!(row(9).starts_with("  10  line 10"), "{}", row(9));
+        assert!(row(11).starts_with("  12  line 12"), "{}", row(11));
+        Ok(())
+    }
+
+    #[test]
+    fn gutter_grows_past_three_digits() {
+        let text = "x\n".repeat(1200);
+        // 1201 lines: four digits, so 1 + 4 + 2.
+        assert_eq!(gutter_width(&buffer_at(&text, 0)), 7);
+        assert_eq!(gutter_width(&buffer_at("x", 0)), 6);
+    }
+
+    /// Draws a three-line buffer 40 cells wide with the cursor on line 2.
+    fn draw_cursor_row(theme: &Theme, focused: bool) -> Result<ratatui::buffer::Buffer> {
+        let buf = buffer_at("one\ntwo\nthree", 5);
+        let mut terminal = Terminal::new(TestBackend::new(40, 3))?;
+        terminal.draw(|frame| {
+            render_buffer(
+                theme,
+                &buf,
+                &View::default(),
+                4,
+                Marks::default(),
+                focused,
+                frame.area(),
+                frame,
+            )
+        })?;
+        Ok(terminal.backend().buffer().clone())
+    }
+
+    #[test]
+    fn focused_cursor_row_glows_out_of_the_gutter() -> Result<()> {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let screen = draw_cursor_row(&theme, true)?;
+        // The ramp starts a fifth of the way to `accent` in the mark cell...
+        assert_eq!(screen[(0, 1)].bg, mix(theme.bg, theme.accent, 0.20));
+        // ...and has settled into `cur_line` two thirds of the way along the
+        // ramp, which spans 80 % of the width.
+        assert_eq!(screen[(22, 1)].bg, theme.cur_line);
+        assert_eq!(screen[(39, 1)].bg, theme.cur_line);
+        // In between it is still brighter than `cur_line`.
+        assert_eq!(screen[(8, 1)].bg, glow_at(&theme, 8, 40));
+        assert_ne!(screen[(8, 1)].bg, theme.cur_line);
+        // Other rows keep the ground.
+        assert_eq!(screen[(0, 0)].bg, Color::Reset);
+        // The cursor line's number is `accent` bold; the others `gutter`.
+        assert_eq!(screen[(3, 1)].fg, theme.accent);
+        assert!(screen[(3, 1)].modifier.contains(Modifier::BOLD));
+        assert_eq!(screen[(3, 0)].fg, theme.gutter);
+        assert!(!screen[(3, 0)].modifier.contains(Modifier::BOLD));
+        Ok(())
+    }
+
+    #[test]
+    fn unfocused_split_has_no_glow() -> Result<()> {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let screen = draw_cursor_row(&theme, false)?;
+        assert_eq!(screen[(0, 1)].bg, Color::Reset);
+        assert_eq!(screen[(20, 1)].bg, Color::Reset);
+        assert_eq!(screen[(3, 1)].fg, theme.text);
+        assert!(!screen[(3, 1)].modifier.contains(Modifier::BOLD));
+        Ok(())
+    }
+
+    #[test]
+    fn mono_marks_the_cursor_row_by_weight_only() -> Result<()> {
+        let theme = Theme::named("mono").expect("mono exists");
+        let screen = draw_cursor_row(&theme, true)?;
+        assert_eq!(screen[(0, 1)].bg, Color::Reset);
+        assert_eq!(screen[(20, 1)].bg, Color::Reset);
+        assert!(screen[(3, 1)].modifier.contains(Modifier::BOLD));
         Ok(())
     }
 }

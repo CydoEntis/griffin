@@ -86,9 +86,9 @@ fn click_accounts_for_vertical_scroll() {
     glyph.wait_for_text("line 1", START);
     glyph.send_keys("ctrl+end");
     wait_for_position(&glyph, 200, 9);
-    glyph.wait_for_text("200 │ line 200", WAIT);
+    glyph.wait_for_text("200  line 200", WAIT);
 
-    let row = row_of(&glyph, "180 │ line 180");
+    let row = row_of(&glyph, "180  line 180");
     // On the `1` of `180`.
     let x = col_of(&glyph, row, "line 180") + 5;
     glyph.click(x, row);
@@ -99,7 +99,7 @@ fn click_accounts_for_vertical_scroll() {
 #[test]
 fn click_past_end() {
     let (_dir, mut glyph) = open("one\ntwo");
-    glyph.wait_for_text("2 │ two", WAIT);
+    glyph.wait_for_text("2  two", WAIT);
     let base = col_of(&glyph, row(1), "one");
 
     glyph.click(90, row(1));
@@ -140,9 +140,36 @@ fn click_on_wide_char() {
 }
 
 #[test]
+fn clicks_land_past_the_six_cell_gutter() {
+    // The gutter is a mark cell, three for the number and two blanks, so the
+    // text starts in column 6.
+    let (_dir, mut glyph) = open("abcdef\nghij");
+    glyph.wait_for_text("   2  ghij", WAIT);
+    assert_eq!(col_of(&glyph, row(1), "abcdef"), 6);
+
+    glyph.click(8, row(1));
+    wait_for_position(&glyph, 1, 3);
+    glyph.wait_for_cursor(8, row(1), WAIT);
+    glyph.click(6, row(1));
+    wait_for_position(&glyph, 1, 1);
+    glyph.wait_for_cursor(6, row(1), WAIT);
+    // Anywhere in the gutter is the line's start.
+    glyph.click(10, row(2));
+    wait_for_position(&glyph, 2, 5);
+    glyph.click(3, row(2));
+    wait_for_position(&glyph, 2, 1);
+    glyph.wait_for_cursor(6, row(2), WAIT);
+
+    // A drag from column 7 to 10 covers `bcd`.
+    glyph.drag((7, row(1)), (10, row(1)));
+    glyph.wait_for_reversed(row(1), "bcd", WAIT);
+    wait_for_position(&glyph, 1, 5);
+}
+
+#[test]
 fn drag_selects() {
     let (_dir, mut glyph) = open("hello world");
-    glyph.wait_for_text("1 │ hello world", WAIT);
+    glyph.wait_for_text("1  hello world", WAIT);
     let base = col_of(&glyph, row(1), "hello");
 
     // From `w` back to `e`: the selection is the same either way round.
@@ -151,19 +178,19 @@ fn drag_selects() {
     wait_for_position(&glyph, 1, 2);
 
     glyph.type_text("x");
-    glyph.wait_for_text("1 │ hxworld", WAIT);
+    glyph.wait_for_text("1  hxworld", WAIT);
     glyph.wait_for_reversed(row(1), "", WAIT);
     wait_for_position(&glyph, 1, 3);
 
     // Undo puts the dragged-over text back in one step.
     glyph.send_keys("ctrl+z");
-    glyph.wait_for_text("1 │ hello world", WAIT);
+    glyph.wait_for_text("1  hello world", WAIT);
 }
 
 #[test]
 fn double_click_selects_word() {
     let (_dir, mut glyph) = open("foo bar_baz qux");
-    glyph.wait_for_text("1 │ foo bar_baz qux", WAIT);
+    glyph.wait_for_text("1  foo bar_baz qux", WAIT);
     let x = col_of(&glyph, row(1), "baz");
 
     glyph.double_click(x, row(1));
@@ -171,31 +198,31 @@ fn double_click_selects_word() {
     wait_for_position(&glyph, 1, 12);
 
     glyph.type_text("x");
-    glyph.wait_for_text("1 │ foo x qux", WAIT);
+    glyph.wait_for_text("1  foo x qux", WAIT);
     glyph.wait_for_reversed(row(1), "", WAIT);
 }
 
 #[test]
 fn wheel_scrolls() {
     let mut glyph = Glyph::spawn(&[LONG]);
-    glyph.wait_for_text("26 │ line 26", START);
-    assert_eq!(glyph.screen()[3].trim(), "1 │ line 1");
+    glyph.wait_for_text("26  line 26", START);
+    assert_eq!(glyph.screen()[3].trim(), "1  line 1");
 
     glyph.scroll_down(20, 10);
-    glyph.wait_for_text("29 │ line 29", WAIT);
-    assert_eq!(glyph.screen()[3].trim(), "4 │ line 4");
+    glyph.wait_for_text("29  line 29", WAIT);
+    assert_eq!(glyph.screen()[3].trim(), "4  line 4");
     glyph.scroll_down(20, 10);
-    glyph.wait_for_text("32 │ line 32", WAIT);
-    assert_eq!(glyph.screen()[3].trim(), "7 │ line 7");
+    glyph.wait_for_text("32  line 32", WAIT);
+    assert_eq!(glyph.screen()[3].trim(), "7  line 7");
     wait_for_position(&glyph, 1, 1);
 
     glyph.scroll_up(20, 10);
-    glyph.wait_for_text_gone("32 │ line 32", WAIT);
-    assert_eq!(glyph.screen()[3].trim(), "4 │ line 4");
+    glyph.wait_for_text_gone("32  line 32", WAIT);
+    assert_eq!(glyph.screen()[3].trim(), "4  line 4");
     wait_for_position(&glyph, 1, 1);
 
     // The cursor never moved: typing lands on line 1 and brings it back into view.
     glyph.type_text("x");
-    glyph.wait_for_text("1 │ xline 1", WAIT);
+    glyph.wait_for_text("1  xline 1", WAIT);
     wait_for_position(&glyph, 1, 2);
 }

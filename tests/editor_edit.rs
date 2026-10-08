@@ -23,7 +23,7 @@ fn wait_for_position(glyph: &Glyph, line: usize, col: usize) {
 /// Waits until editor row `row` (0 is the first, on screen row `TOP`) reads
 /// `text` after the gutter.
 fn wait_for_row(glyph: &Glyph, row: u16, number: usize, text: &str) {
-    let expected = format!("{number} │ {text}");
+    let expected = format!("{number}  {text}");
     glyph.wait_for_text(&expected, WAIT);
     let line = glyph.screen()[usize::from(TOP + row)].clone();
     assert_eq!(line.trim(), expected.trim_end(), "{:#?}", glyph.screen());
@@ -33,13 +33,14 @@ fn wait_for_row(glyph: &Glyph, row: u16, number: usize, text: &str) {
 fn start_empty(config: &str) -> (Glyph, u16) {
     let glyph = Glyph::spawn_with_config(config, &[]);
     glyph.wait_for_text("Ln 1, Col 1", START);
-    glyph.wait_for_text("1 │", WAIT);
-    // Text starts one cell after the gutter's divider. The terminal cursor moves
-    // there only after the frame is drawn, so wait for it rather than read it.
-    let divider = glyph
-        .text_col(TOP, "│")
+    glyph.wait_for_text("   1", WAIT);
+    // Text starts two blank cells after the line number. The terminal cursor
+    // moves there only after the frame is drawn, so wait for it rather than read
+    // it.
+    let number = glyph
+        .text_col(TOP, "1")
         .unwrap_or_else(|| panic!("no gutter: {:#?}", glyph.screen()));
-    let x = divider + 2;
+    let x = number + 3;
     glyph.wait_for_cursor(x, TOP, WAIT);
     (glyph, x)
 }
