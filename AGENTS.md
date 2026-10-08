@@ -42,6 +42,7 @@ All three must pass before a change is done. CI runs them on Windows and Ubuntu.
 | `src/highlight/` | tree-sitter engine; one file per language under `languages/` |
 | `src/run/` | run commands: spawning, process trees, detection |
 | `src/lsp/` | transport, client, per-language server config |
+| `src/dap/` | Debug Adapter Protocol: per-language adapters and launch settings |
 | `src/bin/fake_lsp.rs` | scripted fake language server used by LSP tests |
 | `tests/harness/` | the PTY harness; `tests/*.rs` use it |
 
