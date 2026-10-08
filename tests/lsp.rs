@@ -399,6 +399,75 @@ fn quitting_shuts_the_server_down() {
     });
 }
 
+#[test]
+fn opening_another_folder_shuts_the_old_server_down_and_starts_a_new_one() {
+    let project = Project::new(None);
+    let other = tempfile::tempdir().expect("create the other project");
+    let other_name = other
+        .path()
+        .file_name()
+        .expect("temp folders have names")
+        .to_string_lossy()
+        .into_owned();
+    fs::write(other.path().join("c.rs"), "fn c() {}\n").expect("write c.rs");
+    let mut glyph = project.open(&rust_server(fake()), "a.rs");
+    project.wait_for(&glyph, "textDocument/didOpen", "a.rs");
+    let first = project
+        .log()
+        .first()
+        .map(|(pid, _)| *pid)
+        .expect("the first server logged");
+
+    glyph.send_keys("ctrl+p");
+    glyph.wait_for_text("cast · files · commands", WAIT);
+    glyph.type_text(">open directory");
+    glyph.wait_for_text("cast · commands", WAIT);
+    glyph.wait_for_text("Open directory", WAIT);
+    glyph.send_keys("enter");
+    glyph.wait_for_text("open · folders", WAIT);
+    glyph.type_text(&other.path().display().to_string());
+    glyph.send_keys("enter");
+    // The project holds no folders either, so wait for the query to clear:
+    // an Enter sent before then could arrive in the same paste-like burst.
+    glyph.wait_for_screen("the other folder in the browser", WAIT, |screen| {
+        screen[8].contains(&other_name) && screen[9].contains("no folders here")
+    });
+    glyph.send_keys("enter");
+    glyph.wait_for_text_gone("open · folders", WAIT);
+
+    glyph.wait_for_files("the old server told to shut down and exit", WAIT, || {
+        let methods: Vec<String> = project
+            .log()
+            .iter()
+            .filter(|(pid, _)| *pid == first)
+            .map(|(_, m)| method(m).to_string())
+            .collect();
+        methods.ends_with(&["shutdown".to_string(), "exit".to_string()])
+    });
+    assert!(project.received("textDocument/didClose", "a.rs"));
+
+    // A file in the new folder starts a server of its own, rooted there.
+    glyph.send_keys("ctrl+p");
+    glyph.wait_for_text("cast · files · commands", WAIT);
+    glyph.type_text("c.rs");
+    glyph.wait_for_text("✦ c.rs", WAIT);
+    glyph.send_keys("enter");
+    glyph.wait_for_text_gone("cast · files · commands", WAIT);
+    project.wait_for(&glyph, "textDocument/didOpen", "c.rs");
+    let log = project.log();
+    let (second, _) = log
+        .iter()
+        .find(|(_, m)| is(m, "textDocument/didOpen", "c.rs"))
+        .expect("didOpen logged");
+    assert_ne!(*second, first, "{log:#?}");
+    let (_, init) = log
+        .iter()
+        .find(|(pid, m)| pid == second && method(m) == "initialize")
+        .expect("the new server initialized");
+    let root = init["params"]["rootUri"].as_str().unwrap_or_default();
+    assert!(root.ends_with(&other_name), "{root}");
+}
+
 /// A Rust file with something to complain about on lines 2 and 3.
 const DIAG_FILE: &str = "fn main() {\n    let x = 1;\n    let y = 2;\n}\n";
 

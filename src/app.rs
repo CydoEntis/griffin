@@ -40,6 +40,7 @@ use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
 use crate::ui::completion::{self, Completion};
 use crate::ui::confirm::{Answer, Choice, Confirm, Reply};
+use crate::ui::dirpicker::{Browsed, DirPicker};
 use crate::ui::find::{FindBar, Step};
 use crate::ui::hover::render_hover;
 use crate::ui::picker::{self, Picked, Picker};
@@ -716,6 +717,8 @@ pub struct App {
     /// The picker, while it's open; it takes every key.
     picker: Option<Picker>,
     picker_for: PickerFor,
+    /// The folder browser, while it's open; it takes every key.
+    folders: Option<DirPicker>,
     /// The latest run, whose output the run panel shows.
     run: Option<RunView>,
     /// The latest run's entry, for Ctrl+F5 to start again.
@@ -941,6 +944,12 @@ impl App {
             AppEvent::Input(Event::Paste(text)) if self.prompt.is_none() => {
                 self.hover = None;
                 self.completion = None;
+                if let Some(browser) = &mut self.folders {
+                    if let Some(step) = browser.paste(&text) {
+                        self.folders_step(step);
+                    }
+                    return;
+                }
                 if let Some(picker) = &mut self.picker {
                     if let Some(picked) = picker.paste(&text) {
                         self.finish_picker(picked);
@@ -987,6 +996,17 @@ impl App {
                     && !card.contains(Position::new(mouse.column, mouse.row))
                 {
                     self.close_project_search();
+                }
+            }
+            // The folder browser closes on a click outside it, as the cast does.
+            AppEvent::Input(Event::Mouse(mouse)) if self.folders.is_some() => {
+                let outside = self.folders.as_ref().is_some_and(|browser| {
+                    !browser
+                        .card(self.screen)
+                        .contains(Position::new(mouse.column, mouse.row))
+                });
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) && outside {
+                    self.folders = None;
                 }
             }
             // The cast palette closes on a click outside it, as a dialog does.
@@ -1095,7 +1115,9 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) {
         // Tree letters are only actions when nothing else is reading keys as text.
-        let scope = if self.project_search.is_some() && self.prompt.is_none() {
+        let scope = if self.folders.is_some() && self.prompt.is_none() {
+            Scope::Folders
+        } else if self.project_search.is_some() && self.prompt.is_none() {
             Scope::Search
         } else if self.find.is_some() && self.prompt.is_none() {
             Scope::Find
@@ -1126,6 +1148,12 @@ impl App {
         if let Some(prompt) = self.prompt {
             if let Some(step) = self.confirm(prompt).handle(input, self.prompt_button) {
                 self.prompt_step(prompt, step);
+            }
+            return;
+        }
+        if let Some(browser) = &mut self.folders {
+            if let Some(step) = browser.handle(input) {
+                self.folders_step(step);
             }
             return;
         }
@@ -1331,7 +1359,8 @@ impl App {
             | Action::Run
             | Action::ToggleRunPanel
             | Action::StopRun
-            | Action::RestartRun => {
+            | Action::RestartRun
+            | Action::OpenDirectory => {
                 self.handle_action(action);
             }
             _ => {}
@@ -1620,7 +1649,9 @@ impl App {
             Action::JumpBack => self.jump_back(),
             Action::Hover => self.request_hover(),
             Action::Complete => self.request_completion(),
-            // Bound only in tree or find bar scope, so they never reach the editor.
+            Action::OpenDirectory => self.open_folders(),
+            // Bound only in tree, find bar or folder browser scope, so they never
+            // reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
             | Action::TreeRename
@@ -1630,7 +1661,8 @@ impl App {
             | Action::FindCase
             | Action::FindRegex
             | Action::ReplaceAll
-            | Action::ProjectReplace => {}
+            | Action::ProjectReplace
+            | Action::OpenFolderHere => {}
         }
     }
 
@@ -1925,6 +1957,74 @@ impl App {
             None => picker.set_files(list_files(&root)),
         }
         self.picker = Some(picker);
+    }
+
+    /// `>open directory`: the folder browser, starting in the project folder.
+    fn open_folders(&mut self) {
+        match DirPicker::new(self.tree.root()) {
+            Ok(browser) => self.folders = Some(browser),
+            Err(why) => self.say(Tone::Err, why),
+        }
+    }
+
+    /// Follows what a key did in the folder browser.
+    fn folders_step(&mut self, step: Browsed) {
+        match step {
+            Browsed::Open(dir) => {
+                self.folders = None;
+                self.open_project(&dir);
+            }
+            // The browser stays where it was, under the message.
+            Browsed::Failed(why) => self.say(Tone::Err, why),
+            Browsed::Close => self.folders = None,
+        }
+    }
+
+    /// Makes `dir` the project, as `glyph <dir>` would: every tab closes, the
+    /// run is stopped, the old folder's language servers are shut down, and
+    /// the tree shows the new folder with focus. Everything else that reads
+    /// the project (Ctrl+P, project search, F5, save as, new servers) asks the
+    /// tree for its root, so it follows. Unsaved changes would be lost, so with
+    /// any it refuses and says so.
+    fn open_project(&mut self, dir: &Path) {
+        if self.tabs.docs.iter().any(|doc| doc.buffer.dirty) {
+            self.say(Tone::Warn, "save or close unsaved files first");
+            return;
+        }
+        // The run's command was started in the old folder and belongs to it.
+        if let Some(view) = &mut self.run
+            && view.status == RunStatus::Running
+        {
+            view.status = RunStatus::Stopped;
+        }
+        if let Some(tree) = self.run_tree.take() {
+            tree.kill();
+        }
+        self.close_project_search();
+        self.find = None;
+        self.hover = None;
+        self.hover_for = None;
+        self.completion = None;
+        self.completion_for = None;
+        // Jumps lead back into the old folder's files.
+        self.jumps.clear();
+        if self.tabs.splits.len() > 1 {
+            self.tabs.toggle_split();
+        }
+        // Every tab is saved, so no backup is needed any more.
+        for doc in self.tabs.close_where(|_| true) {
+            let _ = self.backups.delete(doc.buffer.path.as_deref(), doc.id);
+        }
+        // The servers' exit is waited for on a task of its own (R29), so the
+        // handle isn't needed here.
+        drop(self.lsp.stop_root(&absolute(self.tree.root())));
+        self.tree = Tree::new(dir);
+        self.project = project_label(dir, std::env::home_dir().as_deref());
+        self.tree_visible = true;
+        self.focus = Focus::Tree;
+        self.reset_mouse();
+        self.follow_cursor();
+        self.follow_tree();
     }
 
     /// Cast's `/text`: opens project search holding `text` and, as Enter was
@@ -2860,6 +2960,7 @@ impl App {
         self.prompt.is_some()
             || self.name_prompt.is_some()
             || self.picker.is_some()
+            || self.folders.is_some()
             || self.project_search.is_some()
             || self.find.is_some()
     }
@@ -3126,6 +3227,10 @@ impl App {
         }
         if let Some(picker) = &self.picker {
             let at = picker.render(theme, frame, frame.area());
+            frame.set_cursor_position(at);
+        }
+        if let Some(browser) = &self.folders {
+            let at = browser.render(theme, frame, frame.area());
             frame.set_cursor_position(at);
         }
         if let Some(panel) = &self.project_search {
@@ -3919,6 +4024,49 @@ world",
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn opening_a_folder_closes_every_tab_and_shows_its_tree() -> Result<()> {
+        let (dir, mut app) = project()?;
+        let other = tempfile::tempdir()?;
+        std::fs::write(other.path().join("c.txt"), "c")?;
+        app.open(&dir.path().join("a.txt"));
+        app.handle_action(Action::ToggleSplit);
+        app.focus = Focus::Editor;
+        app.handle_action(Action::OpenDirectory);
+        assert!(app.folders.is_some());
+        app.folders_step(Browsed::Open(other.path().to_path_buf()));
+        assert!(app.folders.is_none());
+        assert_eq!(app.tree.root(), other.path());
+        assert_eq!(
+            app.project,
+            project_label(other.path(), std::env::home_dir().as_deref())
+        );
+        assert_eq!(app.tabs.splits.len(), 1);
+        assert_eq!(tab_names(&app), ["untitled"]);
+        assert_eq!(app.tabs.docs.len(), 1);
+        assert!(app.tree_visible);
+        assert_eq!(app.focus, Focus::Tree);
+        assert_eq!(selected_name(&app), Some("c.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn opening_a_folder_with_unsaved_changes_refuses() -> Result<()> {
+        let (dir, mut app) = project()?;
+        let other = tempfile::tempdir()?;
+        app.open(&dir.path().join("a.txt"));
+        app.focus = Focus::Editor;
+        type_keys(&mut app, "x");
+        app.folders_step(Browsed::Open(other.path().to_path_buf()));
+        assert_eq!(app.tree.root(), dir.path());
+        assert_eq!(tab_names(&app), ["a.txt ●"]);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("save or close unsaved files first")
+        );
+        Ok(())
     }
 
     #[test]
