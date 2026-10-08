@@ -1496,7 +1496,8 @@ impl App {
             }
             Input::Action(Action::Backspace) => {
                 self.buffer_mut().seal_undo_group();
-                self.edit(Buffer::backspace);
+                let auto_pairs = self.editor.auto_pairs;
+                self.edit(|buffer| buffer.backspace_pair(auto_pairs));
                 self.refilter();
                 true
             }
@@ -1995,7 +1996,10 @@ impl App {
                 self.follow_cursor();
             }
             Action::Newline => self.edit(Buffer::newline),
-            Action::Backspace => self.edit(Buffer::backspace),
+            Action::Backspace => {
+                let auto_pairs = self.editor.auto_pairs;
+                self.edit(|buffer| buffer.backspace_pair(auto_pairs));
+            }
             Action::Delete => self.edit(Buffer::delete),
             Action::Tab => {
                 let (width, spaces) = (self.editor.tab_width, self.editor.insert_spaces);
