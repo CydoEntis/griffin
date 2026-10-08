@@ -28,11 +28,11 @@ fn open_guide() -> Glyph {
     let mut glyph = Glyph::spawn_in_with_config(Path::new(PROJECT), AURORA, &[]);
     glyph.wait_for_text("Ln 1, Col 1", START);
     glyph.send_keys("ctrl+p");
-    glyph.wait_for_text("Go to file:", WAIT);
+    glyph.wait_for_text("cast · files · commands", WAIT);
     glyph.type_text("guide");
-    glyph.wait_for_text("docs/guide.md", WAIT);
+    glyph.wait_for_text("guide.md  docs", WAIT);
     glyph.send_keys("enter");
-    glyph.wait_for_text_gone("Go to file:", WAIT);
+    glyph.wait_for_text_gone("cast · files · commands", WAIT);
     glyph.wait_for_screen("guide.md in the status bar", WAIT, |screen| {
         screen[usize::from(STATUS_ROW)].contains("guide.md")
     });

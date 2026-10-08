@@ -963,6 +963,21 @@ impl App {
                     self.close_project_search();
                 }
             }
+            // The cast palette closes on a click outside it, as a dialog does.
+            AppEvent::Input(Event::Mouse(mouse))
+                if self.picker.is_some()
+                    && self.picker_for == PickerFor::File
+                    && self.prompt.is_none() =>
+            {
+                let outside = self.picker.as_ref().is_some_and(|picker| {
+                    !picker
+                        .card(self.screen)
+                        .contains(Position::new(mouse.column, mouse.row))
+                });
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) && outside {
+                    self.finish_picker(Picked::Close);
+                }
+            }
             // The mouse bypasses the keymap too: only keys are remappable.
             AppEvent::Input(Event::Mouse(mouse)) if !self.modal_open() => {
                 if mouse.kind != MouseEventKind::Moved {
