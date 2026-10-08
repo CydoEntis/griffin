@@ -28,6 +28,7 @@ use crate::buffer::movement::Motion;
 use crate::buffer::{Buffer, Caret};
 use crate::clipboard::Clipboard;
 use crate::config::{self, EditorConfig, RunEntry};
+use crate::highlight::languages;
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
@@ -2921,6 +2922,12 @@ impl App {
                 (tone, d.message.as_str())
             }),
         };
+        let language = buffer
+            .path
+            .as_deref()
+            .and_then(languages::for_path)
+            .map_or("Plain text", |lang| lang.display_name());
+        let server = self.lsp.server_state(self.tabs.active().id);
         render_status(
             frame,
             theme,
@@ -2930,6 +2937,8 @@ impl App {
                 dirty: buffer.dirty,
                 message,
                 position: buffer.cursor_line_col(),
+                language,
+                server: server.as_ref().map(|(state, name)| (*state, name.as_str())),
                 warnings: count(Severity::Warning),
                 errors: count(Severity::Error),
             },

@@ -1,6 +1,6 @@
 //! The status bar on the last row (design README §2.5): the glyph block, the
-//! path slot at x = 20, and the cursor position and diagnostic counts on the
-//! right.
+//! path slot at x = 20, and on the right the cursor position, the language, its
+//! server's state and the diagnostic counts.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
+use crate::lsp::ServerState;
 use crate::theme::{Theme, grad, mix};
 
 /// Cells the glyph block covers: ten on the accent ramp, then eight fading into
@@ -15,6 +16,8 @@ use crate::theme::{Theme, grad, mix};
 const BLOCK_WIDTH: u16 = 18;
 /// Where the path (or a message in its place) starts.
 const PATH_X: u16 = 20;
+/// Between the right-hand segments (README §2.5).
+const GAP: &str = "    ";
 
 /// How a status message went, which picks its glyph and colour.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +58,11 @@ pub struct Status<'a> {
     pub message: Option<(Tone, &'a str)>,
     /// The cursor as 0-based (line, char column).
     pub position: (usize, usize),
+    /// The buffer's language as people write it (`Rust`, `Plain text`).
+    pub language: &'a str,
+    /// The state and name of the server following the buffer; `None` for a
+    /// language without one.
+    pub server: Option<(ServerState, &'a str)>,
     /// The language server's warnings and errors for the buffer.
     pub warnings: usize,
     pub errors: usize,
@@ -62,6 +70,52 @@ pub struct Status<'a> {
 
 /// A piece of text and how to draw it.
 type Run = (String, Style);
+
+/// Which optional pieces fit at a width. As the row narrows they go in this
+/// order: server, language, the path's directory (README §2.5, SPEC_V1_LAYOUT
+/// §11), because the file name and position matter most while editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Shown {
+    server: bool,
+    language: bool,
+    dir: bool,
+}
+
+/// The fullest `Shown` whose left and right sides fit side by side in `width`.
+/// When even the leanest doesn't fit, the left side is cut as drawn.
+fn layout(theme: &Theme, status: &Status, width: u16) -> Shown {
+    let steps = [
+        Shown {
+            server: true,
+            language: true,
+            dir: true,
+        },
+        Shown {
+            server: false,
+            language: true,
+            dir: true,
+        },
+        Shown {
+            server: false,
+            language: false,
+            dir: true,
+        },
+    ];
+    let leanest = Shown {
+        server: false,
+        language: false,
+        dir: false,
+    };
+    steps
+        .into_iter()
+        .find(|&shown| {
+            let left = runs_width(&left_runs(theme, status, shown.dir));
+            let right = runs_width(&right_runs(theme, status, shown));
+            // The left slot stops a cell short of the right side, which ends at W − 2.
+            u32::from(PATH_X) + u32::from(left) + 1 + u32::from(right) + 2 <= u32::from(width)
+        })
+        .unwrap_or(leanest)
+}
 
 /// Draws the one-row status bar.
 pub fn render_status(frame: &mut Frame, theme: &Theme, area: Rect, status: &Status) {
@@ -85,18 +139,17 @@ pub fn render_status(frame: &mut Frame, theme: &Theme, area: Rect, status: &Stat
         )],
     );
 
-    let right = right_runs(theme, status);
-    let right_width: u16 = right.iter().map(|(s, _)| width(s)).sum();
+    let shown = layout(theme, status, area.width);
+    let right = right_runs(theme, status, shown);
     // Right-aligned to W − 2 like the design's `putRight`, which ends just before it.
     let right_x = right_edge
         .saturating_sub(2)
-        .saturating_sub(right_width)
+        .saturating_sub(runs_width(&right))
         .max(area.x);
     // The left slot stops a cell short of the right side so they never touch.
     let left_end = right_x.saturating_sub(1);
-    let left_x = area.x + PATH_X;
-    let left = left_runs(theme, status, left_end.saturating_sub(left_x));
-    put(buf, left_x, area.y, left_end, &left);
+    let left = left_runs(theme, status, shown.dir);
+    put(buf, area.x + PATH_X, area.y, left_end, &left);
     put(buf, right_x, area.y, right_edge, &right);
 }
 
@@ -115,10 +168,9 @@ fn block_bg(theme: &Theme, i: u16) -> Color {
     }
 }
 
-/// The path slot: a message with its glyph while there is one, else the path.
-/// A path wider than `room` drops its directory (README §2.5), since the file
-/// name and the dirty mark are what the user needs when space runs out.
-fn left_runs(theme: &Theme, status: &Status, room: u16) -> Vec<Run> {
+/// The path slot: a message with its glyph while there is one, else the path,
+/// with its directory only when `dir`.
+fn left_runs(theme: &Theme, status: &Status, dir: bool) -> Vec<Run> {
     if let Some((tone, text)) = status.message {
         let style = Style::new().fg(tone.color(theme));
         return vec![
@@ -128,30 +180,44 @@ fn left_runs(theme: &Theme, status: &Status, room: u16) -> Vec<Run> {
     }
     // Either separator, so a Windows path splits the same as a Unix one.
     let split = status.path.rfind(['/', '\\']).map_or(0, |i| i + 1);
-    let (dir, name) = status.path.split_at(split);
-    let mut runs = vec![
-        (dir.to_string(), Style::new().fg(theme.muted)),
-        (name.to_string(), Style::new().fg(theme.strong)),
-    ];
+    let (directory, name) = status.path.split_at(split);
+    let mut runs = Vec::new();
+    if dir {
+        runs.push((directory.to_string(), Style::new().fg(theme.muted)));
+    }
+    runs.push((name.to_string(), Style::new().fg(theme.strong)));
     if status.dirty {
         runs.push((" •".to_string(), Style::new().fg(theme.warn)));
-    }
-    let full: u16 = runs.iter().map(|(s, _)| width(s)).sum();
-    if full > room {
-        runs.remove(0);
     }
     runs
 }
 
-/// The position, then the counts while the server reports anything.
-fn right_runs(theme: &Theme, status: &Status) -> Vec<Run> {
+/// The position, the language and its server as `shown` allows, then the counts
+/// while the server reports anything.
+fn right_runs(theme: &Theme, status: &Status, shown: Shown) -> Vec<Run> {
+    let text = Style::new().fg(theme.text);
     let (line, col) = status.position;
-    let mut runs = vec![(
-        format!("Ln {}, Col {}", line + 1, col + 1),
-        Style::new().fg(theme.text),
-    )];
+    let mut runs = vec![(format!("Ln {}, Col {}", line + 1, col + 1), text)];
+    let gap = || (GAP.to_string(), Style::new());
+    if shown.language {
+        runs.push(gap());
+        runs.push((status.language.to_string(), text));
+    }
+    if shown.server
+        && let Some((state, name)) = status.server
+    {
+        let (glyph, glyph_color, label, label_color) = match state {
+            ServerState::Ready => ("● ", theme.ok, name, theme.text),
+            ServerState::Starting => ("○ ", theme.warn, name, theme.text),
+            ServerState::NotFound => ("○ ", theme.muted, "no server", theme.muted),
+            ServerState::Crashed => ("✕ ", theme.err, name, theme.err),
+        };
+        runs.push(gap());
+        runs.push((glyph.to_string(), Style::new().fg(glyph_color)));
+        runs.push((label.to_string(), Style::new().fg(label_color)));
+    }
     if status.warnings + status.errors > 0 {
-        runs.push(("    ".to_string(), Style::new()));
+        runs.push(gap());
         runs.push((format!("✕ {}", status.errors), Style::new().fg(theme.err)));
         runs.push(("  ".to_string(), Style::new()));
         runs.push((
@@ -172,6 +238,10 @@ fn put(buf: &mut Buffer, mut x: u16, y: u16, end: u16, runs: &[Run]) {
         let (next, _) = buf.set_stringn(x, y, text, usize::from(end - x), *style);
         x = next;
     }
+}
+
+fn runs_width(runs: &[Run]) -> u16 {
+    runs.iter().map(|(s, _)| width(s)).sum()
 }
 
 fn width(s: &str) -> u16 {
@@ -201,22 +271,138 @@ mod tests {
         runs.iter().map(|(s, _)| s.as_str()).collect()
     }
 
+    fn shown(server: bool, language: bool, dir: bool) -> Shown {
+        Shown {
+            server,
+            language,
+            dir,
+        }
+    }
+
     #[test]
-    fn a_path_too_wide_for_the_slot_keeps_only_its_name() {
+    fn narrowing_drops_the_server_then_the_language_then_the_directory() {
         let theme = Theme::named("aurora").expect("aurora exists");
         let status = Status {
-            path: "src/workspace/walker/long_file_name.rs",
+            path: "src/ui/status.rs",
             dirty: true,
+            position: (51, 21),
+            language: "Rust",
+            server: Some((ServerState::Ready, "rust-analyzer")),
             ..Status::default()
         };
-        // 38 cells of path plus 2 for the dirty mark.
         assert_eq!(
-            text(&left_runs(&theme, &status, 40)),
-            "src/workspace/walker/long_file_name.rs •"
+            text(&right_runs(&theme, &status, shown(true, true, true))),
+            "Ln 52, Col 22    Rust    ● rust-analyzer"
         );
-        let short = left_runs(&theme, &status, 39);
-        assert_eq!(text(&short), "long_file_name.rs •");
-        assert_eq!(short[0].1.fg, Some(theme.strong));
+        // Path 16 + dirty mark 2 = 18; right side 13, +8 for the language, +19
+        // for the server. Each width is 20 + left + 1 + right + 2.
+        let full = 20 + 18 + 1 + (13 + 8 + 19) + 2;
+        assert_eq!(layout(&theme, &status, full + 10), shown(true, true, true));
+        assert_eq!(layout(&theme, &status, full), shown(true, true, true));
+        assert_eq!(layout(&theme, &status, full - 1), shown(false, true, true));
+        assert_eq!(layout(&theme, &status, full - 19), shown(false, true, true));
+        assert_eq!(
+            layout(&theme, &status, full - 20),
+            shown(false, false, true)
+        );
+        assert_eq!(
+            layout(&theme, &status, full - 27),
+            shown(false, false, true)
+        );
+        assert_eq!(
+            layout(&theme, &status, full - 28),
+            shown(false, false, false)
+        );
+        assert_eq!(layout(&theme, &status, 10), shown(false, false, false));
+
+        let lean = left_runs(&theme, &status, false);
+        assert_eq!(text(&lean), "status.rs •");
+        assert_eq!(lean[0].1.fg, Some(theme.strong));
+        assert_eq!(
+            text(&left_runs(&theme, &status, true)),
+            "src/ui/status.rs •"
+        );
+    }
+
+    #[test]
+    fn each_server_state_has_its_glyph_and_colours() {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let server = |state| {
+            let status = Status {
+                language: "Rust",
+                server: Some((state, "rust-analyzer")),
+                ..Status::default()
+            };
+            let runs = right_runs(&theme, &status, shown(true, true, true));
+            let n = runs.len();
+            (text(&runs[n - 2..]), runs[n - 2].1.fg, runs[n - 1].1.fg)
+        };
+        assert_eq!(
+            server(ServerState::Ready),
+            (
+                "● rust-analyzer".to_string(),
+                Some(theme.ok),
+                Some(theme.text)
+            )
+        );
+        assert_eq!(
+            server(ServerState::Starting),
+            (
+                "○ rust-analyzer".to_string(),
+                Some(theme.warn),
+                Some(theme.text)
+            )
+        );
+        assert_eq!(
+            server(ServerState::NotFound),
+            (
+                "○ no server".to_string(),
+                Some(theme.muted),
+                Some(theme.muted)
+            )
+        );
+        assert_eq!(
+            server(ServerState::Crashed),
+            (
+                "✕ rust-analyzer".to_string(),
+                Some(theme.err),
+                Some(theme.err)
+            )
+        );
+
+        // No server configured: no segment at all.
+        let status = Status {
+            language: "Plain text",
+            ..Status::default()
+        };
+        assert_eq!(
+            text(&right_runs(&theme, &status, shown(true, true, true))),
+            "Ln 1, Col 1    Plain text"
+        );
+    }
+
+    #[test]
+    fn a_message_drops_the_server_and_language_before_it_is_cut() {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let status = Status {
+            message: Some((Tone::Warn, "rust: server not found (rust-analyzer)")),
+            language: "Rust",
+            server: Some((ServerState::NotFound, "rust-analyzer")),
+            ..Status::default()
+        };
+        // Message 40, position 11, language 8, server 15.
+        assert_eq!(
+            layout(&theme, &status, 20 + 40 + 1 + 34 + 2),
+            shown(true, true, true)
+        );
+        assert_eq!(
+            layout(&theme, &status, 20 + 40 + 1 + 19 + 2),
+            shown(false, true, true)
+        );
+        assert_eq!(
+            layout(&theme, &status, 20 + 40 + 1 + 18 + 2),
+            shown(false, false, true)
+        );
     }
 
     #[test]

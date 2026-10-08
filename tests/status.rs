@@ -94,12 +94,18 @@ fn the_path_shows_its_directory_muted_and_its_name_strong() {
 }
 
 #[test]
-fn the_position_ends_two_cells_from_the_right_edge() {
+fn the_position_and_language_end_two_cells_from_the_right_edge() {
     let mut glyph = Glyph::spawn_with_config(AURORA, &[]);
     glyph.wait_for_text("Ln 1, Col 1", START);
+    // An untitled buffer has no language; it reads `Plain text`, 4 cells after
+    // the position.
+    let language = "Plain text";
+    let lang_col = glyph.text_col(STATUS_ROW, language).expect("the language");
+    assert_eq!(lang_col + language.len() as u16, COLS - 2);
+    assert_eq!(glyph.fg_at(lang_col, STATUS_ROW), TEXT);
     let position = "Ln 1, Col 1";
     let col = glyph.text_col(STATUS_ROW, position).expect("the position");
-    assert_eq!(col + position.len() as u16, COLS - 2);
+    assert_eq!(col + position.len() as u16 + 4, lang_col);
     assert_eq!(glyph.fg_at(col, STATUS_ROW), TEXT);
 
     // A longer position grows to the left; the right end stays put.
@@ -107,5 +113,19 @@ fn the_position_ends_two_cells_from_the_right_edge() {
     let position = "Ln 1, Col 11";
     glyph.wait_for_text(position, WAIT);
     let col = glyph.text_col(STATUS_ROW, position).expect("the position");
-    assert_eq!(col + position.len() as u16, COLS - 2);
+    assert_eq!(col + position.len() as u16 + 4, lang_col);
+    assert_eq!(
+        glyph.text_col(STATUS_ROW, language),
+        Some(lang_col),
+        "the language stays put"
+    );
+}
+
+#[test]
+fn a_rust_file_names_its_language() {
+    let glyph = Glyph::spawn_in_with_config(Path::new(PROJECT), AURORA, &["src/main.rs"]);
+    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_screen("Rust in the status bar", WAIT, |screen| {
+        screen[usize::from(STATUS_ROW)].contains("Ln 1, Col 1    Rust")
+    });
 }
