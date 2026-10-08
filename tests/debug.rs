@@ -453,6 +453,17 @@ fn enter_on_a_frame_opens_its_file_at_its_line_and_shows_its_variables() {
     glyph.send_keys("alt+f5");
     glyph.wait_for_text("n = 3  int", WAIT);
 
+    // ↓ then ↑ is back on the top frame, which Enter opens again. Opening a
+    // frame takes the keys to its code, so F6 comes back to the panel.
+    glyph.send_keys("f6");
+    glyph.send_keys("down");
+    glyph.send_keys("up");
+    glyph.send_keys("enter");
+    project.wait_for(&glyph, "scopes", 2);
+    assert_eq!(asked(&project, "scopes", "frameId", 1), 2);
+    assert_eq!(asked(&project, "scopes", "frameId", 2), 0);
+    glyph.wait_for_text("n = 3  int", WAIT);
+
     glyph.send_keys("f6");
     glyph.send_keys("down");
     glyph.send_keys("enter");

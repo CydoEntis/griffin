@@ -84,6 +84,11 @@ impl DebugPanel {
         self.frames.first().map(|f| f.id)
     }
 
+    /// Whether there's a stack to move through.
+    pub fn has_frames(&self) -> bool {
+        !self.frames.is_empty()
+    }
+
     /// The program runs on: what was shown no longer holds.
     pub fn clear(&mut self) {
         self.set_frames(Vec::new());
@@ -563,6 +568,26 @@ mod tests {
         // A late answer for the frame no longer shown is dropped.
         assert!(panel.set_scopes(1, vec![scope("Locals", 10)]).is_empty());
         assert_eq!(panel.set_scopes(2, vec![scope("Locals", 20)]), vec![20]);
+    }
+
+    #[test]
+    fn up_moves_back_and_stops_at_the_top() {
+        let mut panel = paused();
+        panel.handle(Action::DebugDown);
+        panel.handle(Action::DebugUp);
+        panel.handle(Action::DebugUp);
+        let step = panel.handle(Action::DebugActivate);
+        assert_eq!(step, Some(Step::Frame(frame(1, "inner", "/p/main.py", 3))));
+
+        let mut panel = paused();
+        panel.handle(Action::DebugSwitchPane);
+        panel.handle(Action::DebugDown);
+        panel.handle(Action::DebugDown);
+        panel.handle(Action::DebugUp);
+        // On `n`, which has no children, not on `items`.
+        assert_eq!(panel.handle(Action::DebugExpand), None);
+        panel.handle(Action::DebugDown);
+        assert_eq!(panel.handle(Action::DebugExpand), Some(Step::Fetch(11)));
     }
 
     fn draw(theme: &Theme, panel: &DebugPanel, focused: bool) -> anyhow::Result<Buffer> {

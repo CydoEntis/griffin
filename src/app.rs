@@ -1812,7 +1812,7 @@ impl App {
             stops.push(FocusStop::Tree);
         }
         stops.extend((0..self.tabs.splits.len()).map(FocusStop::Split));
-        if self.debug_panel_shown() {
+        if self.debug_panel_has_keys() {
             stops.push(FocusStop::Debug);
         }
         let here = match self.focus {
@@ -1837,6 +1837,17 @@ impl App {
     /// hasn't hidden it.
     fn debug_panel_shown(&self) -> bool {
         self.debug.is_some() && self.run_panel_visible
+    }
+
+    /// Whether the debug panel has anything for keys to move through: only
+    /// a pause with a stack. While the program runs the panel shows its
+    /// output, with nothing to select and nothing lit to say it has focus.
+    fn debug_panel_has_keys(&self) -> bool {
+        self.debug_panel_shown()
+            && self
+                .debug
+                .as_ref()
+                .is_some_and(|debug| debug.paused.is_some() && debug.panel.has_frames())
     }
 
     /// Keys while the debug panel has focus: its own move through it; the
@@ -1880,6 +1891,7 @@ impl App {
             | Action::GoToFile
             | Action::GoToLine
             | Action::Find
+            | Action::Replace
             | Action::ProjectSearch
             | Action::Run
             | Action::ToggleRunPanel
@@ -3268,6 +3280,11 @@ impl App {
             DapNews::Resumed(_) => {
                 debug.paused = None;
                 debug.panel.clear();
+                // The panel has nothing to select until the next stop, so
+                // keys typed now belong to the editor.
+                if self.focus == Focus::Debug {
+                    self.focus = Focus::Editor;
+                }
             }
             DapNews::Scopes { frame, scopes } => {
                 for reference in debug.panel.set_scopes(frame, scopes) {
@@ -4764,6 +4781,43 @@ mod tests {
         app.debug_news(DapNews::Resumed("continue".to_string()));
         assert_eq!(app.paused_line(&buffer), None);
         assert_eq!(app.debug_segment(), Some((false, String::new())));
+    }
+
+    #[tokio::test]
+    async fn the_debug_panel_takes_focus_only_while_paused_with_a_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut app = app_with("x", &FakeClipboard::default());
+        let missing = dir.path().join("no-such-adapter");
+        let session = Session::start(1, &missing, &[], dir.path(), tx);
+        app.debug = Some(DebugSession::new(session, launch(dir.path()), 0));
+        app.run_panel_visible = true;
+
+        // Running: the panel shows output only, so F6 stays in the editor.
+        press(&mut app, &["f6"]);
+        assert_eq!(app.focus, Focus::Editor);
+
+        let debug = app.debug.as_mut().unwrap();
+        debug.paused = Some(Paused {
+            thread: Some(1),
+            at: None,
+        });
+        debug.panel.set_frames(vec![StackFrame {
+            id: 1,
+            name: "inner".to_string(),
+            source: None,
+            line: 1,
+            column: 1,
+        }]);
+        press(&mut app, &["f6"]);
+        assert_eq!(app.focus, Focus::Debug);
+
+        // Running again: the keys go back to the editor rather than to a
+        // panel with nothing to select.
+        app.debug_news(DapNews::Resumed("continue".to_string()));
+        assert_eq!(app.focus, Focus::Editor);
+        press(&mut app, &["f6"]);
+        assert_eq!(app.focus, Focus::Editor);
     }
 
     #[test]
