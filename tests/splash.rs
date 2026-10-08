@@ -510,6 +510,39 @@ fn the_splash_hides_the_tree_until_ctrl_b_or_ctrl_e_shows_it() {
 }
 
 #[test]
+fn leaving_the_splash_gives_back_the_tree_a_folder_launch_shows() {
+    for key in ["esc", "ctrl+n"] {
+        let mut glyph = Glyph::spawn(&[PROJECT]);
+        glyph.wait_for_text("Open directory", START);
+        let screen = glyph.screen().join("\n");
+        assert!(!screen.contains("README.md"), "{screen}");
+        glyph.send_keys(key);
+        glyph.wait_for_text_gone("Open directory", WAIT);
+        glyph.wait_for_text("README.md", WAIT);
+    }
+
+    // A file opened from Ctrl+P replaces the splash with the tree beside it.
+    let mut glyph = Glyph::spawn(&[PROJECT]);
+    glyph.wait_for_text("Open directory", START);
+    glyph.send_keys("ctrl+p");
+    glyph.type_text("notes.txt");
+    glyph.wait_for_text("✦ notes.txt", WAIT);
+    glyph.send_keys("enter");
+    glyph.wait_for_text("notes for the tree test", WAIT);
+    glyph.wait_for_text("README.md", WAIT);
+}
+
+#[test]
+fn a_bare_start_keeps_the_tree_hidden_after_the_splash() {
+    let (_home, mut glyph) = start_bare();
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone("Open directory", WAIT);
+    glyph.wait_for_text(&pill_text(&["untitled"], 0), WAIT);
+    let screen = glyph.screen().join("\n");
+    assert!(!screen.contains("a.txt"), "{screen}");
+}
+
+#[test]
 fn the_status_bar_names_the_project_and_the_splash_keys_and_version() {
     let (_home, mut glyph) = start_bare();
     let version = format!("v{}", env!("CARGO_PKG_VERSION"));
@@ -517,12 +550,16 @@ fn the_status_bar_names_the_project_and_the_splash_keys_and_version() {
     let status = glyph.screen()[usize::from(STATUS)].clone();
     // The project where `untitled` would be, and no cursor or language.
     assert_eq!(glyph.text_col(STATUS, "~/src"), Some(20), "{status:?}");
+    // All of it muted, `src` too, unlike a file's lit name.
+    for x in 20..25 {
+        assert_eq!(glyph.fg_at(x, STATUS), MUTED, "column {x}");
+    }
     assert!(!status.contains("untitled"), "{status:?}");
     assert!(!status.contains("Ln 1"), "{status:?}");
     assert!(
         status
             .trim_end()
-            .ends_with(&format!("↑↓ select  ⏎ choose  q quit    {version}")),
+            .ends_with(&format!("↑↓ select  ⏎ choose  q quit      {version}")),
         "{status:?}"
     );
     // Right-aligned to end two cells short of the edge.

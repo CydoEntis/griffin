@@ -181,6 +181,16 @@ fn left_runs(theme: &Theme, status: &Status, dir: bool) -> Vec<Run> {
     }
     // Either separator, so a Windows path splits the same as a Unix one.
     let split = status.path.rfind(['/', '\\']).map_or(0, |i| i + 1);
+    // The splash's project is a quiet label, all muted (design/splash.png);
+    // only a file's name is lit.
+    if status.splash {
+        let shown = if dir {
+            status.path
+        } else {
+            &status.path[split..]
+        };
+        return vec![(shown.to_string(), Style::new().fg(theme.muted))];
+    }
     let (directory, name) = status.path.split_at(split);
     let mut runs = Vec::new();
     if dir {
@@ -250,7 +260,9 @@ fn splash_runs(theme: &Theme, keys: bool) -> Vec<Run> {
             runs.push((format!("{k} "), key));
             runs.push((what.to_string(), label));
         }
-        runs.push((GAP.to_string(), Style::new()));
+        // Wider than GAP: design/splash.png sets the version six cells clear
+        // of `q quit`.
+        runs.push((" ".repeat(6), Style::new()));
     }
     runs.push((format!("v{}", env!("CARGO_PKG_VERSION")), label));
     runs
@@ -445,11 +457,17 @@ mod tests {
         assert_eq!(
             text(&right_runs(&theme, &status, shown(true, true, true))),
             format!(
-                "↑↓ select  ⏎ choose  q quit    v{}",
+                "↑↓ select  ⏎ choose  q quit      v{}",
                 env!("CARGO_PKG_VERSION")
             )
         );
         assert_eq!(text(&left_runs(&theme, &status, true)), "~/src");
+        // The whole project path is muted, its last folder too.
+        assert!(
+            left_runs(&theme, &status, true)
+                .iter()
+                .all(|(_, style)| style.fg == Some(theme.muted))
+        );
         // Too narrow for the keys beside a message: only the version stays.
         assert_eq!(
             text(&right_runs(&theme, &status, shown(false, false, true))),
@@ -462,17 +480,17 @@ mod tests {
             splash: true,
             ..Status::default()
         };
-        // Path 34, name 7; right side 27 + 4 + 6 = 37.
+        // Path 34, name 7; right side 27 + 6 + 6 = 39.
         assert_eq!(
-            layout(&theme, &status, 20 + 34 + 1 + 37 + 2),
+            layout(&theme, &status, 20 + 34 + 1 + 39 + 2),
             shown(false, true, true)
         );
         assert_eq!(
-            layout(&theme, &status, 20 + 34 + 1 + 37 + 1),
+            layout(&theme, &status, 20 + 34 + 1 + 39 + 1),
             shown(false, true, false)
         );
         assert_eq!(
-            layout(&theme, &status, 20 + 7 + 1 + 37 + 1),
+            layout(&theme, &status, 20 + 7 + 1 + 39 + 1),
             shown(false, false, false)
         );
     }

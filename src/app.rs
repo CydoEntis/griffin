@@ -789,6 +789,9 @@ pub struct App {
     /// the home folder from the environment.
     project: String,
     tree_visible: bool,
+    /// Whether the launch asked for the tree. The splash hides it only while
+    /// it's up (glyph-splash spec S3), so leaving the splash brings this back.
+    tree_after_splash: bool,
     focus: Focus,
     /// The splash, while Glyph is still as it started with nothing to edit
     /// (glyph-splash spec S1). It's drawn over the editor area in place of the
@@ -912,8 +915,9 @@ impl App {
             tree: Tree::new(&launch.root),
             project: project_label(&launch.root, std::env::home_dir().as_deref()),
             // The splash hides the tree (glyph-splash spec S3); Ctrl+B or Ctrl+E
-            // brings it back beside it.
+            // brings it back beside it, and leaving the splash restores it.
             tree_visible: launch.show_tree && splash.is_none(),
+            tree_after_splash: launch.show_tree,
             // The splash takes the keys at launch.
             focus: Focus::Editor,
             splash,
@@ -1509,7 +1513,7 @@ impl App {
     fn open(&mut self, path: &Path) {
         // Whatever is opened replaces the splash, which only stood in for the
         // untouched untitled tab.
-        self.splash = None;
+        self.end_splash();
         if let Some(doc) = self.tabs.find(path) {
             self.tabs.show(doc);
             self.reset_mouse();
@@ -1877,10 +1881,18 @@ impl App {
     /// Esc or Ctrl+N on the splash: the empty untitled buffer underneath takes
     /// its place.
     fn leave_splash(&mut self) {
-        self.splash = None;
+        self.end_splash();
         self.focus = Focus::Editor;
         self.reset_mouse();
         self.follow_cursor();
+    }
+
+    /// Drops the splash and gives back the tree it hid, if the launch showed
+    /// one. A tree shown on the splash with Ctrl+B stays shown.
+    fn end_splash(&mut self) {
+        if self.splash.take().is_some() {
+            self.tree_visible |= self.tree_after_splash;
+        }
     }
 
     /// The card a confirm prompt shows (SPEC_V1_LAYOUT §7.4).
