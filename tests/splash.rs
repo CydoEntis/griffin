@@ -1,5 +1,6 @@
-//! The splash Glyph opens on with nothing to edit (glyph-splash spec S1–S4): when
-//! it shows, how it's drawn, its keys and clicks, and *New file*.
+//! The splash Glyph opens on with nothing to edit (glyph-splash spec S1–S5,
+//! S7): when it shows, how it's drawn, its keys and clicks, *New file*, *New
+//! directory* and *Open directory*, and landing on it after a project switch.
 
 mod harness;
 
@@ -52,6 +53,8 @@ const FOOTER_ROW: u16 = CARD_Y + 9;
 const TEXT_X: u16 = CARD_X + 4;
 const KEY_X: u16 = CARD_X + CARD_W - 5;
 const FOOTER: &str = "ctrl+p go to file · ctrl+q quit";
+/// The folder browser's scope label, right of its header.
+const BROWSER: &str = "open · folders";
 
 /// `a` moved `t` of the way to `b`, per channel, rounded, as the editor mixes.
 fn mix(a: Color, b: Color, t: f64) -> Color {
@@ -211,29 +214,47 @@ fn arrows_move_and_wrap_and_enter_or_a_letter_runs_a_row() {
     glyph.send_keys("down");
     wait_for_selected(&glyph, TEXT_X, NEW_DIR_ROW);
 
-    // New directory and Open directory come in a later ticket.
+    // Enter on New directory opens the tree's `A` prompt; Esc comes back.
     glyph.send_keys("enter");
-    wait_for_status(&glyph, "coming soon");
+    glyph.wait_for_text(" New folder  ", WAIT);
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(" New folder  ", WAIT);
     glyph.send_keys("down");
     wait_for_selected(&glyph, TEXT_X, OPEN_DIR_ROW);
-    glyph.wait_for_text_gone("coming soon", WAIT);
-    glyph.type_text("d");
-    wait_for_status(&glyph, "coming soon");
-    glyph.send_keys("up");
-    glyph.wait_for_text_gone("coming soon", WAIT);
-    glyph.type_text("o");
-    wait_for_status(&glyph, "coming soon");
+    // Enter on Open directory opens the folder browser; Esc comes back.
+    glyph.send_keys("enter");
+    glyph.wait_for_text(BROWSER, WAIT);
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(BROWSER, WAIT);
 
-    // The letter runs its row whatever is selected.
+    // The letters run their rows whatever is selected.
+    glyph.type_text("d");
+    glyph.wait_for_text(" New folder  ", WAIT);
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(" New folder  ", WAIT);
+    glyph.type_text("o");
+    glyph.wait_for_text(BROWSER, WAIT);
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(BROWSER, WAIT);
     glyph.type_text("n");
     glyph.wait_for_text(" New file  ", WAIT);
+    // No placeholder is left.
+    let screen = glyph.screen().join("\n");
+    assert!(!screen.contains("coming soon"), "{screen}");
 }
 
 #[test]
 fn a_click_on_a_row_runs_it() {
     let (_dir, mut glyph) = start_bare();
+    glyph.click(TEXT_X + 4, NEW_DIR_ROW);
+    glyph.wait_for_text(" New folder  ", WAIT);
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(" New folder  ", WAIT);
+    wait_for_selected(&glyph, TEXT_X, NEW_DIR_ROW);
     glyph.click(TEXT_X + 4, OPEN_DIR_ROW);
-    wait_for_status(&glyph, "coming soon");
+    glyph.wait_for_text(BROWSER, WAIT);
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(BROWSER, WAIT);
     wait_for_selected(&glyph, TEXT_X, OPEN_DIR_ROW);
     // Off the rows a click does nothing: no cursor is placed in the hidden
     // buffer, and the selection stays.
@@ -340,4 +361,110 @@ fn new_file_creates_in_the_project_folder_and_opens_it() {
     glyph.wait_for_text(&pill_text(&["b.txt"], 0), WAIT);
     glyph.type_text("hi");
     glyph.wait_for_text("1  hi", WAIT);
+}
+
+/// The last part of `dir`'s path, which the brand row ends with.
+fn name(dir: &Path) -> String {
+    dir.file_name()
+        .expect("temp folders have names")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Waits for the tree's brand row to show the end of `dir`'s name (a long
+/// name is cut at its start).
+fn wait_for_brand(glyph: &Glyph, dir: &Path) {
+    let name = name(dir);
+    let tail: String = name
+        .chars()
+        .skip(name.chars().count().saturating_sub(6))
+        .collect();
+    glyph.wait_for_screen(&format!("brand ending {tail:?}"), WAIT, |screen| {
+        screen[1]
+            .chars()
+            .take(28)
+            .collect::<String>()
+            .contains(&tail)
+    });
+}
+
+#[test]
+fn new_directory_creates_the_folder_and_opens_it_as_the_project() {
+    let parent = tempfile::tempdir().expect("create temp dir");
+    let root = parent.path().join("proj");
+    fs::create_dir(&root).expect("create proj");
+    fs::write(root.join("a.txt"), "alpha\n").expect("write a.txt");
+    // cwd is the parent, so the project folder isn't where Glyph runs.
+    let mut glyph = Glyph::spawn_in(parent.path(), &["proj"]);
+    glyph.wait_for_text("Open directory", START);
+    glyph.wait_for_text("a.txt", WAIT);
+
+    // A taken name is refused as in the tree, and nothing switches.
+    glyph.type_text("d");
+    glyph.wait_for_text(" New folder  ", WAIT);
+    glyph.type_text("a.txt");
+    glyph.send_keys("enter");
+    wait_for_status(&glyph, "a.txt already exists");
+    glyph.wait_for_text("Open directory", WAIT);
+    glyph.wait_for_text("a.txt", WAIT);
+
+    glyph.type_text("d");
+    glyph.wait_for_text(" New folder  ", WAIT);
+    glyph.type_text("fresh-dir");
+    glyph.send_keys("enter");
+    wait_for_status(&glyph, "created fresh-dir");
+    let fresh = root.join("fresh-dir");
+    glyph.wait_for_files("fresh-dir in the project", WAIT, || fresh.is_dir());
+    assert!(!parent.path().join("fresh-dir").exists());
+
+    // The tree and brand show the new, empty folder, under a fresh splash.
+    wait_for_brand(&glyph, &fresh);
+    glyph.wait_for_screen("the old folder's files gone", WAIT, |screen| {
+        !screen.iter().any(|line| line.contains("a.txt"))
+    });
+    // Beside the tree the card's text starts at column 42.
+    wait_for_selected(&glyph, 42, NEW_FILE_ROW);
+    let path_row = cells(&glyph, PATH_ROW, 42, 44);
+    assert!(path_row.ends_with("fresh-dir"), "{path_row:?}");
+
+    // New file now goes into the new folder.
+    glyph.type_text("n");
+    glyph.wait_for_text("⏎ create   esc cancel", WAIT);
+    glyph.type_text("b.txt");
+    glyph.send_keys("enter");
+    glyph.wait_for_files("b.txt in the new folder", WAIT, || {
+        fresh.join("b.txt").is_file()
+    });
+}
+
+#[test]
+fn open_directory_switches_and_lands_on_the_splash() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    fs::write(dir.path().join("a.txt"), "alpha\n").expect("write a.txt");
+    let other = dir.path().join("other");
+    fs::create_dir(&other).expect("create other");
+    fs::write(other.join("inside.txt"), "").expect("write inside.txt");
+    let mut glyph = Glyph::spawn_in(dir.path(), &["."]);
+    glyph.wait_for_text("Open directory", START);
+
+    // `o`, ↓ to `other`, Enter into it, Enter on its open row.
+    glyph.type_text("o");
+    glyph.wait_for_text(BROWSER, WAIT);
+    // The browser's header is row 6 and its folders start on row 9 (the
+    // tree beside it lists `other` too, so the rows are named).
+    glyph.wait_for_screen("other in the browser", WAIT, |screen| {
+        screen[9].contains("▸ other")
+    });
+    glyph.send_keys("down");
+    glyph.send_keys("enter");
+    glyph.wait_for_screen("inside other", WAIT, |screen| screen[6].contains("other"));
+    glyph.send_keys("enter");
+    glyph.wait_for_text_gone(BROWSER, WAIT);
+
+    // The tree and brand show `other`, with the splash up and taking keys.
+    glyph.wait_for_text("inside.txt", WAIT);
+    wait_for_brand(&glyph, &other);
+    wait_for_selected(&glyph, 42, NEW_FILE_ROW);
+    glyph.send_keys("down");
+    wait_for_selected(&glyph, 42, NEW_DIR_ROW);
 }

@@ -149,6 +149,9 @@ enum BarOp {
     NewFile(PathBuf),
     /// A new folder in this folder.
     NewFolder(PathBuf),
+    /// A new folder in this folder that then opens as the project: the
+    /// splash's *New directory*, apart from the tree's `A`, which only creates.
+    NewProject(PathBuf),
     /// A new name for this file or folder.
     Rename(PathBuf),
     /// A path, relative to the project root, to save the active buffer to.
@@ -159,7 +162,9 @@ impl BarOp {
     /// What Enter and Esc do, shown at the right of the bar (SPEC_V1_LAYOUT §8).
     fn hint(&self) -> &'static str {
         match self {
-            BarOp::NewFile(_) | BarOp::NewFolder(_) => "⏎ create   esc cancel",
+            BarOp::NewFile(_) | BarOp::NewFolder(_) | BarOp::NewProject(_) => {
+                "⏎ create   esc cancel"
+            }
             BarOp::Rename(_) => "⏎ rename   esc cancel",
             BarOp::SaveAs(_) => "⏎ save   esc cancel",
         }
@@ -1785,9 +1790,11 @@ impl App {
                 let root = self.tree.root().to_path_buf();
                 self.open_name_prompt(BarOp::NewFile(root), PromptBar::new("New file", ""));
             }
-            splash::Item::NewDirectory | splash::Item::OpenDirectory => {
-                self.say(Tone::Warn, "coming soon");
+            splash::Item::NewDirectory => {
+                let root = self.tree.root().to_path_buf();
+                self.open_name_prompt(BarOp::NewProject(root), PromptBar::new("New folder", ""));
             }
+            splash::Item::OpenDirectory => self.open_folders(),
         }
     }
 
@@ -1975,7 +1982,7 @@ impl App {
         let name = bar.text();
         let result = match &op {
             BarOp::NewFile(dir) => ops::create_file(dir, name),
-            BarOp::NewFolder(dir) => ops::create_folder(dir, name),
+            BarOp::NewFolder(dir) | BarOp::NewProject(dir) => ops::create_folder(dir, name),
             BarOp::Rename(path) => ops::rename(path, name),
             // Handled above.
             BarOp::SaveAs(_) => return,
@@ -1995,6 +2002,10 @@ impl App {
                 self.open(&path);
             }
             BarOp::NewFolder(_) => self.say(Tone::Ok, format!("created {name}")),
+            BarOp::NewProject(_) => {
+                self.say(Tone::Ok, format!("created {name}"));
+                self.open_project(&path);
+            }
             BarOp::Rename(old) => {
                 self.say(Tone::Ok, format!("renamed to {name}"));
                 self.follow_rename(&old, &path);
@@ -2146,7 +2157,7 @@ impl App {
 
     /// Makes `dir` the project, as `glyph <dir>` would: every tab closes, the
     /// run is stopped, the old folder's language servers are shut down, and
-    /// the tree shows the new folder with focus. Everything else that reads
+    /// the tree shows the new folder beside the splash. Everything else that reads
     /// the project (Ctrl+P, project search, F5, save as, new servers) asks the
     /// tree for its root, so it follows. Unsaved changes would be lost, so with
     /// any it first asks, once, whether to save them all or discard them.
@@ -2220,11 +2231,11 @@ impl App {
         drop(self.lsp.stop_root(&absolute(self.tree.root())));
         self.tree = Tree::new(dir);
         self.project = project_label(dir, std::env::home_dir().as_deref());
-        // The new folder shows with an untitled tab; landing on the splash is
-        // a later ticket's.
-        self.splash = None;
+        // Land as `glyph <dir>` starts: the tree beside the splash, which
+        // takes the keys.
+        self.splash = Some(Splash::default());
         self.tree_visible = true;
-        self.focus = Focus::Tree;
+        self.focus = Focus::Editor;
         self.reset_mouse();
         self.follow_cursor();
         self.follow_tree();
@@ -4319,22 +4330,68 @@ world",
         assert_eq!(tab_names(&app), ["untitled"]);
         assert_eq!(app.tabs.docs.len(), 1);
         assert!(app.tree_visible);
-        assert_eq!(app.focus, Focus::Tree);
+        // It lands as `glyph <folder>` starts: on the splash, which has the keys.
+        assert!(app.splash.is_some());
+        assert_eq!(app.focus, Focus::Editor);
         assert_eq!(selected_name(&app), Some("c.txt"));
         Ok(())
     }
 
     #[test]
-    fn a_folder_opens_from_the_splash_and_replaces_it() -> Result<()> {
+    fn open_directory_on_the_splash_opens_a_folder_onto_a_fresh_splash() -> Result<()> {
         let (_dir, mut app) = project()?;
         let other = tempfile::tempdir()?;
         assert!(app.splash.is_some());
-        app.handle_action(Action::OpenDirectory);
+        press(&mut app, &["down", "o"]);
         assert!(app.folders.is_some());
         app.folders_step(Browsed::Open(other.path().to_path_buf()));
         assert_eq!(app.tree.root(), other.path());
-        assert!(app.splash.is_none());
-        assert_eq!(app.focus, Focus::Tree);
+        // A new splash, its selection back on the first row.
+        assert_eq!(
+            app.splash.as_ref().map(Splash::selected),
+            Some(splash::Item::NewFile)
+        );
+        assert_eq!(app.focus, Focus::Editor);
+        Ok(())
+    }
+
+    #[test]
+    fn new_directory_on_the_splash_creates_the_folder_and_opens_it() -> Result<()> {
+        let (dir, mut app) = project()?;
+        press(&mut app, &["d"]);
+        let label = app.name_prompt.as_ref().map(|p| p.bar.label);
+        assert_eq!(label, Some("New folder"));
+        press(&mut app, &["esc"]);
+        assert!(app.splash.is_some());
+        assert_eq!(app.tree.root(), dir.path());
+
+        // A refused name changes nothing and comes back to the splash.
+        press(&mut app, &["d"]);
+        type_keys(&mut app, "a/b");
+        press(&mut app, &["enter"]);
+        assert_eq!(app.tree.root(), dir.path());
+        assert!(app.splash.is_some() && app.name_prompt.is_none());
+
+        press(&mut app, &["d"]);
+        type_keys(&mut app, "fresh");
+        press(&mut app, &["enter"]);
+        let fresh = dir.path().join("fresh");
+        assert!(fresh.is_dir());
+        assert_eq!(app.tree.root(), fresh);
+        assert!(app.splash.is_some());
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.message.as_deref(), Some("created fresh"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_trees_new_folder_beside_the_splash_only_creates() -> Result<()> {
+        let (dir, mut app) = project_in_tree()?;
+        press(&mut app, &["shift+a"]);
+        type_keys(&mut app, "kept");
+        press(&mut app, &["enter"]);
+        assert!(dir.path().join("kept").is_dir());
+        assert_eq!(app.tree.root(), dir.path());
         Ok(())
     }
 
