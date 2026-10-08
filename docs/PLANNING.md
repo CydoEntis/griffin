@@ -9,7 +9,7 @@ Verify: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo
 
 Active phase: **8 — Glyph opens on a splash and can switch projects.** Phases 9 and 10 are
 ticketed ahead, as Cody asked to build them in one run (2026-10-08). The person checks for
-Phases 6 and 7 are still open.
+Phases 6 and 7 are still open. Phase 12 is ticketed ahead as well (Cody, 2026-10-08).
 Next unblocked: #124 — fix(project): open a folder onto the tree and an empty pane, not the
 splash (PR #125).
 
@@ -128,6 +128,21 @@ Open decisions:
 - Does the tree scale with width (SPEC_V1_LAYOUT §1) or stay 28 (design README §2.1)?
 - Which of §14's items are in, and which go to Later?
 
+### 12 — Brackets close themselves as you type
+
+Exit when:
+- every ticket below is closed and its change is on `main`;
+- `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` passes on `main`;
+- the person check passes (in a .js and a .rs file: type `foo(`, a `{` block with Enter,
+  Backspace an empty `[]`, wrap a selection in `(`, and turn it off with `auto_pairs = false`).
+
+[Brackets close themselves](features/glyph-autopair/intent.md)
+
+1. #155 — feat(editor): opening brackets insert their closer
+2. #156 — feat(editor): Backspace between an empty bracket pair deletes both · after 1
+3. #157 — feat(editor): Enter between a bracket pair opens an indented line · after 2
+4. #158 — feat(editor): typing an opening bracket wraps the selection · after 3
+
 ## In scope
 
 - Glyph v1 — shipped — [intent](features/glyph-v1/intent.md) ·
@@ -142,6 +157,7 @@ Open decisions:
   [spec](features/glyph-catalog/spec.md)
 - Debugger — planned — [intent](features/glyph-debugger/intent.md) ·
   [spec](features/glyph-debugger/spec.md)
+- Brackets close themselves — active — [intent](features/glyph-autopair/intent.md)
 
 ## Out
 
