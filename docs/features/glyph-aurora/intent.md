@@ -41,7 +41,7 @@ Hydra's ten, and those ten render in the Aurora style too.
 - The v1-layout behaviour changes the design also proposes (minimum size message, scaling
   tree, tab overflow marker and duplicate names, completion anchor shift, run panel
   scrollback, `‹ ›` scroll markers, empty-editor key list, rename stem preselect, F7 stop):
-  Phase 8.
+  Phase 9.
 - `@` symbol search in the palette: Later (needs LSP document symbols).
 - 256-colour fallback / truecolor detection: themes already need truecolor today.
 - Animating the aurora thread.
