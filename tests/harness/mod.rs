@@ -386,6 +386,17 @@ impl Glyph {
         fg_cells(&self.parser(), row, color)
     }
 
+    /// The text of the bold cells on `row`, in order.
+    pub fn bold_text(&self, row: u16) -> String {
+        let parser = self.parser();
+        let screen = parser.screen();
+        (0..COLS)
+            .filter_map(|col| screen.cell(row, col))
+            .filter(|cell| cell.bold() && !cell.is_wide_continuation())
+            .map(|cell| cell.contents().to_string())
+            .collect()
+    }
+
     /// The foreground colour of the cell at (`col`, `row`).
     pub fn fg_at(&self, col: u16, row: u16) -> vt100::Color {
         self.parser()
