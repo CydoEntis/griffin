@@ -517,6 +517,14 @@ impl Glyph {
             .is_some_and(vt100::Cell::bold)
     }
 
+    /// Whether the cell at (`col`, `row`) is italic.
+    pub fn italic_at(&self, col: u16, row: u16) -> bool {
+        self.parser()
+            .screen()
+            .cell(row, col)
+            .is_some_and(vt100::Cell::italic)
+    }
+
     /// Whether the cell at (`col`, `row`) has the DIM attribute.
     pub fn dim_at(&self, col: u16, row: u16) -> bool {
         self.parser()

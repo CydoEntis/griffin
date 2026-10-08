@@ -247,7 +247,7 @@ fn arrows_move_through_hits_and_enter_opens_the_file_at_the_match() {
     wait_for_selected(&glyph, FIRST_ROW + 2, MAIN_TODO);
     glyph.send_keys("enter");
     glyph.wait_for_text_gone(FOOTER, WAIT);
-    glyph.wait_for_text("1 │ fn main() {", WAIT);
+    glyph.wait_for_text("1  fn main() {", WAIT);
     // `    // TODO`: the match starts in column 8.
     wait_for_position(&glyph, 2, 8);
     glyph.wait_for_screen("main.rs in the tab bar", WAIT, |screen| {
@@ -259,7 +259,7 @@ fn arrows_move_through_hits_and_enter_opens_the_file_at_the_match() {
     wait_for_status(&glyph, "3 matches in 2 files");
     glyph.send_keys("enter");
     glyph.wait_for_text_gone(FOOTER, WAIT);
-    glyph.wait_for_text("1 │ //! Fixture library.", WAIT);
+    glyph.wait_for_text("1  //! Fixture library.", WAIT);
     wait_for_position(&glyph, 3, 4);
     glyph.wait_for_screen("both files in the tab bar", WAIT, |screen| {
         screen[1].contains("main.rs") && screen[1].contains("lib.rs")

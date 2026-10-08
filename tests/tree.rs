@@ -143,7 +143,7 @@ fn folder_opens_with_a_28_column_tree_on_surface_under_the_brand() {
             .chars()
             .skip(TREE + 1)
             .collect::<String>()
-            .starts_with(" 1 │"),
+            .starts_with("   1"),
         "{:?}",
         screen[3]
     );
@@ -392,7 +392,7 @@ fn ctrl_b_toggles_the_tree_and_ctrl_e_switches_focus() {
     // Ctrl+B hides the tree: the editor starts at column 0.
     glyph.send_keys("ctrl+b");
     glyph.wait_for_screen("the editor at column 0", WAIT, |screen| {
-        screen[3].starts_with(" 1 │ # Project fixture")
+        screen[3].starts_with("   1  # Project fixture")
     });
     glyph.send_keys("ctrl+b");
     wait_for_tree(&glyph, TOP);
@@ -411,7 +411,7 @@ fn ctrl_b_toggles_the_tree_and_ctrl_e_switches_focus() {
     // With the tree hidden, Ctrl+E brings it back focused.
     glyph.send_keys("ctrl+b");
     glyph.wait_for_screen("the editor at column 0", WAIT, |screen| {
-        screen[3].starts_with(" 1 │ y# Project fixture")
+        screen[3].starts_with("   1  y# Project fixture")
     });
     glyph.send_keys("ctrl+e");
     // README.md now has unsaved changes, so its row carries the dirty mark.

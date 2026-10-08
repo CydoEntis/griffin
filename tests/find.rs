@@ -14,8 +14,8 @@ const FIND_CASE: &str = "tests/fixtures/find_case.txt";
 const ACCENT: vt100::Color = vt100::Color::Rgb(0xc3, 0xf5, 0x3c);
 /// The find bar sits on the row above the status line.
 const BAR_ROW: u16 = ROWS - 2;
-/// Text starts after the gutter ` 1 │ `.
-const TEXT_X: u16 = 5;
+/// Text starts after the gutter `   1  `.
+const TEXT_X: u16 = 6;
 
 fn open(path: &str) -> Glyph {
     let glyph = Glyph::spawn(&[path]);
@@ -54,7 +54,7 @@ fn find(glyph: &mut Glyph, text: &str) {
 #[test]
 fn ctrl_f_highlights_every_match_as_you_type_and_jumps_to_the_first() {
     let mut glyph = open(FIND);
-    glyph.wait_for_text("3 │ foo", WAIT);
+    glyph.wait_for_text("3  foo", WAIT);
     find(&mut glyph, "foo");
     wait_for_count(&glyph, "1/3");
     assert!(row(&glyph, BAR_ROW).starts_with("Find: foo"));
@@ -83,7 +83,7 @@ fn ctrl_f_highlights_every_match_as_you_type_and_jumps_to_the_first() {
 #[test]
 fn ctrl_f_starts_from_the_selection() {
     let mut glyph = open(FIND);
-    glyph.wait_for_text("3 │ foo", WAIT);
+    glyph.wait_for_text("3  foo", WAIT);
     glyph.send_keys("down");
     for _ in 0..3 {
         glyph.send_keys("shift+right");
@@ -121,14 +121,15 @@ fn enter_and_shift_enter_step_through_matches_wrapping() {
     wait_for_position(&glyph, 2, 5);
     // Enter in the bar never edits the buffer: still three lines plus the empty
     // one after the final line break.
-    glyph.wait_for_text("3 │ foo", WAIT);
-    assert!(!glyph.screen().join("\n").contains("5 │"));
+    glyph.wait_for_text("3  foo", WAIT);
+    // No fifth line number in the gutter.
+    assert!(!glyph.screen().join("\n").contains("   5"));
 }
 
 #[test]
 fn alt_c_toggles_case_and_alt_r_toggles_regex_and_a_bad_regex_says_so() {
     let mut glyph = open(FIND_CASE);
-    glyph.wait_for_text("2 │ foooo", WAIT);
+    glyph.wait_for_text("2  foooo", WAIT);
     find(&mut glyph, "foo");
     wait_for_count(&glyph, "1/4");
     glyph.wait_for_reversed(3, "fooFooFOO", WAIT);
@@ -180,5 +181,5 @@ fn esc_closes_the_bar_and_keeps_the_cursor_on_the_current_match() {
     glyph.wait_for_cursor(TEXT_X + 4, 4, WAIT);
     // Typing goes into the buffer again, at the match.
     glyph.type_text("x");
-    glyph.wait_for_text("2 │ two xfoo three", WAIT);
+    glyph.wait_for_text("2  two xfoo three", WAIT);
 }

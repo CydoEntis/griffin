@@ -16,7 +16,7 @@ const REPLACE_X: u16 = COLS / 2;
 fn open(path: &str) -> Glyph {
     let glyph = Glyph::spawn(&[path]);
     glyph.wait_for_text("Ln 1, Col 1", START);
-    glyph.wait_for_text("3 │ foo", WAIT);
+    glyph.wait_for_text("3  foo", WAIT);
     glyph
 }
 
@@ -92,17 +92,17 @@ fn enter_in_replace_replaces_the_current_match_and_moves_to_the_next() {
     wait_for_count(&glyph, "1/3");
 
     glyph.send_keys("enter");
-    glyph.wait_for_text("1 │ one bar", WAIT);
+    glyph.wait_for_text("1  one bar", WAIT);
     wait_for_count(&glyph, "1/2");
     wait_for_position(&glyph, 2, 5);
     glyph.wait_for_reversed(3, "", WAIT);
-    glyph.wait_for_text("2 │ two foo three", WAIT);
+    glyph.wait_for_text("2  two foo three", WAIT);
 
     glyph.send_keys("enter");
-    glyph.wait_for_text("2 │ two bar three", WAIT);
+    glyph.wait_for_text("2  two bar three", WAIT);
     wait_for_count(&glyph, "1/1");
     wait_for_position(&glyph, 3, 1);
-    glyph.wait_for_text("3 │ foo", WAIT);
+    glyph.wait_for_text("3  foo", WAIT);
     // The buffer has unsaved changes now.
     glyph.wait_for_text("find.txt •", WAIT);
 }
@@ -115,17 +115,17 @@ fn alt_a_replaces_all_reports_the_count_and_undoes_in_one_step() {
 
     glyph.send_keys("alt+a");
     glyph.wait_for_text("Replaced 3", WAIT);
-    glyph.wait_for_text("1 │ one quux", WAIT);
-    glyph.wait_for_text("2 │ two quux three", WAIT);
-    glyph.wait_for_text("3 │ quux", WAIT);
+    glyph.wait_for_text("1  one quux", WAIT);
+    glyph.wait_for_text("2  two quux three", WAIT);
+    glyph.wait_for_text("3  quux", WAIT);
     wait_for_count(&glyph, "0/0");
 
     glyph.send_keys("esc");
     glyph.wait_for_text_gone("Find:", WAIT);
     glyph.send_keys("ctrl+z");
-    glyph.wait_for_text("1 │ one foo", WAIT);
-    glyph.wait_for_text("2 │ two foo three", WAIT);
-    glyph.wait_for_text("3 │ foo", WAIT);
+    glyph.wait_for_text("1  one foo", WAIT);
+    glyph.wait_for_text("2  two foo three", WAIT);
+    glyph.wait_for_text("3  foo", WAIT);
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn regex_replace_expands_groups() {
 
     glyph.send_keys("alt+a");
     glyph.wait_for_text("Replaced 2", WAIT);
-    glyph.wait_for_text("1 │ one-baz", WAIT);
-    glyph.wait_for_text("2 │ two-baz three", WAIT);
-    glyph.wait_for_text("3 │ foo", WAIT);
+    glyph.wait_for_text("1  one-baz", WAIT);
+    glyph.wait_for_text("2  two-baz three", WAIT);
+    glyph.wait_for_text("3  foo", WAIT);
 }

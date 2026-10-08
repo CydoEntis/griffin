@@ -188,20 +188,20 @@ fn an_open_buffer_is_edited_in_place_and_left_unsaved() -> std::io::Result<()> {
     assert!(glyph.screen()[usize::from(FIRST_ROW + 2)].contains("src/app.rs:2  // TODO tidy"));
     glyph.send_keys("enter");
     glyph.wait_for_text_gone(FOOTER, WAIT);
-    glyph.wait_for_text("2 │     // TODO tidy", WAIT);
+    glyph.wait_for_text("2      // TODO tidy", WAIT);
 
     replace_todo(&mut glyph);
     glyph.type_text("r");
     wait_for_message(&glyph, "Replaced 4 in 2 files");
     glyph.send_keys("esc");
     glyph.wait_for_text_gone(FOOTER, WAIT);
-    glyph.wait_for_text("2 │     // done tidy", WAIT);
+    glyph.wait_for_text("2      // done tidy", WAIT);
     glyph.wait_for_text("app.rs •", WAIT);
     assert_eq!(fs::read(&code)?, code_before);
 
     // One undo takes it all back.
     glyph.send_keys("ctrl+z");
-    glyph.wait_for_text("2 │     // TODO tidy", WAIT);
+    glyph.wait_for_text("2      // TODO tidy", WAIT);
     Ok(())
 }
 

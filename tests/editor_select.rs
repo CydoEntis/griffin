@@ -22,13 +22,14 @@ fn wait_for_position(glyph: &Glyph, line: usize, col: usize) {
 /// Waits until the editor rows read exactly `lines` (after the gutter), with
 /// nothing numbered below them.
 fn wait_for_lines(glyph: &Glyph, lines: &[&str]) {
-    let last = format!("{} │ {}", lines.len(), lines[lines.len() - 1]);
+    let last = format!("{}  {}", lines.len(), lines[lines.len() - 1]);
     glyph.wait_for_text(last.trim_end(), WAIT);
-    let next = format!("{} │", lines.len() + 1);
+    // The next line's gutter: its number right-aligned in three cells.
+    let next = format!(" {:>3}", lines.len() + 1);
     glyph.wait_for_text_gone(&next, WAIT);
     let screen = glyph.screen();
     for (row, text) in lines.iter().enumerate() {
-        let expected = format!("{} │ {text}", row + 1);
+        let expected = format!("{}  {text}", row + 1);
         // Rows 0-2 are the tab header.
         assert_eq!(screen[row + 3].trim(), expected.trim_end(), "{screen:#?}");
     }

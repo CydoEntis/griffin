@@ -71,9 +71,9 @@ fn open_project() -> (TempDir, Glyph) {
 /// Opens both files from the tree, leaving b.txt active.
 fn open_both(glyph: &mut Glyph) {
     glyph.click(3, A_ROW);
-    glyph.wait_for_text("1 │ alpha", WAIT);
+    glyph.wait_for_text("1  alpha", WAIT);
     glyph.click(3, B_ROW);
-    glyph.wait_for_text("1 │ bravo", WAIT);
+    glyph.wait_for_text("1  bravo", WAIT);
     wait_for_tabs(glyph, &["a.txt", "b.txt"], 1);
 }
 
@@ -137,10 +137,10 @@ fn pills_show_each_buffer_with_the_active_one_and_dirty_marks() {
     // Opening an already-open file switches to its tab instead of opening another.
     glyph.click(3, A_ROW);
     wait_for_active(&glyph, "a.txt");
-    glyph.wait_for_text("1 │ alpha", WAIT);
+    glyph.wait_for_text("1  alpha", WAIT);
     wait_for_tabs(&glyph, &["a.txt", "b.txt •"], 0);
     glyph.click(3, B_ROW);
-    glyph.wait_for_text("1 │ xbravo", WAIT);
+    glyph.wait_for_text("1  xbravo", WAIT);
     wait_for_tabs(&glyph, &["a.txt", "b.txt •"], 1);
 }
 
@@ -225,7 +225,7 @@ fn alt_keys_move_between_tabs_and_ctrl_w_closes_with_the_guard() {
     // Past the end wraps round to the first.
     glyph.send_keys("alt+.");
     wait_for_active(&glyph, "a.txt");
-    glyph.wait_for_text("1 │ alpha", WAIT);
+    glyph.wait_for_text("1  alpha", WAIT);
     glyph.send_keys("alt+3");
     wait_for_active(&glyph, "untitled");
     glyph.send_keys("alt+2");
@@ -269,7 +269,7 @@ fn ctrl_n_then_alt_s_saves_relative_to_the_project_root() {
     glyph.send_keys("ctrl+n");
     wait_for_active(&glyph, "untitled");
     glyph.type_text("hello");
-    glyph.wait_for_text("1 │ hello", WAIT);
+    glyph.wait_for_text("1  hello", WAIT);
     wait_for_tabs(&glyph, &["untitled", "untitled •"], 1);
 
     // A name another file already has changes nothing.
@@ -322,14 +322,14 @@ fn click_selects_a_pill_and_middle_click_closes_it() {
     // Any cell of a pill selects it, from cap to cap.
     glyph.click(PILL_X, PILL_ROW);
     wait_for_active(&glyph, "a.txt");
-    glyph.wait_for_text("1 │ alpha", WAIT);
+    glyph.wait_for_text("1  alpha", WAIT);
     glyph.click(PILL_X + 10, PILL_ROW);
     wait_for_active(&glyph, "b.txt");
     glyph.click(a, PILL_ROW);
     wait_for_active(&glyph, "a.txt");
     // Clicking a tab gives the editor focus: typing edits a.txt.
     glyph.type_text("z");
-    glyph.wait_for_text("1 │ zalpha", WAIT);
+    glyph.wait_for_text("1  zalpha", WAIT);
     wait_for_tabs(&glyph, &["a.txt •", "b.txt"], 0);
 
     // Middle click on a clean tab closes it.
@@ -356,7 +356,7 @@ fn ctrl_q_asks_about_each_dirty_tab_in_turn() {
     open_both(&mut glyph);
     glyph.type_text("2");
     glyph.click(3, A_ROW);
-    glyph.wait_for_text("1 │ alpha", WAIT);
+    glyph.wait_for_text("1  alpha", WAIT);
     glyph.type_text("1");
     // A clean untitled tab in between is never asked about.
     glyph.send_keys("ctrl+n");
@@ -366,12 +366,12 @@ fn ctrl_q_asks_about_each_dirty_tab_in_turn() {
     glyph.wait_for_text("a.txt has unsaved changes", WAIT);
     // The question is about a.txt, shown as the active tab.
     wait_for_tabs(&glyph, &["a.txt •", "b.txt •", "untitled"], 0);
-    glyph.wait_for_text("1 │ 1alpha", WAIT);
+    glyph.wait_for_text("1  1alpha", WAIT);
     glyph.type_text("s");
     // Then b.txt.
     wait_for_tabs(&glyph, &["a.txt", "b.txt •", "untitled"], 1);
     glyph.wait_for_text("b.txt has unsaved changes", WAIT);
-    glyph.wait_for_text("1 │ 2bravo", WAIT);
+    glyph.wait_for_text("1  2bravo", WAIT);
     assert_eq!(read(dir.path(), "a.txt"), "1alpha\n");
 
     // Cancel stops the quit with b.txt still unsaved.

@@ -449,10 +449,10 @@ fn diag_project(script: &str) -> (Project, Glyph) {
 }
 
 // Screen rows: the tab header takes rows 0-2, so buffer line n is row n + 2. The
-// gutter " 1 │ " is 5 cells, so char column c is screen column 5 + c.
+// gutter "   1  " is 6 cells, so char column c is screen column 6 + c.
 const X_ROW: u16 = 4;
 const Y_ROW: u16 = 5;
-const VAR_COL: u16 = 13;
+const VAR_COL: u16 = 14;
 
 #[test]
 fn diagnostics_are_underlined_marked_and_counted() {
@@ -471,14 +471,14 @@ fn diagnostics_are_underlined_marked_and_counted() {
     // The gutter marks both lines in their colour, and only them.
     let screen = glyph.screen();
     assert!(
-        screen[usize::from(X_ROW)].starts_with("●2 │ "),
+        screen[usize::from(X_ROW)].starts_with("●  2  "),
         "{screen:#?}"
     );
     assert!(
-        screen[usize::from(Y_ROW)].starts_with("●3 │ "),
+        screen[usize::from(Y_ROW)].starts_with("●  3  "),
         "{screen:#?}"
     );
-    assert!(screen[3].starts_with(" 1 │ "), "{screen:#?}");
+    assert!(screen[3].starts_with("   1  "), "{screen:#?}");
     assert_eq!(glyph.fg_at(0, X_ROW), WORKING);
     assert_eq!(glyph.fg_at(0, Y_ROW), ERR);
 
@@ -559,14 +559,14 @@ fn a_new_publish_replaces_the_set_and_an_empty_one_clears_it() {
     glyph.wait_for_text("✕ 1  ⚠ 0", WAIT);
     glyph.wait_for_underlined(X_ROW, "", WAIT);
     glyph.wait_for_underlined(Y_ROW, "y", WAIT);
-    assert!(glyph.screen()[usize::from(X_ROW)].starts_with(" 2 │ "));
+    assert!(glyph.screen()[usize::from(X_ROW)].starts_with("   2  "));
 
     // Saving gets an empty publish: everything goes.
     glyph.send_keys("ctrl+s");
     glyph.wait_for_text("saved c.rs", WAIT);
     glyph.wait_for_text_gone("✕", WAIT);
     glyph.wait_for_underlined(Y_ROW, "", WAIT);
-    assert!(glyph.screen()[usize::from(Y_ROW)].starts_with(" 3 │ "));
+    assert!(glyph.screen()[usize::from(Y_ROW)].starts_with("   3  "));
     assert!(!status_line(&glyph).contains("⚠"));
 }
 
@@ -590,8 +590,8 @@ fn definition_project(script: &str) -> (Project, Glyph) {
 }
 
 // `greet` in `    util::greet();` starts at char 10 of line 4, which is screen
-// column 5 + 10 past the gutter, on row 6 below the tab header.
-const GREET_COL: u16 = 15;
+// column 6 + 10 past the gutter, on row 6 below the tab header.
+const GREET_COL: u16 = 16;
 const GREET_ROW: u16 = 6;
 
 /// The position of the last `textDocument/definition` the fake received, as
@@ -635,7 +635,7 @@ fn f12_opens_the_definition_in_another_file_and_alt_left_comes_back() {
         tabs.contains("main.rs") && tabs.contains("util.rs"),
         "{tabs:?}"
     );
-    glyph.wait_for_cursor(5 + 7, 5, WAIT);
+    glyph.wait_for_cursor(6 + 7, 5, WAIT);
     assert!(status_line(&glyph).contains("util.rs"));
 
     glyph.send_keys("alt+left");
@@ -762,9 +762,9 @@ fn hover_project(script: &str) -> (Project, Glyph) {
     (project, glyph)
 }
 
-// Below the cursor on `greet` (15, 6): the border on row 7, then the text one
+// Below the cursor on `greet` (16, 6): the border on row 7, then the text one
 // cell in from the border, on rows 8 to 11.
-const HOVER_TEXT_COL: u16 = 17;
+const HOVER_TEXT_COL: u16 = 18;
 const HOVER_FIRST_ROW: u16 = 8;
 
 #[test]
@@ -885,7 +885,7 @@ fn the_hover_flips_above_and_shifts_left_at_the_screen_edges() {
 
     glyph.send_keys("ctrl+end");
     glyph.wait_for_text("Ln 40, Col 86", WAIT);
-    // The gutter " 40 │ " is 6 cells; the last editor row is just above the status.
+    // The gutter "  40  " is 6 cells; the last editor row is just above the status.
     let cursor = (6 + 85, ROWS - 2);
     glyph.wait_for_cursor(cursor.0, cursor.1, WAIT);
 
@@ -903,7 +903,7 @@ fn the_hover_flips_above_and_shifts_left_at_the_screen_edges() {
     // The cursor's line and the status line are untouched.
     let screen = glyph.screen();
     assert!(
-        screen[usize::from(cursor.1)].starts_with(" 40 │ fn last()"),
+        screen[usize::from(cursor.1)].starts_with("  40  fn last()"),
         "{screen:#?}"
     );
     assert!(status_line(&glyph).contains("Ln 40, Col 86"));
@@ -997,13 +997,13 @@ fn open_completion(project: &Project, glyph: &mut Glyph, line: u16) {
     glyph.wait_for_text("capacity", WAIT);
 }
 
-// The gutter " 1 │ " is 5 cells, so after `    s.` on line 2 the cursor is at
-// (11, 4). The card's border is on row 5; its rows start on row 6, the kind one
-// cell in from the border at column 13 and, after the 6-wide `method` and a
-// space, the label at column 20.
+// The gutter "   1  " is 6 cells, so after `    s.` on line 2 the cursor is at
+// (12, 4). The card's border is on row 5; its rows start on row 6, the kind one
+// cell in from the border at column 14 and, after the 6-wide `method` and a
+// space, the label at column 21.
 const ITEM_ROW: u16 = 6;
-const KIND_COL: u16 = 13;
-const LABEL_COL: u16 = 20;
+const KIND_COL: u16 = 14;
+const LABEL_COL: u16 = 21;
 
 #[test]
 fn a_trigger_character_or_alt_slash_shows_up_to_ten_items_with_kinds() {
@@ -1027,7 +1027,7 @@ fn a_trigger_character_or_alt_slash_shows_up_to_ten_items_with_kinds() {
         .expect("a change before the request");
     assert_eq!(last_change["params"]["contentChanges"][0]["text"], ".");
 
-    glyph.wait_for_cursor(11, 4, WAIT);
+    glyph.wait_for_cursor(12, 4, WAIT);
     let screen = glyph.screen();
     let expected = [
         ("field ", "as_str"),
