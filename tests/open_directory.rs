@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use harness::{Glyph, ROWS};
+use harness::{Glyph, ROWS, pill_text};
 use tempfile::TempDir;
 use vt100::Color;
 
@@ -269,8 +269,8 @@ fn opening_a_folder_makes_it_the_project() {
     glyph.send_keys("enter");
     glyph.wait_for_text_gone(SCOPE, WAIT);
 
-    // The tree and brand show the new folder beside the splash, as
-    // `glyph <folder>` starts; the run was stopped.
+    // The tree and brand show the new folder beside an empty untitled pane,
+    // not the splash, and the tree has the keys; the run was stopped.
     glyph.wait_for_text("new-file.txt", WAIT);
     assert!(
         !glyph
@@ -284,12 +284,16 @@ fn opening_a_folder_makes_it_the_project() {
         brand.contains(&new_name[new_name.len().saturating_sub(6)..]),
         "{brand:?}"
     );
-    glyph.wait_for_text("Open directory", WAIT);
-    assert_ne!(
-        glyph.bg_at(0, 3),
-        TREE_GLOW,
-        "the splash has focus, not the tree"
+    glyph.wait_for_text(&pill_text(&["untitled"], 0), WAIT);
+    assert!(
+        !glyph
+            .screen()
+            .iter()
+            .any(|line| line.contains("Open directory")),
+        "no splash after a switch"
     );
+    // The selected first row glows only while the tree has focus.
+    glyph.wait_for_bg(0, 3, TREE_GLOW, WAIT);
     glyph.wait_for_screen("the old command stopped", WAIT, |screen| {
         screen[usize::from(TITLE_ROW)].contains("wait  stopped")
     });

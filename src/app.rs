@@ -28,6 +28,7 @@ use crate::buffer::movement::Motion;
 use crate::buffer::{Buffer, Caret};
 use crate::clipboard::Clipboard;
 use crate::config::{self, EditorConfig, RunEntry};
+use crate::dap::{DapEvent, DapNews, Session};
 use crate::highlight::languages;
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
@@ -94,6 +95,8 @@ pub enum AppEvent {
     },
     /// A language server sent a message or exited.
     Lsp(LspEvent),
+    /// A debug adapter sent a message, exited, or couldn't be started.
+    Dap(DapEvent),
     /// Format on save number `format` has waited `FORMAT_TIMEOUT` for its server.
     FormatTimedOut {
         format: u64,
@@ -872,6 +875,8 @@ pub struct App {
     formatting: Option<PendingFormat>,
     /// Format requests made, for numbering the next.
     formats: u64,
+    /// The debug session, while there is one.
+    debug: Option<Session>,
     should_quit: bool,
 }
 
@@ -1164,6 +1169,21 @@ impl App {
                     && view.status == RunStatus::Running
                 {
                     view.status = RunStatus::Exited(code);
+                }
+            }
+            AppEvent::Dap(event) => {
+                let news = match &mut self.debug {
+                    Some(session) => session.handle(event),
+                    None => Vec::new(),
+                };
+                for news in news {
+                    // A missing or crashed adapter is said once and costs nothing
+                    // else: editing goes on. The rest of the news has no screen
+                    // to go to until the debugger's panels exist.
+                    if let DapNews::Failed(why) = news {
+                        self.debug = None;
+                        self.say(Tone::Err, why);
+                    }
                 }
             }
             AppEvent::FormatTimedOut { format } => {
@@ -2248,7 +2268,8 @@ impl App {
         }
     }
 
-    /// Opens `dir` as the project, whatever the tabs hold.
+    /// Opens `dir` as the project, whatever the tabs hold, landing on its tree
+    /// beside an empty untitled pane.
     fn switch_project(&mut self, dir: &Path) {
         // The run's command was started in the old folder and belongs to it.
         if let Some(view) = &mut self.run
@@ -2283,11 +2304,12 @@ impl App {
         drop(self.lsp.stop_root(&absolute(self.tree.root())));
         self.tree = Tree::new(dir);
         self.project = project_label(dir, std::env::home_dir().as_deref());
-        // Land as `glyph <dir>` starts: the tree beside the splash, which
-        // takes the keys.
-        self.splash = Some(Splash::default());
+        // Someone who just picked a folder wants to look through it, so land
+        // on its tree beside the empty untitled pane rather than the splash a
+        // bare start shows.
+        self.splash = None;
         self.tree_visible = true;
-        self.focus = Focus::Editor;
+        self.focus = Focus::Tree;
         self.reset_mouse();
         self.follow_cursor();
         self.follow_tree();
@@ -3717,6 +3739,26 @@ mod tests {
         assert!(app.should_quit);
     }
 
+    #[tokio::test]
+    async fn a_missing_debug_adapter_is_one_status_message_and_editing_goes_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut app = App::default();
+        let missing = dir.path().join("no-such-adapter");
+        app.debug = Some(Session::start(1, &missing, &[], dir.path(), tx));
+        let event = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        app.handle_event(event);
+        assert!(app.debug.is_none());
+        assert_eq!(app.message_tone, Tone::Err);
+        let message = app.message.clone().unwrap_or_default();
+        assert!(message.contains("no-such-adapter"), "{message}");
+        app.handle_event(key("x"));
+        assert_eq!(app.buffer().rope.to_string(), "x");
+    }
+
     #[test]
     fn ctrl_q_with_unsaved_changes_asks_first() {
         let mut app = App::default();
@@ -4465,15 +4507,15 @@ world",
         assert_eq!(tab_names(&app), ["untitled"]);
         assert_eq!(app.tabs.docs.len(), 1);
         assert!(app.tree_visible);
-        // It lands as `glyph <folder>` starts: on the splash, which has the keys.
-        assert!(app.splash.is_some());
-        assert_eq!(app.focus, Focus::Editor);
+        // It lands on the tree beside the empty pane, not on the splash.
+        assert!(app.splash.is_none());
+        assert_eq!(app.focus, Focus::Tree);
         assert_eq!(selected_name(&app), Some("c.txt"));
         Ok(())
     }
 
     #[test]
-    fn open_directory_on_the_splash_opens_a_folder_onto_a_fresh_splash() -> Result<()> {
+    fn open_directory_on_the_splash_opens_a_folder_onto_its_tree() -> Result<()> {
         let (_dir, mut app) = project()?;
         let other = tempfile::tempdir()?;
         assert!(app.splash.is_some());
@@ -4481,12 +4523,9 @@ world",
         assert!(app.folders.is_some());
         app.folders_step(Browsed::Open(other.path().to_path_buf()));
         assert_eq!(app.tree.root(), other.path());
-        // A new splash, its selection back on the first row.
-        assert_eq!(
-            app.splash.as_ref().map(Splash::selected),
-            Some(splash::Item::NewFile)
-        );
-        assert_eq!(app.focus, Focus::Editor);
+        assert!(app.splash.is_none());
+        assert_eq!(tab_names(&app), ["untitled"]);
+        assert_eq!(app.focus, Focus::Tree);
         Ok(())
     }
 
@@ -4513,8 +4552,8 @@ world",
         let fresh = dir.path().join("fresh");
         assert!(fresh.is_dir());
         assert_eq!(app.tree.root(), fresh);
-        assert!(app.splash.is_some());
-        assert_eq!(app.focus, Focus::Editor);
+        assert!(app.splash.is_none());
+        assert_eq!(app.focus, Focus::Tree);
         assert_eq!(app.message.as_deref(), Some("created fresh"));
         Ok(())
     }
