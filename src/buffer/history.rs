@@ -22,6 +22,8 @@ pub struct Group {
     changes: Vec<Change>,
     /// Where the cursor was before the first change, so undo puts it back there.
     cursor_before: usize,
+    /// The selection's anchor then, for the steps that bring it back on undo.
+    anchor_before: Option<usize>,
 }
 
 #[derive(Debug, Default)]
@@ -105,7 +107,16 @@ impl History {
         self.undo.push(Group {
             changes: vec![change],
             cursor_before,
+            anchor_before: None,
         });
+    }
+
+    /// Has undoing the last group select from `anchor` to its cursor again, as
+    /// wrapping a selection does: it changed the selection's text, not just its place.
+    pub fn select_on_undo(&mut self, anchor: usize) {
+        if let Some(group) = self.undo.last_mut() {
+            group.anchor_before = Some(anchor);
+        }
     }
 
     /// Ends any open run of typing, so the next edit starts its own group.
@@ -143,6 +154,7 @@ impl Buffer {
             self.apply_unrecorded(&change.inverse());
         }
         self.cursor = group.cursor_before;
+        self.anchor = group.anchor_before;
         self.history.redo.push(group);
         true
     }

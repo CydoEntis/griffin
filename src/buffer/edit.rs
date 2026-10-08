@@ -101,6 +101,12 @@ impl Buffer {
     /// and a closer typed in front of the same closer steps over it.
     pub fn type_char(&mut self, ch: char, auto_pairs: bool) {
         let next = (self.cursor < self.rope.len_chars()).then(|| self.rope.char(self.cursor));
+        if auto_pairs
+            && let Some(closer) = closer_of(ch)
+            && let Some(range) = self.selection()
+        {
+            return self.wrap_selection(range, ch, closer);
+        }
         if auto_pairs && self.selection().is_none() {
             if CLOSERS.contains(&ch) && next == Some(ch) {
                 // A move, but part of the typing: what's typed next joins its run.
@@ -121,6 +127,36 @@ impl Buffer {
             }
         }
         self.type_text(ch.encode_utf8(&mut [0; 4]));
+    }
+
+    /// Puts `opener` and `closer` around `range` as one undo step, keeping the text
+    /// between them selected, the cursor at the same end as before.
+    fn wrap_selection(&mut self, range: Range<usize>, opener: char, closer: char) {
+        let cursor_at_start = self.cursor == range.start;
+        let anchor = if cursor_at_start {
+            range.end
+        } else {
+            range.start
+        };
+        self.begin_group();
+        // The closer first, so `range.start` still points at the selection.
+        for (at, ch) in [(range.end, closer), (range.start, opener)] {
+            self.apply(Change {
+                at,
+                removed: String::new(),
+                inserted: ch.to_string(),
+            });
+        }
+        self.end_group();
+        self.history.select_on_undo(anchor);
+        let (start, end) = (range.start + 1, range.end + 1);
+        let (anchor, cursor) = if cursor_at_start {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        self.anchor = Some(anchor);
+        self.cursor = cursor;
     }
 
     /// Inserts `text` at the cursor.
@@ -511,6 +547,73 @@ mod tests {
         b.select_to(0, 1);
         b.backspace_pair(true);
         assert_eq!(show(&b), "|)");
+    }
+
+    #[test]
+    fn an_opener_wraps_the_selection_and_keeps_it_selected() {
+        let mut b = buf("|let foo = 1;");
+        b.select_to(4, 7);
+        b.type_char('(', true);
+        assert_eq!(b.rope.to_string(), "let (foo) = 1;");
+        assert_eq!(b.selected_text().as_deref(), Some("foo"));
+        assert_eq!(b.cursor, 8);
+
+        // A selection made right to left keeps its cursor at the start.
+        let mut b = buf("|a
+b");
+        b.select_to(3, 0);
+        b.type_char('{', true);
+        assert_eq!(
+            b.rope.to_string(),
+            "{a
+b}"
+        );
+        assert_eq!(
+            b.selected_text().as_deref(),
+            Some(
+                "a
+b"
+            )
+        );
+        assert_eq!(b.cursor, 1);
+
+        // Wrapping again nests.
+        b.type_char('[', true);
+        assert_eq!(
+            b.rope.to_string(),
+            "{[a
+b]}"
+        );
+    }
+
+    #[test]
+    fn a_wrap_is_one_undo_step() {
+        let mut b = buf("|x foo");
+        b.select_to(2, 5);
+        b.type_char('[', true);
+        b.undo();
+        assert_eq!(b.rope.to_string(), "x foo");
+        assert_eq!(b.cursor, 5);
+        assert_eq!(b.selected_text().as_deref(), Some("foo"));
+        assert!(!b.history.can_undo());
+    }
+
+    #[test]
+    fn other_chars_and_closers_still_replace_the_selection() {
+        for ch in [')', 'z'] {
+            let mut b = buf("|a foo b");
+            b.select_to(2, 5);
+            b.type_char(ch, true);
+            assert_eq!(b.rope.to_string(), format!("a {ch} b"));
+        }
+    }
+
+    #[test]
+    fn without_auto_pairs_an_opener_replaces_the_selection() {
+        let mut b = buf("|a foo b");
+        b.select_to(2, 5);
+        b.type_char('(', false);
+        assert_eq!(show(&b), "a (| b");
     }
 
     #[test]
