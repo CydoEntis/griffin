@@ -3329,8 +3329,7 @@ impl App {
             // The splash has the editor area to itself: no pills or thread over
             // it, and no cursor in a buffer that isn't shown.
             if let Some(splash) = &self.splash {
-                let project = absolute(self.tree.root()).display().to_string();
-                splash.render(theme, &project, frame, area.editor);
+                splash.render(theme, &self.project, frame, area.editor);
                 continue;
             }
             render_tabs(

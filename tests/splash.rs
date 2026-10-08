@@ -5,6 +5,7 @@
 
 mod harness;
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -26,34 +27,27 @@ const MUTED: Color = Color::Rgb(0x71, 0x80, 0x8f);
 const TEXT: Color = Color::Rgb(0xa7, 0xb4, 0xc2);
 const STRONG: Color = Color::Rgb(0xf2, 0xf6, 0xf8);
 const BG: Color = Color::Rgb(0x07, 0x0b, 0x10);
-/// The wordmark's letters, accent → accent2, as on the tree's brand row.
-const BRAND: [Color; 5] = [
-    Color::Rgb(0xc3, 0xf5, 0x3c),
-    Color::Rgb(0xa9, 0xe2, 0x6d),
-    Color::Rgb(0x8f, 0xcf, 0x9e),
-    Color::Rgb(0x74, 0xbc, 0xce),
-    Color::Rgb(0x5a, 0xa9, 0xff),
-];
 
 /// Without the tree the editor area is the full width from row 3 (below the
-/// tab header) to the status line: 100 × 26. The 52 × 11 card is centred in
-/// it.
-const CARD_X: u16 = 24;
-const CARD_Y: u16 = 10;
-const CARD_W: u16 = 52;
-/// Its rows: the lit edge, a blank, the wordmark, the path, a blank, the three
-/// actions, a blank, the footer and a blank.
-const BRAND_ROW: u16 = CARD_Y + 2;
-const PATH_ROW: u16 = CARD_Y + 3;
-const NEW_FILE_ROW: u16 = CARD_Y + 5;
-const NEW_DIR_ROW: u16 = CARD_Y + 6;
-const OPEN_DIR_ROW: u16 = CARD_Y + 7;
-const FOOTER_ROW: u16 = CARD_Y + 9;
-/// Text starts four cells into the card; the letters end four cells short of
-/// its right edge.
-const TEXT_X: u16 = CARD_X + 4;
-const KEY_X: u16 = CARD_X + CARD_W - 5;
-const FOOTER: &str = "ctrl+p go to file · ctrl+q quit";
+/// tab header) to the status line: 100 × 26. The 14-row splash is centred in
+/// it: the wordmark on rows 9–13, the rule on 14, the path on 16 and the
+/// actions on 18, 20 and 22.
+const WORD_ROW: u16 = 9;
+const RULE_ROW: u16 = 14;
+const PATH_ROW: u16 = 16;
+const NEW_FILE_ROW: u16 = 18;
+const NEW_DIR_ROW: u16 = 20;
+const OPEN_DIR_ROW: u16 = 22;
+/// The 31-wide wordmark and 63-wide rule, centred.
+const WORD_X: u16 = 34;
+const RULE_X: u16 = 18;
+/// The 56-wide action rows, centred: `✦` two cells in, the label four, the
+/// hint 22, and the key two short of the row's right edge.
+const ROW_X: u16 = 22;
+const TEXT_X: u16 = ROW_X + 2;
+const LABEL_X: u16 = ROW_X + 4;
+const HINT_X: u16 = ROW_X + 22;
+const KEY_X: u16 = ROW_X + 56 - 2;
 /// The folder browser's scope label, right of its header.
 const BROWSER: &str = "open · folders";
 
@@ -77,23 +71,6 @@ fn cells(glyph: &Glyph, row: u16, x: u16, width: u16) -> String {
         .to_string()
 }
 
-/// How the splash names `dir`: absolute, its start cut with `…` past the 44
-/// cells the card has for it.
-fn shown_path(dir: &Path) -> String {
-    let path = std::path::absolute(dir)
-        .expect("absolute path")
-        .display()
-        .to_string();
-    let chars: Vec<char> = path.chars().collect();
-    if chars.len() <= 44 {
-        path
-    } else {
-        std::iter::once('…')
-            .chain(chars[chars.len() - 43..].iter().copied())
-            .collect()
-    }
-}
-
 /// Waits for the `✦` marking the selected action to be on `row`.
 fn wait_for_selected(glyph: &Glyph, x: u16, row: u16) {
     glyph.wait_for_screen(&format!("✦ on row {row}"), WAIT, |screen| {
@@ -107,13 +84,27 @@ fn wait_for_status(glyph: &Glyph, text: &str) {
     });
 }
 
-/// A temp folder holding `a.txt`, with Glyph started in it with no argument.
-fn start_bare() -> (TempDir, Glyph) {
-    let dir = tempfile::tempdir().expect("create temp dir");
-    fs::write(dir.path().join("a.txt"), "alpha\n").expect("write a.txt");
-    let glyph = Glyph::spawn_in(dir.path(), &[]);
+/// A temp folder standing in for the home folder, holding `src` with `a.txt`
+/// in it, and Glyph started in `src` with no argument, so the splash names
+/// the project `~/src` as in the design.
+fn start_bare_with(toml: &str) -> (TempDir, Glyph) {
+    let home = tempfile::tempdir().expect("create temp dir");
+    let src = home.path().join("src");
+    fs::create_dir(&src).expect("create src");
+    fs::write(src.join("a.txt"), "alpha\n").expect("write a.txt");
+    // `HOME` on Unix and `USERPROFILE` on Windows are where Glyph reads the
+    // home folder from.
+    let env = [
+        ("HOME", OsString::from(home.path())),
+        ("USERPROFILE", OsString::from(home.path())),
+    ];
+    let glyph = Glyph::spawn_in_with_config_and_env(&src, toml, &env, &[]);
     glyph.wait_for_text("Open directory", START);
-    (dir, glyph)
+    (home, glyph)
+}
+
+fn start_bare() -> (TempDir, Glyph) {
+    start_bare_with("")
 }
 
 #[test]
@@ -131,9 +122,9 @@ fn glyph_alone_and_glyph_on_a_folder_show_the_splash_but_a_file_does_not() {
 }
 
 #[test]
-fn the_card_is_centred_with_the_wordmark_path_actions_and_footer() {
-    let (dir, glyph) = start_bare();
-    glyph.wait_for_fg_at(TEXT_X, BRAND_ROW, ACCENT2, WAIT);
+fn the_splash_has_the_wordmark_rule_path_and_actions_with_no_card() {
+    let (_home, glyph) = start_bare();
+    glyph.wait_for_fg_at(LABEL_X, NEW_FILE_ROW, STRONG, WAIT);
 
     // No pills or thread in the header rows.
     let screen = glyph.screen();
@@ -141,65 +132,89 @@ fn the_card_is_centred_with_the_wordmark_path_actions_and_footer() {
         assert_eq!(screen[row].trim(), "", "header row {row}: {screen:#?}");
     }
 
-    // The lit edge across the card, on `raised`.
-    assert_eq!(cells(&glyph, CARD_Y, CARD_X, CARD_W), "▀".repeat(52));
-    assert_eq!(glyph.fg_at(CARD_X, CARD_Y), ACCENT);
-    assert_eq!(glyph.bg_at(CARD_X, CARD_Y + 1), RAISED);
-    assert_eq!(glyph.bg_at(CARD_X - 1, CARD_Y + 1), BG);
+    // The block-letter wordmark, five rows of half blocks, accent at its left
+    // and accent2 at its right, on a glow that's gone by the screen's edge.
+    let wordmark: Vec<String> = (WORD_ROW..WORD_ROW + 5)
+        .map(|row| cells(&glyph, row, WORD_X, 31))
+        .collect();
+    assert_eq!(
+        wordmark,
+        [
+            "       ▀█                 █",
+            "▄▀▀▀█   █   █   █  █▀▀▀▄  █▀▀▀▄",
+            "█   █   █   █   █  █   █  █   █",
+            "▀▄▄▄█   █▄  ▀▄▄▄█  █▄▄▄▀  █   █",
+            "▄▄▄▄▀       ▄▄▄▄▀  █",
+        ]
+    );
+    assert_eq!(glyph.text_col(WORD_ROW + 1, "▄▀▀▀█"), Some(WORD_X));
+    assert_eq!(glyph.fg_at(WORD_X, WORD_ROW + 1), ACCENT);
+    assert_eq!(glyph.fg_at(WORD_X + 30, WORD_ROW + 1), ACCENT2);
+    assert_ne!(glyph.bg_at(WORD_X + 15, WORD_ROW + 2), BG);
+    assert_eq!(glyph.bg_at(0, WORD_ROW + 2), BG);
 
-    // `✦ glyph` with the brand ramp, bold.
-    assert_eq!(cells(&glyph, BRAND_ROW, TEXT_X, 44), "✦ glyph");
-    for (x, color) in (TEXT_X + 2..).zip(BRAND) {
-        assert_eq!(glyph.fg_at(x, BRAND_ROW), color, "wordmark column {x}");
-        assert!(glyph.bold_at(x, BRAND_ROW));
+    // The rule under it, 63 wide, fading into the ground at both ends.
+    assert_eq!(cells(&glyph, RULE_ROW, RULE_X, 63), "─".repeat(63));
+    assert_eq!(glyph.text_col(RULE_ROW, "─"), Some(RULE_X));
+    assert_eq!(glyph.fg_at(RULE_X, RULE_ROW), glyph.bg_at(RULE_X, RULE_ROW));
+
+    // The path: `~/` in muted, the last folder in bold strong, centred.
+    assert_eq!(cells(&glyph, PATH_ROW, 0, 100).trim(), "~/src");
+    assert_eq!(glyph.text_col(PATH_ROW, "~/src"), Some(47));
+    assert_eq!(glyph.fg_at(47, PATH_ROW), MUTED);
+    assert_eq!(glyph.fg_at(49, PATH_ROW), STRONG);
+    assert!(glyph.bold_at(49, PATH_ROW));
+
+    // The actions one blank row apart, with hints and keys; the first
+    // selected on the dialog glow.
+    let row = |label: &str, hint: &str, key: &str| format!("{label:<18}{hint:<32}{key}");
+    assert_eq!(
+        cells(&glyph, NEW_FILE_ROW, TEXT_X, 56),
+        format!("✦ {}", row("New file", "in ~/src", "n"))
+    );
+    assert_eq!(
+        cells(&glyph, NEW_DIR_ROW, LABEL_X, 56),
+        row("New directory", "in ~/src", "d")
+    );
+    assert_eq!(
+        cells(&glyph, OPEN_DIR_ROW, LABEL_X, 56),
+        row("Open directory", "choose a folder", "o")
+    );
+    for blank in [NEW_FILE_ROW + 1, NEW_DIR_ROW + 1, OPEN_DIR_ROW + 1] {
+        assert_eq!(cells(&glyph, blank, 0, 100), "", "row {blank}");
     }
-
-    // The project folder's absolute path in `muted`.
-    assert_eq!(cells(&glyph, PATH_ROW, TEXT_X, 44), shown_path(dir.path()));
-    assert_eq!(glyph.fg_at(TEXT_X, PATH_ROW), MUTED);
-
-    // The actions: the first selected on the glow, the letters right-aligned.
-    let row =
-        |marker: &str, label: &str, key: &str| format!("{:<43}{key}", format!("{marker} {label}"));
-    assert_eq!(
-        cells(&glyph, NEW_FILE_ROW, TEXT_X, 44),
-        row("✦", "New file", "n")
-    );
-    assert_eq!(
-        cells(&glyph, NEW_DIR_ROW, TEXT_X, 44),
-        row("▸", "New directory", "d")
-    );
-    assert_eq!(
-        cells(&glyph, OPEN_DIR_ROW, TEXT_X, 44),
-        row("▸", "Open directory", "o")
-    );
-    assert_eq!(glyph.bg_at(CARD_X, NEW_FILE_ROW), mix(RAISED, ACCENT, 0.3));
+    assert_eq!(glyph.bg_at(ROW_X, NEW_FILE_ROW), mix(RAISED, ACCENT, 0.3));
     assert_eq!(glyph.fg_at(TEXT_X, NEW_FILE_ROW), ACCENT2);
-    assert_eq!(glyph.fg_at(TEXT_X + 2, NEW_FILE_ROW), STRONG);
-    assert_eq!(glyph.fg_at(KEY_X, NEW_FILE_ROW), MUTED);
-    assert_eq!(glyph.bg_at(CARD_X, NEW_DIR_ROW), RAISED);
-    assert_eq!(glyph.fg_at(TEXT_X, NEW_DIR_ROW), MUTED);
-    assert_eq!(glyph.fg_at(TEXT_X + 2, NEW_DIR_ROW), TEXT);
+    assert_eq!(glyph.fg_at(LABEL_X, NEW_FILE_ROW), STRONG);
+    assert!(glyph.bold_at(LABEL_X, NEW_FILE_ROW));
+    assert_eq!(glyph.fg_at(HINT_X, NEW_FILE_ROW), MUTED);
+    assert_eq!(glyph.fg_at(KEY_X, NEW_FILE_ROW), ACCENT);
+    assert!(glyph.bold_at(KEY_X, NEW_FILE_ROW));
+    assert_eq!(glyph.bg_at(ROW_X, NEW_DIR_ROW), BG);
+    assert_eq!(glyph.fg_at(LABEL_X, NEW_DIR_ROW), TEXT);
+    assert!(!glyph.bold_at(LABEL_X, NEW_DIR_ROW));
+    assert_eq!(glyph.fg_at(HINT_X, NEW_DIR_ROW), MUTED);
     assert_eq!(glyph.fg_at(KEY_X, NEW_DIR_ROW), MUTED);
 
-    // The footer in `muted`, and nothing below the card.
-    assert_eq!(cells(&glyph, FOOTER_ROW, TEXT_X, 44), FOOTER);
-    assert_eq!(glyph.fg_at(TEXT_X, FOOTER_ROW), MUTED);
-    assert_eq!(glyph.bg_at(CARD_X, CARD_Y + 10), RAISED);
-    assert_eq!(glyph.bg_at(CARD_X, CARD_Y + 11), BG);
+    // No card: no lit edge and no footer, and the ground below the rows.
+    let screen = glyph.screen().join("\n");
+    assert!(!screen.contains("ctrl+p go to file"), "{screen}");
+    assert_eq!(glyph.bg_at(ROW_X, OPEN_DIR_ROW + 2), BG);
 }
 
 #[test]
-fn mono_reverses_the_selected_row() {
-    let dir = tempfile::tempdir().expect("create temp dir");
-    let mut glyph = Glyph::spawn_in_with_config(dir.path(), "theme = \"mono\"\n", &[]);
-    glyph.wait_for_text("Open directory", START);
-    let selected = format!("{:<4}{:<43}n    ", "", "✦ New file");
+fn mono_has_no_glow_and_reverses_the_selected_row() {
+    let (_home, mut glyph) = start_bare_with("theme = \"mono\"\n");
+    let selected = format!("  ✦ {:<18}{:<32}n ", "New file", "in ~/src");
     glyph.wait_for_reversed(NEW_FILE_ROW, &selected, WAIT);
     assert_eq!(glyph.reversed_text(NEW_DIR_ROW), "");
+    // The wordmark and rule in the terminal's own colours, on its own ground.
+    assert_eq!(glyph.fg_at(WORD_X, WORD_ROW + 1), Color::Default);
+    assert_eq!(glyph.bg_at(WORD_X + 15, WORD_ROW + 2), Color::Default);
+    assert_eq!(glyph.fg_at(50, RULE_ROW), Color::Default);
 
     glyph.send_keys("down");
-    let selected = format!("{:<4}{:<43}d    ", "", "✦ New directory");
+    let selected = format!("  ✦ {:<18}{:<32}d ", "New directory", "in ~/src");
     glyph.wait_for_reversed(NEW_DIR_ROW, &selected, WAIT);
     assert_eq!(glyph.reversed_text(NEW_FILE_ROW), "");
 }
@@ -260,7 +275,7 @@ fn a_click_on_a_row_runs_it() {
     // Off the rows a click does nothing: no cursor is placed in the hidden
     // buffer, and the selection stays.
     glyph.click(5, 5);
-    glyph.click(TEXT_X + 4, BRAND_ROW);
+    glyph.click(TEXT_X + 4, WORD_ROW + 2);
     wait_for_selected(&glyph, TEXT_X, OPEN_DIR_ROW);
     glyph.wait_for_text("Open directory", WAIT);
     glyph.click(TEXT_X + 4, NEW_FILE_ROW);
@@ -299,8 +314,8 @@ fn with_the_tree_open_the_splash_has_focus_and_ctrl_e_moves_it_to_the_tree() {
     let mut glyph = Glyph::spawn(&[PROJECT]);
     glyph.wait_for_text("README.md", START);
     // Beside the 28-column tree and its blank column the editor area is 71
-    // wide from column 29, so the card starts at 38 and its text at 42.
-    let text_x = 42;
+    // wide from column 29, so the action rows start at 36 and `✦` is at 38.
+    let text_x = 38;
     wait_for_selected(&glyph, text_x, NEW_FILE_ROW);
     // ↓ moves the splash's selection, not the tree's.
     glyph.send_keys("down");
