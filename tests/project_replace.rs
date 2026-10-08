@@ -12,10 +12,21 @@ const WAIT: Duration = Duration::from_secs(5);
 /// `// TODO` on line 2; `README.md` none. Four matches in two files.
 const FIXTURE: &str = "tests/fixtures/project_replace";
 
-/// At 100x30 the panel's query line is row 6; its right half, from column 50,
-/// holds the Replace field.
-const QUERY_ROW: u16 = 6;
-const REPLACE_X: u16 = 50;
+/// At 100x30 the panel's card starts at column 10, row 4: the Replace field is
+/// on row 6 with its label at column 14 and its value at 23, the match count on
+/// row 7 two cells in, and the hits from row 8.
+const REPLACE_ROW: u16 = 6;
+const LABEL_X: u16 = 14;
+const VALUE_X: u16 = 23;
+const STATUS_ROW: u16 = 7;
+const STATUS_X: usize = 12;
+const FIRST_ROW: u16 = 8;
+const CARD_X: u16 = 10;
+/// The panel's key hints, there while it's open.
+const FOOTER: &str = "alt+a replace all   esc close";
+/// The selected row's glow at its left end: hydra's `raised` (`#0f1821`) lit 30 %
+/// towards its accent (`#c3f53c`).
+const GLOW: vt100::Color = vt100::Color::Rgb(0x45, 0x5a, 0x29);
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     for entry in fs::read_dir(from)? {
@@ -45,10 +56,15 @@ fn open_in(dir: &Path) -> Glyph {
     glyph
 }
 
-/// Waits for the panel's query line to end with `status`, e.g. `3 hits`.
+/// Waits for the panel's count row to say exactly `status`, e.g.
+/// `4 matches in 2 files`, and not `searching… 4 matches in 2 files`.
 fn wait_for_status(glyph: &Glyph, status: &str) {
     glyph.wait_for_screen(&format!("the panel to say {status:?}"), WAIT, |lines| {
-        lines[usize::from(QUERY_ROW)].contains(&format!("  {status} │"))
+        let shown: String = lines[usize::from(STATUS_ROW)]
+            .chars()
+            .skip(STATUS_X)
+            .collect();
+        shown.trim_end() == status
     });
 }
 
@@ -64,22 +80,22 @@ fn wait_for_message(glyph: &Glyph, message: &str) {
 /// Opens the panel and searches for `query`.
 fn search(glyph: &mut Glyph, query: &str) {
     glyph.send_keys("alt+f");
-    glyph.wait_for_text("Search:", WAIT);
+    glyph.wait_for_text(FOOTER, WAIT);
     glyph.type_text(query);
-    glyph.wait_for_text(&format!("Search: {query}"), WAIT);
+    glyph.wait_for_text(&format!("Search   {query}"), WAIT);
     glyph.send_keys("enter");
 }
 
 /// Searches for `todo`, Tab, `done` in the Replace field, then Alt+A.
 fn replace_todo(glyph: &mut Glyph) {
     search(glyph, "todo");
-    wait_for_status(glyph, "3 hits");
+    wait_for_status(glyph, "4 matches in 2 files");
     // A key and quick typing after it can arrive as one paste on Windows, so wait
     // for each key to land before the next.
     glyph.send_keys("tab");
-    glyph.wait_for_cursor(REPLACE_X + 9, QUERY_ROW, WAIT);
+    glyph.wait_for_cursor(VALUE_X, REPLACE_ROW, WAIT);
     glyph.type_text("done");
-    glyph.wait_for_text("Replace: done", WAIT);
+    glyph.wait_for_text("Replace  done", WAIT);
     glyph.send_keys("alt+a");
     glyph.wait_for_text("Replace 4 matches in 2 files? y / n", WAIT);
 }
@@ -93,17 +109,17 @@ fn alt_enter_asks_then_replaces_in_every_listed_file_and_searches_again() -> std
     let code_before = fs::read_to_string(&code)?;
     let mut glyph = open_in(dir.path());
     search(&mut glyph, "todo");
-    wait_for_status(&glyph, "3 hits");
-    assert_eq!(glyph.text_col(QUERY_ROW, "Replace: "), Some(REPLACE_X));
+    wait_for_status(&glyph, "4 matches in 2 files");
+    assert_eq!(glyph.text_col(REPLACE_ROW, "Replace  "), Some(LABEL_X));
     glyph.send_keys("esc");
-    glyph.wait_for_text_gone("Search:", WAIT);
+    glyph.wait_for_text_gone(FOOTER, WAIT);
 
     replace_todo(&mut glyph);
     glyph.type_text("y");
     wait_for_message(&glyph, "Replaced 4 in 2 files");
     glyph.wait_for_text_gone("Replace 4 matches", WAIT);
     // The list refreshed: nothing matches any more.
-    wait_for_status(&glyph, "no hits");
+    wait_for_status(&glyph, "no matches");
     glyph.wait_for_text_gone("notes.txt:", WAIT);
 
     // Saved with the line endings each file had.
@@ -122,7 +138,7 @@ fn n_closes_the_prompt_and_changes_nothing() -> std::io::Result<()> {
     replace_todo(&mut glyph);
     glyph.type_text("n");
     glyph.wait_for_text_gone("Replace 4 matches", WAIT);
-    wait_for_status(&glyph, "3 hits");
+    wait_for_status(&glyph, "4 matches in 2 files");
     assert_eq!(fs::read(&notes)?, before);
     Ok(())
 }
@@ -135,23 +151,20 @@ fn an_open_buffer_is_edited_in_place_and_left_unsaved() -> std::io::Result<()> {
     let mut glyph = open_in(dir.path());
     // Open `src/app.rs` from its hit, the third.
     search(&mut glyph, "todo");
-    wait_for_status(&glyph, "3 hits");
+    wait_for_status(&glyph, "4 matches in 2 files");
     glyph.send_keys("down");
     glyph.send_keys("down");
-    glyph.wait_for_reversed(
-        QUERY_ROW + 3,
-        &format!(" {:<77}", "src/app.rs:2: // TODO tidy"),
-        WAIT,
-    );
+    glyph.wait_for_bg(CARD_X, FIRST_ROW + 2, GLOW, WAIT);
+    assert!(glyph.screen()[usize::from(FIRST_ROW + 2)].contains("src/app.rs:2  // TODO tidy"));
     glyph.send_keys("enter");
-    glyph.wait_for_text_gone("Search:", WAIT);
+    glyph.wait_for_text_gone(FOOTER, WAIT);
     glyph.wait_for_text("2 │     // TODO tidy", WAIT);
 
     replace_todo(&mut glyph);
     glyph.type_text("y");
     wait_for_message(&glyph, "Replaced 4 in 2 files");
     glyph.send_keys("esc");
-    glyph.wait_for_text_gone("Search:", WAIT);
+    glyph.wait_for_text_gone(FOOTER, WAIT);
     glyph.wait_for_text("2 │     // done tidy", WAIT);
     glyph.wait_for_text("app.rs ●", WAIT);
     assert_eq!(fs::read(&code)?, code_before);
@@ -180,7 +193,7 @@ fn a_file_that_cannot_be_written_is_reported_and_the_others_still_go() -> std::i
         "Replaced 1 in 1 file · cannot write notes.txt: read-only",
     );
     // Only the file that failed still has matches.
-    wait_for_status(&glyph, "2 hits");
+    wait_for_status(&glyph, "3 matches in 1 file");
     let notes_after = fs::read(&notes)?;
     // tempdir can't delete a read-only file on Windows.
     #[expect(

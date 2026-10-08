@@ -261,8 +261,6 @@ pub fn mix(a: Color, b: Color, t: f64) -> Color {
 
 /// A ramp through `stops`, evenly spaced over `t` in 0..=1 (clamped), mixing
 /// between neighbours (design README §1). Every Aurora glow is one of these.
-// Renderers start calling it with the screen tickets that follow this one.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn grad(stops: &[Color], t: f64) -> Color {
     match stops {
         [] => Color::Reset,
@@ -350,6 +348,13 @@ impl Theme {
     /// what the PTY tests look for as "selected".
     pub fn highlight(bg: Color, fg: Color) -> Style {
         Style::new().fg(bg).bg(fg).add_modifier(Modifier::REVERSED)
+    }
+
+    /// Whether the theme's colours can be blended into ramps and dimmed towards
+    /// its scrim. `mono` uses the terminal's own colours, which can't be mixed, so
+    /// it draws glows as reverse video and the scrim as the DIM modifier instead.
+    pub fn ramps(&self) -> bool {
+        matches!(self.scrim, Color::Rgb(..))
     }
 
     /// The theme called `name`, if there is one.
