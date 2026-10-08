@@ -37,7 +37,7 @@ fn wait_for_lines(glyph: &Glyph, lines: &[&str]) {
 #[test]
 fn undo_redo_typing() {
     let mut glyph = Glyph::spawn_with_config("", &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     // Leave the splash for the untitled buffer under it.
     glyph.send_keys("ctrl+n");
 

@@ -123,6 +123,8 @@ pub enum Action {
     SplashOpenDirectory,
     /// Splash only: leaves the splash for the empty untitled buffer.
     SplashDismiss,
+    /// Splash only: quits as Ctrl+Q does.
+    SplashQuit,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -236,6 +238,7 @@ impl Action {
         Action::SplashNewDirectory,
         Action::SplashOpenDirectory,
         Action::SplashDismiss,
+        Action::SplashQuit,
     ];
 
     pub fn scope(self) -> Scope {
@@ -257,7 +260,8 @@ impl Action {
             | Action::SplashNewFile
             | Action::SplashNewDirectory
             | Action::SplashOpenDirectory
-            | Action::SplashDismiss => Scope::Splash,
+            | Action::SplashDismiss
+            | Action::SplashQuit => Scope::Splash,
             _ => Scope::Global,
         }
     }
@@ -363,6 +367,7 @@ impl Action {
             Action::SplashNewDirectory => "splash_new_directory",
             Action::SplashOpenDirectory => "splash_open_directory",
             Action::SplashDismiss => "splash_dismiss",
+            Action::SplashQuit => "splash_quit",
         }
     }
 
@@ -467,6 +472,7 @@ impl Action {
             Action::SplashNewDirectory => "Splash: new directory",
             Action::SplashOpenDirectory => "Splash: open directory",
             Action::SplashDismiss => "Splash: close",
+            Action::SplashQuit => "Splash: quit",
         }
     }
 
@@ -585,6 +591,7 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::SplashNewDirectory, "d"),
     (Action::SplashOpenDirectory, "o"),
     (Action::SplashDismiss, "esc"),
+    (Action::SplashQuit, "q"),
 ];
 
 /// Actions with no default key, reached from the cast palette or bound in
@@ -1504,6 +1511,7 @@ mod tests {
             (ev(KeyCode::Char('d'), none), Action::SplashNewDirectory),
             (ev(KeyCode::Char('o'), none), Action::SplashOpenDirectory),
             (ev(KeyCode::Esc, none), Action::SplashDismiss),
+            (ev(KeyCode::Char('q'), none), Action::SplashQuit),
         ] {
             assert_eq!(map.resolve_in(&event, Scope::Splash), Input::Action(action));
             assert_ne!(map.resolve(&event), Input::Action(action), "{event:?}");

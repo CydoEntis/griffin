@@ -26,7 +26,7 @@ const WARN: Color = Color::Rgb(0xf0, 0xcf, 0x7a);
 /// picker so its path has a directory part.
 fn open_guide() -> Glyph {
     let mut glyph = Glyph::spawn_in_with_config(Path::new(PROJECT), AURORA, &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     glyph.send_keys("ctrl+p");
     glyph.wait_for_text("cast · files · commands", WAIT);
     glyph.type_text("guide");
@@ -42,7 +42,7 @@ fn open_guide() -> Glyph {
 #[test]
 fn the_glyph_block_ramps_from_accent_to_accent2_then_fades_into_the_bar() {
     let glyph = Glyph::spawn_with_config(AURORA, &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     let status = &glyph.screen()[usize::from(STATUS_ROW)];
     assert!(status.starts_with(" ✦ glyph"), "{status:?}");
     // The old `glyph  ` text prefix is gone.
@@ -96,9 +96,10 @@ fn the_path_shows_its_directory_muted_and_its_name_strong() {
 #[test]
 fn the_position_and_language_end_two_cells_from_the_right_edge() {
     let mut glyph = Glyph::spawn_with_config(AURORA, &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     // Leave the splash, so typing reaches the untitled buffer.
     glyph.send_keys("ctrl+n");
+    glyph.wait_for_text("Ln 1, Col 1", WAIT);
     // An untitled buffer has no language; it reads `Plain text`, 4 cells after
     // the position.
     let language = "Plain text";

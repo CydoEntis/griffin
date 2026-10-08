@@ -72,11 +72,11 @@ fn wait_for_selected(glyph: &Glyph, row: u16, text: &str) {
     glyph.wait_for_bg(27, row, GLOW_END, WAIT);
 }
 
-/// The fixture project with the tree focused: it opens on the splash, and
-/// Ctrl+E moves the keys to the tree.
+/// The fixture project with the tree focused: it opens on the splash with the
+/// tree hidden, and Ctrl+E shows it with the keys.
 fn open_project() -> Glyph {
     let mut glyph = Glyph::spawn(&[PROJECT]);
-    glyph.wait_for_text("README.md", START);
+    glyph.wait_for_text("Open directory", START);
     glyph.send_keys("ctrl+e");
     glyph
 }
@@ -164,7 +164,7 @@ fn nodes_have_guides_cut_names_and_a_dirty_mark() {
     .expect("write long file");
     let path = dir.path().to_str().expect("temp path is UTF-8");
     let mut glyph = Glyph::spawn(&[path]);
-    glyph.wait_for_text("lib", START);
+    glyph.wait_for_text("Open directory", START);
     glyph.send_keys("ctrl+e");
     glyph.send_keys("enter");
     wait_for_tree(&glyph, &["  ▾ lib", "   │  a_rather_long_file…"]);
@@ -195,7 +195,7 @@ fn nodes_have_guides_cut_names_and_a_dirty_mark() {
 #[test]
 fn mono_reverses_the_selection_and_bolds_the_active_name() {
     let mut glyph = Glyph::spawn_with_config("theme = \"mono\"\n", &[PROJECT]);
-    glyph.wait_for_text("README.md", START);
+    glyph.wait_for_text("Open directory", START);
     glyph.send_keys("ctrl+e");
     wait_for_tree(&glyph, TOP);
     glyph.wait_for_reversed(FIRST, &format!("{:<TREE$}", "  ▸ docs"), WAIT);
@@ -244,9 +244,9 @@ fn dot_git_and_nested_ignores_are_hidden() {
 
     let path = root.to_str().expect("temp path is UTF-8");
     let mut glyph = Glyph::spawn(&[path]);
-    glyph.wait_for_text("visible.txt", START);
-    wait_for_tree(&glyph, &["  ▸ lib", "    .gitignore", "    visible.txt"]);
+    glyph.wait_for_text("Open directory", START);
     glyph.send_keys("ctrl+e");
+    wait_for_tree(&glyph, &["  ▸ lib", "    .gitignore", "    visible.txt"]);
     glyph.send_keys("enter");
     wait_for_tree(
         &glyph,
@@ -300,7 +300,7 @@ fn page_keys_move_the_selection_by_the_rows_the_tree_shows() {
     }
     let path = dir.path().to_str().expect("temp path is UTF-8");
     let mut glyph = Glyph::spawn(&[path]);
-    glyph.wait_for_text("f00.txt", START);
+    glyph.wait_for_text("Open directory", START);
     glyph.send_keys("ctrl+e");
     // Node rows run from FIRST to the row above the status line.
     let last = ROWS - 2;
@@ -431,7 +431,9 @@ fn ctrl_b_toggles_the_tree_and_ctrl_e_switches_focus() {
 fn tree_keys_are_remappable_by_name() {
     let toml = "[keys]\ntoggle_tree = \"alt+b\"\nfocus_tree = \"alt+e\"\n";
     let mut glyph = Glyph::spawn_with_config(toml, &[PROJECT]);
-    glyph.wait_for_text("README.md", START);
+    glyph.wait_for_text("Open directory", START);
+    glyph.send_keys("alt+b");
+    wait_for_tree(&glyph, TOP);
     glyph.send_keys("alt+b");
     glyph.wait_for_text_gone("README.md", WAIT);
     glyph.send_keys("alt+e");

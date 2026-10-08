@@ -789,6 +789,9 @@ pub struct App {
     /// the home folder from the environment.
     project: String,
     tree_visible: bool,
+    /// Whether the launch asked for the tree. The splash hides it only while
+    /// it's up (glyph-splash spec S3), so leaving the splash brings this back.
+    tree_after_splash: bool,
     focus: Focus,
     /// The splash, while Glyph is still as it started with nothing to edit
     /// (glyph-splash spec S1). It's drawn over the editor area in place of the
@@ -911,8 +914,11 @@ impl App {
             message_tone: Tone::Err,
             tree: Tree::new(&launch.root),
             project: project_label(&launch.root, std::env::home_dir().as_deref()),
-            tree_visible: launch.show_tree,
-            // The splash takes the keys at launch, the tree open beside it or not.
+            // The splash hides the tree (glyph-splash spec S3); Ctrl+B or Ctrl+E
+            // brings it back beside it, and leaving the splash restores it.
+            tree_visible: launch.show_tree && splash.is_none(),
+            tree_after_splash: launch.show_tree,
+            // The splash takes the keys at launch.
             focus: Focus::Editor,
             splash,
             ..Self::default()
@@ -1507,7 +1513,7 @@ impl App {
     fn open(&mut self, path: &Path) {
         // Whatever is opened replaces the splash, which only stood in for the
         // untouched untitled tab.
-        self.splash = None;
+        self.end_splash();
         if let Some(doc) = self.tabs.find(path) {
             self.tabs.show(doc);
             self.reset_mouse();
@@ -1822,7 +1828,8 @@ impl App {
             | Action::SplashNewFile
             | Action::SplashNewDirectory
             | Action::SplashOpenDirectory
-            | Action::SplashDismiss => {}
+            | Action::SplashDismiss
+            | Action::SplashQuit => {}
         }
     }
 
@@ -1849,6 +1856,7 @@ impl App {
             Action::SplashNewDirectory => self.run_splash_item(splash::Item::NewDirectory),
             Action::SplashOpenDirectory => self.run_splash_item(splash::Item::OpenDirectory),
             Action::SplashDismiss => self.leave_splash(),
+            Action::SplashQuit => self.handle_action(Action::Quit),
             other => self.handle_action(other),
         }
     }
@@ -1873,10 +1881,18 @@ impl App {
     /// Esc or Ctrl+N on the splash: the empty untitled buffer underneath takes
     /// its place.
     fn leave_splash(&mut self) {
-        self.splash = None;
+        self.end_splash();
         self.focus = Focus::Editor;
         self.reset_mouse();
         self.follow_cursor();
+    }
+
+    /// Drops the splash and gives back the tree it hid, if the launch showed
+    /// one. A tree shown on the splash with Ctrl+B stays shown.
+    fn end_splash(&mut self) {
+        if self.splash.take().is_some() {
+            self.tree_visible |= self.tree_after_splash;
+        }
     }
 
     /// The card a confirm prompt shows (SPEC_V1_LAYOUT §7.4).
@@ -3506,7 +3522,13 @@ impl App {
             theme,
             panes.status,
             &Status {
-                path: &self.shown_path(buffer),
+                // The splash stands for the project, not the untitled buffer
+                // under it.
+                path: &if self.splash.is_some() {
+                    self.project.clone()
+                } else {
+                    self.shown_path(buffer)
+                },
                 dirty: buffer.dirty,
                 message,
                 position: buffer.cursor_line_col(),
@@ -3514,6 +3536,7 @@ impl App {
                 server: server.as_ref().map(|(state, name)| (*state, name.as_str())),
                 warnings: count(Severity::Warning),
                 errors: count(Severity::Error),
+                splash: self.splash.is_some(),
             },
         );
         if let Some(text) = &self.hover
@@ -4432,12 +4455,13 @@ world",
     }
 
     #[test]
-    fn a_folder_opens_on_the_splash_beside_the_tree_and_typing_does_not_edit() -> Result<()> {
+    fn a_folder_opens_on_the_splash_with_the_tree_hidden_and_typing_does_not_edit() -> Result<()> {
         let (_dir, mut app) = project()?;
-        assert!(app.tree_visible);
+        assert!(!app.tree_visible);
         assert!(app.splash.is_some());
         assert_eq!(app.focus, Focus::Editor);
         press(&mut app, &["x", "backspace", "ctrl+v", "ctrl+e"]);
+        assert!(app.tree_visible);
         assert_eq!(app.focus, Focus::Tree);
         press(&mut app, &["x", "backspace", "ctrl+v"]);
         assert_eq!(app.buffer().rope.to_string(), "");
@@ -4974,6 +4998,9 @@ world",
     #[test]
     fn the_tree_takes_29_columns_from_the_editor_while_shown() -> Result<()> {
         let (_dir, mut app) = project()?;
+        // The splash starts with the tree hidden.
+        assert_eq!(app.panes().tree, None);
+        press(&mut app, &["ctrl+b"]);
         assert_eq!(app.panes().splits[0].editor, Rect::new(29, 3, 71, 26));
         assert_eq!(app.panes().splits[0].header, Rect::new(29, 0, 71, 3));
         assert_eq!(app.panes().tree, Some(Rect::new(0, 0, 28, 29)));
@@ -5193,7 +5220,8 @@ world",
             None,
             Some("config error: boom".into()),
         );
-        press(&mut app, &["right"]);
+        // Esc leaves the splash, whose status bar names the project instead.
+        press(&mut app, &["esc"]);
         terminal.draw(|frame| app.render(frame))?;
         let buffer = terminal.backend().buffer();
         let last: String = (0..100).map(|x| buffer[(x, 29)].symbol()).collect();

@@ -156,7 +156,7 @@ fn ctrl_s_saves() {
 fn ctrl_s_on_an_untitled_buffer_asks_for_a_path() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let mut glyph = Glyph::spawn_in(dir.path(), &[]);
-    glyph.wait_for_text("untitled", START);
+    glyph.wait_for_text("Open directory", START);
     // Leave the splash for the untitled buffer under it.
     glyph.send_keys("ctrl+n");
     glyph.type_text("x");

@@ -99,7 +99,7 @@ fn run_dev(glyph: &mut Glyph) -> u32 {
 
 fn open_project() -> Glyph {
     let glyph = Glyph::spawn_in_with_env(Path::new(PROJECT), &fixture_path(), &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     glyph
 }
 

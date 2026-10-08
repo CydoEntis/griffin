@@ -59,8 +59,11 @@ fn open_project_with(toml: &str) -> (TempDir, Glyph) {
     let dir = tempfile::tempdir().expect("create temp dir");
     fs::write(dir.path().join("a.txt"), "alpha\n").expect("write a.txt");
     fs::write(dir.path().join("b.txt"), "bravo\n").expect("write b.txt");
-    let glyph = Glyph::spawn_in_with_config(dir.path(), toml, &["."]);
-    glyph.wait_for_text("b.txt", START);
+    let mut glyph = Glyph::spawn_in_with_config(dir.path(), toml, &["."]);
+    glyph.wait_for_text("Open directory", START);
+    // The splash hides the tree; Ctrl+B shows it.
+    glyph.send_keys("ctrl+b");
+    glyph.wait_for_text("b.txt", WAIT);
     (dir, glyph)
 }
 
@@ -266,7 +269,10 @@ fn ctrl_n_then_alt_s_saves_relative_to_the_project_root() {
     fs::write(root.join("a.txt"), "alpha\n").expect("write a.txt");
     // cwd is the parent, so a path relative to the root is not one relative to cwd.
     let mut glyph = Glyph::spawn_in(parent.path(), &["proj"]);
-    glyph.wait_for_text("a.txt", START);
+    glyph.wait_for_text("Open directory", START);
+    // The splash hides the tree; Ctrl+B shows it, so the new file appears there.
+    glyph.send_keys("ctrl+b");
+    glyph.wait_for_text("a.txt", WAIT);
 
     // The first Ctrl+N leaves the splash for its untitled tab, the second opens
     // another.

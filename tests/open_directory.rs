@@ -71,8 +71,13 @@ fn row(glyph: &Glyph, row: u16) -> String {
 
 /// Glyph on `dir` as the project, tree showing.
 fn open_in(dir: &Path, config: &str) -> Glyph {
-    let glyph = Glyph::spawn_in_with_config(dir, config, &["."]);
-    glyph.wait_for_text("✦ glyph", START);
+    let mut glyph = Glyph::spawn_in_with_config(dir, config, &["."]);
+    glyph.wait_for_text("Open directory", START);
+    // The splash hides the tree; Ctrl+B shows it, with its brand on row 1.
+    glyph.send_keys("ctrl+b");
+    glyph.wait_for_screen("the tree's brand", WAIT, |screen| {
+        screen[1].contains("✦ glyph")
+    });
     glyph
 }
 

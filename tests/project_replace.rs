@@ -58,7 +58,7 @@ fn fixture_copy() -> std::io::Result<tempfile::TempDir> {
 fn open_in(dir: &Path) -> Glyph {
     let glyph =
         Glyph::spawn_in_with_config(dir, "[lsp.rust]\ncommand = \"glyph-no-such-server\"\n", &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     glyph
 }
 

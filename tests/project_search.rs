@@ -64,7 +64,7 @@ fn hit_row((place, text): (&str, &str)) -> String {
 /// Glyph in `dir` with no file open, so the root is that folder.
 fn open_in(dir: &Path) -> Glyph {
     let glyph = Glyph::spawn_in(dir, &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     glyph
 }
 
@@ -189,7 +189,7 @@ fn a_click_outside_the_card_closes_it_and_one_inside_does_not() {
 #[test]
 fn mono_dims_with_the_modifier_and_reverses_the_selected_row() {
     let mut glyph = Glyph::spawn_in_with_config(Path::new(PROJECT), "theme = \"mono\"\n", &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     search(&mut glyph, "TODO");
     wait_for_status(&glyph, "3 matches in 2 files");
     // The frame with the count has the selection and the dim too.
@@ -199,7 +199,8 @@ fn mono_dims_with_the_modifier_and_reverses_the_selected_row() {
         glyph.reversed_text(FIRST_ROW)
     );
     let status = ROWS - 1;
-    let position = glyph.text_col(status, "Ln 1").unwrap();
+    // The splash is still up under the card, so its keys are in the status line.
+    let position = glyph.text_col(status, "quit").unwrap();
     assert!(glyph.dim_at(position, status), "the status line is dimmed");
     assert!(!glyph.dim_at(CARD_X + 2, STATUS_ROW), "the card isn't");
 }
