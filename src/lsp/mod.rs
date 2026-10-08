@@ -1011,13 +1011,6 @@ impl Lsp {
     /// runs on a task of its own, so editing never waits on a server; the
     /// returned handle ends once they're gone, killed if they had to be. `None`
     /// when there was nothing to wait for.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "opening another project calls it, in a later change"
-        )
-    )]
     pub fn stop_root(&mut self, root: &Path) -> Option<JoinHandle<()>> {
         let stopped: HashSet<u64> = self
             .by_root

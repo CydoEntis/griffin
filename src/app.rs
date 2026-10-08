@@ -40,6 +40,7 @@ use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
 use crate::ui::completion::{self, Completion};
 use crate::ui::confirm::{Answer, Choice, Confirm, Reply};
+use crate::ui::dirpicker::{Browsed, DirPicker};
 use crate::ui::find::{FindBar, Step};
 use crate::ui::hover::render_hover;
 use crate::ui::picker::{self, Picked, Picker};
@@ -66,9 +67,12 @@ pub enum AppEvent {
     BackupDue,
     /// How a backup write went.
     BackupWritten(io::Result<()>),
-    /// The background walk for the go-to-file picker finished: every file in the
-    /// project, relative to the root.
-    FilesListed(Vec<String>),
+    /// File walk number `walk` for the go-to-file picker finished: every file in
+    /// the project, relative to the root it walked.
+    FilesListed {
+        walk: u64,
+        files: Vec<String>,
+    },
     /// A batch of hits from project search number `search`.
     SearchHits {
         search: u64,
@@ -721,6 +725,8 @@ pub struct App {
     /// The picker, while it's open; it takes every key.
     picker: Option<Picker>,
     picker_for: PickerFor,
+    /// The folder browser, while it's open; it takes every key.
+    folders: Option<DirPicker>,
     /// The latest run, whose output the run panel shows.
     run: Option<RunView>,
     /// The latest run's entry, for Ctrl+F5 to start again.
@@ -736,6 +742,9 @@ pub struct App {
     find: Option<FindBar>,
     /// The project search panel, while it's open; it takes every key.
     project_search: Option<ProjectSearch>,
+    /// How many Ctrl+P file walks have started, numbering them so a list from
+    /// one that was overtaken (perhaps of the old project) is dropped.
+    walks: u64,
     /// How many project searches have started, numbering them so hits from one
     /// that was replaced are dropped.
     searches: u64,
@@ -945,6 +954,12 @@ impl App {
             AppEvent::Input(Event::Paste(text)) if self.prompt.is_none() => {
                 self.hover = None;
                 self.completion = None;
+                if let Some(browser) = &mut self.folders {
+                    if let Some(step) = browser.paste(&text) {
+                        self.folders_step(step);
+                    }
+                    return;
+                }
                 if let Some(picker) = &mut self.picker {
                     if let Some(picked) = picker.paste(&text) {
                         self.finish_picker(picked);
@@ -998,6 +1013,17 @@ impl App {
                     self.close_project_search();
                 }
             }
+            // The folder browser closes on a click outside it, as the cast does.
+            AppEvent::Input(Event::Mouse(mouse)) if self.folders.is_some() => {
+                let outside = self.folders.as_ref().is_some_and(|browser| {
+                    !browser
+                        .card(self.screen)
+                        .contains(Position::new(mouse.column, mouse.row))
+                });
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) && outside {
+                    self.folders = None;
+                }
+            }
             // The cast palette closes on a click outside it, as a dialog does.
             AppEvent::Input(Event::Mouse(mouse))
                 if self.picker.is_some()
@@ -1027,10 +1053,13 @@ impl App {
             AppEvent::BackupDue => self.back_up(),
             AppEvent::BackupWritten(result) => self.backup_written(result),
             // A list for a picker that has since closed is dropped; the next
-            // Ctrl+P walks again.
-            AppEvent::FilesListed(files) => {
+            // Ctrl+P walks again. So is one from an older walk: it may be of a
+            // folder that is no longer the project, and its paths would be
+            // joined onto the new root.
+            AppEvent::FilesListed { walk, files } => {
                 if let Some(picker) = &mut self.picker
                     && self.picker_for == PickerFor::File
+                    && walk == self.walks
                 {
                     picker.set_files(files);
                 }
@@ -1104,7 +1133,9 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) {
         // Tree letters are only actions when nothing else is reading keys as text.
-        let scope = if self.project_search.is_some() && self.prompt.is_none() {
+        let scope = if self.folders.is_some() && self.prompt.is_none() {
+            Scope::Folders
+        } else if self.project_search.is_some() && self.prompt.is_none() {
             Scope::Search
         } else if self.find.is_some() && self.prompt.is_none() {
             Scope::Find
@@ -1137,6 +1168,12 @@ impl App {
         if let Some(prompt) = self.prompt {
             if let Some(step) = self.confirm(prompt).handle(input, self.prompt_button) {
                 self.prompt_step(prompt, step);
+            }
+            return;
+        }
+        if let Some(browser) = &mut self.folders {
+            if let Some(step) = browser.handle(input) {
+                self.folders_step(step);
             }
             return;
         }
@@ -1345,7 +1382,8 @@ impl App {
             | Action::Run
             | Action::ToggleRunPanel
             | Action::StopRun
-            | Action::RestartRun => {
+            | Action::RestartRun
+            | Action::OpenDirectory => {
                 self.handle_action(action);
             }
             _ => {}
@@ -1559,8 +1597,10 @@ impl App {
                     return;
                 }
                 // What makes sense with nothing open: quitting, the tree, going
-                // to a file or a search hit (which replaces the splash), runs.
+                // to a file or a search hit (which replaces the splash), runs,
+                // opening another folder.
                 Action::Quit
+                | Action::OpenDirectory
                 | Action::ToggleTree
                 | Action::FocusTree
                 | Action::CycleFocus
@@ -1661,7 +1701,9 @@ impl App {
             Action::JumpBack => self.jump_back(),
             Action::Hover => self.request_hover(),
             Action::Complete => self.request_completion(),
-            // Bound only in tree or find bar scope, so they never reach the editor.
+            Action::OpenDirectory => self.open_folders(),
+            // Bound only in tree, find bar, folder browser or splash scope, so they never
+            // reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
             | Action::TreeRename
@@ -1672,6 +1714,7 @@ impl App {
             | Action::FindRegex
             | Action::ReplaceAll
             | Action::ProjectReplace
+            | Action::OpenFolderHere
             | Action::SplashUp
             | Action::SplashDown
             | Action::SplashRun
@@ -2014,16 +2057,93 @@ impl App {
         let lines = self.buffer().rope.len_lines();
         let mut picker = Picker::cast(commands, lines, query);
         let root = self.tree.root().to_path_buf();
+        self.walks += 1;
+        let walk = self.walks;
         match &self.events {
             Some(events) => {
                 let events = events.clone();
                 tokio::task::spawn_blocking(move || {
-                    let _ = events.send(AppEvent::FilesListed(list_files(&root)));
+                    let files = list_files(&root);
+                    let _ = events.send(AppEvent::FilesListed { walk, files });
                 });
             }
             None => picker.set_files(list_files(&root)),
         }
         self.picker = Some(picker);
+    }
+
+    /// `>open directory`: the folder browser, starting in the project folder.
+    fn open_folders(&mut self) {
+        match DirPicker::new(self.tree.root()) {
+            Ok(browser) => self.folders = Some(browser),
+            Err(why) => self.say(Tone::Err, why),
+        }
+    }
+
+    /// Follows what a key did in the folder browser.
+    fn folders_step(&mut self, step: Browsed) {
+        match step {
+            Browsed::Open(dir) => {
+                self.folders = None;
+                self.open_project(&dir);
+            }
+            // The browser stays where it was, under the message.
+            Browsed::Failed(why) => self.say(Tone::Err, why),
+            Browsed::Close => self.folders = None,
+        }
+    }
+
+    /// Makes `dir` the project, as `glyph <dir>` would: every tab closes, the
+    /// run is stopped, the old folder's language servers are shut down, and
+    /// the tree shows the new folder with focus. Everything else that reads
+    /// the project (Ctrl+P, project search, F5, save as, new servers) asks the
+    /// tree for its root, so it follows. Unsaved changes would be lost, so with
+    /// any it refuses and says so.
+    fn open_project(&mut self, dir: &Path) {
+        if self.tabs.docs.iter().any(|doc| doc.buffer.dirty) {
+            self.say(Tone::Warn, "save or close unsaved files first");
+            return;
+        }
+        // The run's command was started in the old folder and belongs to it.
+        if let Some(view) = &mut self.run
+            && view.status == RunStatus::Running
+        {
+            view.status = RunStatus::Stopped;
+        }
+        if let Some(tree) = self.run_tree.take() {
+            tree.kill();
+        }
+        // Ctrl+F5 would run the old command in the new folder; without it,
+        // Ctrl+F5 is F5, which reads the new folder's `.glyph.toml`.
+        self.run_entry = None;
+        self.close_project_search();
+        self.find = None;
+        self.hover = None;
+        self.hover_for = None;
+        self.completion = None;
+        self.completion_for = None;
+        // Jumps lead back into the old folder's files.
+        self.jumps.clear();
+        if self.tabs.splits.len() > 1 {
+            self.tabs.toggle_split();
+        }
+        // Every tab is saved, so no backup is needed any more.
+        for doc in self.tabs.close_where(|_| true) {
+            let _ = self.backups.delete(doc.buffer.path.as_deref(), doc.id);
+        }
+        // The servers' exit is waited for on a task of its own (R29), so the
+        // handle isn't needed here.
+        drop(self.lsp.stop_root(&absolute(self.tree.root())));
+        self.tree = Tree::new(dir);
+        self.project = project_label(dir, std::env::home_dir().as_deref());
+        // The new folder shows with an untitled tab; landing on the splash is
+        // a later ticket's.
+        self.splash = None;
+        self.tree_visible = true;
+        self.focus = Focus::Tree;
+        self.reset_mouse();
+        self.follow_cursor();
+        self.follow_tree();
     }
 
     /// Cast's `/text`: opens project search holding `text` and, as Enter was
@@ -2974,6 +3094,7 @@ impl App {
         self.prompt.is_some()
             || self.name_prompt.is_some()
             || self.picker.is_some()
+            || self.folders.is_some()
             || self.project_search.is_some()
             || self.find.is_some()
     }
@@ -3247,6 +3368,10 @@ impl App {
         }
         if let Some(picker) = &self.picker {
             let at = picker.render(theme, frame, frame.area());
+            frame.set_cursor_position(at);
+        }
+        if let Some(browser) = &self.folders {
+            let at = browser.render(theme, frame, frame.area());
             frame.set_cursor_position(at);
         }
         if let Some(panel) = &self.project_search {
@@ -4080,6 +4205,63 @@ world",
     }
 
     #[test]
+    fn opening_a_folder_closes_every_tab_and_shows_its_tree() -> Result<()> {
+        let (dir, mut app) = project()?;
+        let other = tempfile::tempdir()?;
+        std::fs::write(other.path().join("c.txt"), "c")?;
+        app.open(&dir.path().join("a.txt"));
+        app.handle_action(Action::ToggleSplit);
+        app.focus = Focus::Editor;
+        app.handle_action(Action::OpenDirectory);
+        assert!(app.folders.is_some());
+        app.folders_step(Browsed::Open(other.path().to_path_buf()));
+        assert!(app.folders.is_none());
+        assert_eq!(app.tree.root(), other.path());
+        assert_eq!(
+            app.project,
+            project_label(other.path(), std::env::home_dir().as_deref())
+        );
+        assert_eq!(app.tabs.splits.len(), 1);
+        assert_eq!(tab_names(&app), ["untitled"]);
+        assert_eq!(app.tabs.docs.len(), 1);
+        assert!(app.tree_visible);
+        assert_eq!(app.focus, Focus::Tree);
+        assert_eq!(selected_name(&app), Some("c.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_folder_opens_from_the_splash_and_replaces_it() -> Result<()> {
+        let (_dir, mut app) = project()?;
+        let other = tempfile::tempdir()?;
+        assert!(app.splash.is_some());
+        app.handle_action(Action::OpenDirectory);
+        assert!(app.folders.is_some());
+        app.folders_step(Browsed::Open(other.path().to_path_buf()));
+        assert_eq!(app.tree.root(), other.path());
+        assert!(app.splash.is_none());
+        assert_eq!(app.focus, Focus::Tree);
+        Ok(())
+    }
+
+    #[test]
+    fn opening_a_folder_with_unsaved_changes_refuses() -> Result<()> {
+        let (dir, mut app) = project()?;
+        let other = tempfile::tempdir()?;
+        app.open(&dir.path().join("a.txt"));
+        app.focus = Focus::Editor;
+        type_keys(&mut app, "x");
+        app.folders_step(Browsed::Open(other.path().to_path_buf()));
+        assert_eq!(app.tree.root(), dir.path());
+        assert_eq!(tab_names(&app), ["a.txt ●"]);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("save or close unsaved files first")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn the_picker_takes_keys_from_the_tree_and_opens_its_pick() -> Result<()> {
         let (dir, mut app) = project()?;
         std::fs::create_dir(dir.path().join("sub"))?;
@@ -4094,8 +4276,28 @@ world",
         assert_eq!(app.focus, Focus::Editor);
         assert_eq!(app.buffer().rope.to_string(), "deep");
         // A walk that finishes after the picker closed changes nothing.
-        app.handle_event(AppEvent::FilesListed(vec!["a.txt".into()]));
+        app.handle_event(AppEvent::FilesListed {
+            walk: app.walks,
+            files: vec!["a.txt".into()],
+        });
         assert!(app.picker.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_list_from_an_older_walk_is_dropped() -> Result<()> {
+        let (_dir, mut app) = project()?;
+        press(&mut app, &["ctrl+p"]);
+        let stale = app.walks;
+        press(&mut app, &["esc", "ctrl+p"]);
+        app.handle_event(AppEvent::FilesListed {
+            walk: stale,
+            files: vec!["gone.txt".into()],
+        });
+        press(&mut app, &["g", "o", "n", "e"]);
+        let picker = app.picker.as_ref().expect("picker is open");
+        // Commands match the query too, so only the file is looked for.
+        assert_ne!(picker.selected(), Some("gone.txt"));
         Ok(())
     }
 

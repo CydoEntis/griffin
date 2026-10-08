@@ -101,6 +101,10 @@ pub enum Action {
     /// Asks the language server for completions at the cursor and shows them in
     /// a popup.
     Complete,
+    /// Opens the folder browser, to open another folder as the project.
+    OpenDirectory,
+    /// Folder browser only: opens the folder it shows, whatever is selected.
+    OpenFolderHere,
     /// Splash only: moves the selection up a row, wrapping.
     SplashUp,
     /// Splash only: moves the selection down a row, wrapping.
@@ -129,6 +133,8 @@ pub enum Scope {
     /// first, so Alt+A can replace across the project here and in the find bar
     /// replace only in the file.
     Search,
+    /// While the folder browser is open: its keys win over the global ones.
+    Folders,
     /// While the splash has focus: its letters and arrows are its own.
     Splash,
 }
@@ -215,6 +221,8 @@ impl Action {
         Action::JumpBack,
         Action::Hover,
         Action::Complete,
+        Action::OpenDirectory,
+        Action::OpenFolderHere,
         Action::SplashUp,
         Action::SplashDown,
         Action::SplashRun,
@@ -236,6 +244,7 @@ impl Action {
             | Action::FindRegex
             | Action::ReplaceAll => Scope::Find,
             Action::ProjectReplace => Scope::Search,
+            Action::OpenFolderHere => Scope::Folders,
             Action::SplashUp
             | Action::SplashDown
             | Action::SplashRun
@@ -337,6 +346,8 @@ impl Action {
             Action::JumpBack => "jump_back",
             Action::Hover => "hover",
             Action::Complete => "complete",
+            Action::OpenDirectory => "open_directory",
+            Action::OpenFolderHere => "open_folder_here",
             Action::SplashUp => "splash_up",
             Action::SplashDown => "splash_down",
             Action::SplashRun => "splash_run",
@@ -437,6 +448,8 @@ impl Action {
             Action::JumpBack => "Jump back",
             Action::Hover => "Show hover",
             Action::Complete => "Complete",
+            Action::OpenDirectory => "Open directory",
+            Action::OpenFolderHere => "Open this folder",
             Action::SplashUp => "Splash: up",
             Action::SplashDown => "Splash: down",
             Action::SplashRun => "Splash: run selected",
@@ -549,6 +562,9 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::JumpBack, "alt+left"),
     (Action::Hover, "alt+k"),
     (Action::Complete, "alt+/"),
+    // Many Unix terminals send Ctrl+Enter as plain Enter, so the browser's first
+    // row does the same and this is only a shortcut for it.
+    (Action::OpenFolderHere, "ctrl+enter"),
     // The splash's own keys (glyph-splash spec S3): letters are free there, as
     // nothing is typed into the splash.
     (Action::SplashUp, "up"),
@@ -559,6 +575,12 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::SplashOpenDirectory, "o"),
     (Action::SplashDismiss, "esc"),
 ];
+
+/// Actions with no default key, reached from the cast palette or bound in
+/// `[keys]`: the spec gives them none. Only the check that every action is
+/// accounted for reads it.
+#[cfg(test)]
+const UNBOUND: &[Action] = &[Action::OpenDirectory];
 
 /// What a key event means to the editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -597,6 +619,8 @@ pub struct Keymap {
     find: HashMap<Key, Action>,
     /// Checked before `find` while project search is open.
     search: HashMap<Key, Action>,
+    /// Checked before `bindings` while the folder browser is open.
+    folders: HashMap<Key, Action>,
     /// Checked before `bindings` while the splash has focus.
     splash: HashMap<Key, Action>,
 }
@@ -630,6 +654,7 @@ impl Keymap {
             tree: HashMap::new(),
             find: HashMap::new(),
             search: HashMap::new(),
+            folders: HashMap::new(),
             splash: HashMap::new(),
         };
         for &(action, notation) in DEFAULT_BINDINGS {
@@ -655,6 +680,7 @@ impl Keymap {
             Scope::Tree => &mut self.tree,
             Scope::Find => &mut self.find,
             Scope::Search => &mut self.search,
+            Scope::Folders => &mut self.folders,
             Scope::Splash => &mut self.splash,
         }
     }
@@ -690,6 +716,7 @@ impl Keymap {
             Scope::Tree => self.tree.get(&key),
             Scope::Find => self.find.get(&key),
             Scope::Search => self.search.get(&key).or_else(|| self.find.get(&key)),
+            Scope::Folders => self.folders.get(&key),
             Scope::Splash => self.splash.get(&key),
         };
         if let Some(&action) = scoped {
@@ -1046,6 +1073,7 @@ mod tests {
                 + map.tree.len()
                 + map.find.len()
                 + map.search.len()
+                + map.folders.len()
                 + map.splash.len(),
             DEFAULT_BINDINGS.len()
         );
@@ -1100,6 +1128,7 @@ mod tests {
     #[test]
     fn default_bindings_cover_every_action_once() {
         let mut bound: Vec<Action> = DEFAULT_BINDINGS.iter().map(|&(a, _)| a).collect();
+        bound.extend_from_slice(UNBOUND);
         bound.sort_by_key(|a| a.name());
         let mut all = Action::ALL.to_vec();
         all.sort_by_key(|a| a.name());
@@ -1658,6 +1687,36 @@ mod tests {
         assert_eq!(
             map.resolve_in(&alt_a, Scope::Search),
             Input::Action(Action::ReplaceAll)
+        );
+    }
+
+    #[test]
+    fn open_directory_is_a_command_with_no_key_until_one_is_bound() {
+        let map = Keymap::default();
+        assert!(Action::commands().any(|a| a == Action::OpenDirectory));
+        assert_eq!(Action::OpenDirectory.title(), "Open directory");
+        assert_eq!(map.key_label(Action::OpenDirectory), None);
+        let map = Keymap::new(&keys(&[("open_directory", one("alt+o"))])).unwrap();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('o'), KeyModifiers::ALT)),
+            Input::Action(Action::OpenDirectory)
+        );
+    }
+
+    #[test]
+    fn ctrl_enter_opens_the_shown_folder_only_in_the_folder_browser() {
+        let map = Keymap::default();
+        let ctrl_enter = ev(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert_eq!(
+            map.resolve_in(&ctrl_enter, Scope::Folders),
+            Input::Action(Action::OpenFolderHere)
+        );
+        assert_eq!(map.resolve(&ctrl_enter), Input::Ignored);
+        assert!(!Action::commands().any(|a| a == Action::OpenFolderHere));
+        // Everything else still means what it does globally.
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Enter, KeyModifiers::NONE), Scope::Folders),
+            Input::Action(Action::Newline)
         );
     }
 
