@@ -1,0 +1,4 @@
+#!/bin/sh
+# Run panel fixture: the eight ANSI colours, four to a line.
+printf '\033[31mred\033[0m \033[32mgreen\033[0m \033[33myellow\033[0m \033[34mblue\033[0m\n'
+printf '\033[35mmagenta\033[0m \033[36mcyan\033[0m \033[37mwhite\033[0m \033[30mblack\033[0m\n'
