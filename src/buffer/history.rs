@@ -34,6 +34,9 @@ pub struct History {
     explicit_depth: usize,
     /// Set by the outermost `begin_group`: the next change starts a fresh group.
     explicit_fresh: bool,
+    /// Closers typing stepped over since the last typed change; the run goes on
+    /// past them.
+    stepped: usize,
 }
 
 impl Change {
@@ -46,15 +49,16 @@ impl Change {
         }
     }
 
-    /// Whether `next` is typing that continues straight on from this change. Typing
-    /// inside the change counts too: an auto-paired `()` leaves the cursor between
-    /// its brackets, and what is typed there belongs to the same run.
-    fn continued_by(&self, next: &Change) -> bool {
+    /// Whether `next` is typing that continues straight on from this change, after
+    /// `stepped` closers typed over in between. Typing inside the change counts
+    /// too: an auto-paired `()` leaves the cursor between its brackets, and what is
+    /// typed there belongs to the same run.
+    fn continued_by(&self, next: &Change, stepped: usize) -> bool {
         let len = self.inserted.chars().count();
         self.removed.is_empty()
             && next.removed.is_empty()
             && next.at > self.at
-            && next.at <= self.at + len
+            && next.at <= self.at + len + stepped
     }
 }
 
@@ -77,7 +81,7 @@ impl History {
                 .undo
                 .last()
                 .and_then(|group| group.changes.last())
-                .is_some_and(|last| last.continued_by(&change));
+                .is_some_and(|last| last.continued_by(&change, self.stepped));
         if joins {
             // `typing_open` means the last group exists.
             if let Some(group) = self.undo.last_mut() {
@@ -87,6 +91,14 @@ impl History {
             self.push_group(change, cursor_before);
         }
         self.typing_open = kind == EditKind::Typing;
+        self.stepped = 0;
+    }
+
+    /// Typing stepped over a closer: the run of typing stays open across it.
+    pub fn step_over(&mut self) {
+        if self.typing_open {
+            self.stepped += 1;
+        }
     }
 
     fn push_group(&mut self, change: Change, cursor_before: usize) {
@@ -99,6 +111,7 @@ impl History {
     /// Ends any open run of typing, so the next edit starts its own group.
     pub fn seal(&mut self) {
         self.typing_open = false;
+        self.stepped = 0;
     }
 
     /// Lets the next typed char join the last group as if it were a run of typing;

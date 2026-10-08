@@ -109,7 +109,10 @@ impl Buffer {
         }
         if auto_pairs && self.selection().is_none() {
             if CLOSERS.contains(&ch) && next == Some(ch) {
-                self.place_cursor(self.cursor + 1);
+                // A move, but part of the typing: what's typed next joins its run.
+                self.cursor += 1;
+                self.goal_col = None;
+                self.history.step_over();
                 return;
             }
             if let Some(closer) = closer_of(ch)
@@ -464,6 +467,24 @@ mod tests {
             !b.history.can_undo(),
             "the closer should not be a step of its own"
         );
+    }
+
+    #[test]
+    fn typing_on_past_a_closer_stays_one_undo_step() {
+        let mut b = buf("x |");
+        b.seal_undo_group();
+        type_all(&mut b, "foo(bar);", true);
+        assert_eq!(show(&b), "x foo(bar);|");
+        b.undo();
+        assert_eq!(show(&b), "x |");
+        assert!(!b.history.can_undo(), "stepping over `)` split the run");
+
+        // Over a closer Glyph didn't insert, too.
+        let mut b = buf("(|)");
+        type_all(&mut b, "a);", true);
+        assert_eq!(show(&b), "(a);|");
+        b.undo();
+        assert_eq!(show(&b), "(|)");
     }
 
     #[test]
