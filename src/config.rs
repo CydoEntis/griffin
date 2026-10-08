@@ -58,6 +58,8 @@ pub struct EditorConfig {
     pub tab_width: usize,
     /// Tab inserts spaces up to the next stop instead of a tab character.
     pub insert_spaces: bool,
+    /// Typed brackets bring their closers along (see `Buffer::type_char`).
+    pub auto_pairs: bool,
 }
 
 impl Default for EditorConfig {
@@ -65,6 +67,7 @@ impl Default for EditorConfig {
         Self {
             tab_width: 4,
             insert_spaces: true,
+            auto_pairs: true,
         }
     }
 }
@@ -247,6 +250,15 @@ mod tests {
         let loaded = parse("[editor]\ntab_width = 8\n");
         assert!(loaded.error.is_none(), "{:?}", loaded.error);
         assert_eq!(loaded.config.editor.tab_width, 8);
+        assert!(loaded.config.editor.insert_spaces);
+    }
+
+    #[test]
+    fn auto_pairs_defaults_to_true_and_can_be_turned_off() {
+        assert!(parse("").config.editor.auto_pairs);
+        let loaded = parse("[editor]\nauto_pairs = false\n");
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert!(!loaded.config.editor.auto_pairs);
         assert!(loaded.config.editor.insert_spaces);
     }
 

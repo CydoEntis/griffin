@@ -1464,7 +1464,8 @@ impl App {
             // There's nothing under the splash or the key list to type into.
             Input::Text(_) if self.splash_has_keys() || self.no_file => {}
             Input::Text(ch) => {
-                self.edit(|buffer| buffer.type_text(ch.encode_utf8(&mut [0; 4])));
+                let auto_pairs = self.editor.auto_pairs;
+                self.edit(|buffer| buffer.type_char(ch, auto_pairs));
                 if self.lsp.is_trigger(self.tabs.active().id, ch) {
                     self.request_completion();
                 }

@@ -86,7 +86,8 @@ fn typing_inserts() {
 
 #[test]
 fn enter_tab_and_typing_match_the_visual_check() {
-    let (mut glyph, x) = start_empty("");
+    // R6's plain Enter, with no closer for the `{` to push down.
+    let (mut glyph, x) = start_empty("[editor]\nauto_pairs = false\n");
 
     glyph.type_text("fn x() {");
     wait_for_row(&glyph, 0, 1, "fn x() {");
@@ -105,6 +106,43 @@ fn enter_tab_and_typing_match_the_visual_check() {
     wait_for_position(&glyph, 3, 5);
     glyph.type_text("z");
     wait_for_row(&glyph, 2, 3, "    z");
+
+    quit(&mut glyph);
+}
+
+#[test]
+fn brackets_close_themselves() {
+    let (mut glyph, x) = start_empty("");
+
+    glyph.type_text("foo(");
+    wait_for_row(&glyph, 0, 1, "foo()");
+    wait_for_position(&glyph, 1, 5);
+    glyph.wait_for_cursor(x + 4, TOP, WAIT);
+
+    // The typed closer steps over the one Glyph put in.
+    glyph.type_text("bar)");
+    wait_for_row(&glyph, 0, 1, "foo(bar)");
+    wait_for_position(&glyph, 1, 9);
+    glyph.wait_for_cursor(x + 8, TOP, WAIT);
+
+    // Before a word an opener comes alone.
+    glyph.send_keys("home");
+    glyph.type_text("[");
+    wait_for_row(&glyph, 0, 1, "[foo(bar)");
+
+    quit(&mut glyph);
+}
+
+#[test]
+fn auto_pairs_off_types_brackets_alone() {
+    let (mut glyph, _) = start_empty("[editor]\nauto_pairs = false\n");
+
+    glyph.type_text("foo(");
+    wait_for_row(&glyph, 0, 1, "foo(");
+    wait_for_position(&glyph, 1, 5);
+    glyph.type_text(")");
+    wait_for_row(&glyph, 0, 1, "foo()");
+    wait_for_position(&glyph, 1, 6);
 
     quit(&mut glyph);
 }
