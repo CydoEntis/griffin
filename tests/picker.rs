@@ -300,6 +300,9 @@ fn gt_lists_only_commands_with_their_keys_and_enter_runs_one() {
     assert_eq!(glyph.text_col(FIRST_ROW + 1, "Ctrl+S"), Some(RIGHT - 6));
 
     glyph.type_text("split");
+    // "sp" already ranks Split right first, so wait for the whole query to
+    // land before checking which letters are lit.
+    glyph.wait_for_cursor(QUERY_X + ">split".len() as u16, QUERY_ROW, WAIT);
     glyph.wait_for_screen("Split right selected", WAIT, |screen| {
         screen[usize::from(FIRST_ROW)]
             .chars()
@@ -392,6 +395,8 @@ fn slash_text_opens_project_search_for_the_text() {
     open_picker(&mut glyph);
     glyph.type_text("/TODO");
     glyph.wait_for_text("cast · text", WAIT);
+    // The mode switches on "/", before the rest of the query has arrived.
+    glyph.wait_for_text("Search the project for TODO", WAIT);
     assert_eq!(glyph.text_col(HEADER_ROW, "TEXT"), Some(TEXT_X));
     assert_eq!(
         glyph.text_col(MODE_ROW, "Search the project for TODO"),
