@@ -142,21 +142,52 @@ impl Buffer {
 
     /// Splits the line at the cursor; the new line starts with the current line's
     /// leading whitespace (only what lies before the cursor, so Enter inside the
-    /// indent doesn't grow it). Replaces any selection.
+    /// indent doesn't grow it). Replaces any selection. The app's Enter is
+    /// `newline_pair`, which falls back to this.
+    #[cfg(test)]
     pub fn newline(&mut self) {
         self.replacing_selection(Self::newline_at_cursor);
     }
 
+    /// Enter with `auto_pairs`: between a bracket pair it also puts the closer on a
+    /// line of its own below, and the cursor on a line between them indented one
+    /// step (a tab, or `tab_width` spaces) further. Otherwise a plain `newline`.
+    pub fn newline_pair(&mut self, auto_pairs: bool, tab_width: usize, insert_spaces: bool) {
+        let step = if insert_spaces {
+            " ".repeat(tab_width.max(1))
+        } else {
+            "\t".to_string()
+        };
+        self.replacing_selection(|b| {
+            let at = b.cursor;
+            let in_pair = auto_pairs
+                && at > 0
+                && at < b.rope.len_chars()
+                && closer_of(b.rope.char(at - 1)) == Some(b.rope.char(at));
+            if !in_pair {
+                return b.newline_at_cursor();
+            }
+            let indent = b.indent_before_cursor();
+            let inner = format!("\n{indent}{step}");
+            b.insert_as(&format!("{inner}\n{indent}"), EditKind::Newline);
+            b.cursor = at + inner.chars().count();
+        });
+    }
+
     fn newline_at_cursor(&mut self) {
+        let indent = self.indent_before_cursor();
+        self.insert_as(&format!("\n{indent}"), EditKind::Newline);
+    }
+
+    /// The cursor line's leading whitespace, up to the cursor at most.
+    fn indent_before_cursor(&self) -> String {
         let line = self.rope.char_to_line(self.cursor);
         let start = self.rope.line_to_char(line);
-        let indent: String = self
-            .rope
+        self.rope
             .slice(start..self.cursor)
             .chars()
             .take_while(|&c| c == ' ' || c == '\t')
-            .collect();
-        self.insert_as(&format!("\n{indent}"), EditKind::Newline);
+            .collect()
     }
 
     /// Deletes the char before the cursor; at column 0 that is the previous line
@@ -512,6 +543,52 @@ mod tests {
         let mut b = buf("  |  x");
         b.newline();
         assert_eq!(show(&b), "  \n  |  x");
+    }
+
+    #[test]
+    fn enter_in_a_pair_opens_an_indented_line() {
+        for (before, after) in [
+            ("if x {|}", "if x {\n    |\n}"),
+            ("  f(|)", "  f(\n      |\n  )"),
+            ("\tv = [|];", "\tv = [\n\t    |\n\t];"),
+        ] {
+            let mut b = buf(before);
+            b.newline_pair(true, 4, true);
+            assert_eq!(show(&b), after, "enter in {before:?}");
+        }
+    }
+
+    #[test]
+    fn enter_in_a_pair_indents_with_a_tab_without_insert_spaces() {
+        let mut b = buf("\tif x {|}");
+        b.newline_pair(true, 4, false);
+        assert_eq!(show(&b), "\tif x {\n\t\t|\n\t}");
+    }
+
+    #[test]
+    fn enter_in_a_pair_undoes_with_the_typing_before_it() {
+        let mut b = buf("|");
+        for ch in "if x {".chars() {
+            b.type_char(ch, true);
+        }
+        b.newline_pair(true, 4, true);
+        assert_eq!(show(&b), "if x {\n    |\n}");
+        b.undo();
+        assert_eq!(show(&b), "|");
+        assert!(!b.history.can_undo());
+    }
+
+    #[test]
+    fn enter_outside_a_pair_or_without_auto_pairs_is_plain() {
+        for (auto_pairs, before, after) in [
+            (false, "if x {|}", "if x {\n|}"),
+            (true, "a(|]", "a(\n|]"),
+            (true, "  x|", "  x\n  |"),
+        ] {
+            let mut b = buf(before);
+            b.newline_pair(auto_pairs, 4, true);
+            assert_eq!(show(&b), after, "enter in {before:?}");
+        }
     }
 
     #[test]
