@@ -91,9 +91,13 @@ fn long_line_is_cut() {
 }
 
 #[test]
-fn no_path_opens_untitled() {
+fn no_path_opens_untitled_under_the_splash() {
     let mut glyph = Glyph::spawn(&[]);
-    glyph.wait_for_text("untitled", START);
+    glyph.wait_for_text("New file", START);
+    // Esc leaves the splash for the untitled buffer it stood in for.
+    glyph.send_keys("esc");
+    glyph.wait_for_text("untitled", WAIT);
+    glyph.wait_for_text_gone("New file", WAIT);
 
     let screen = glyph.screen();
     assert!(status_line(&glyph).contains("untitled"), "{screen:#?}");

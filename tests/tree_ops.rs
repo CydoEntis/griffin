@@ -52,9 +52,11 @@ fn copy_dir(from: &Path, to: &Path) {
 fn open_copy() -> (tempfile::TempDir, Glyph) {
     let dir = tempfile::tempdir().expect("create temp dir");
     copy_dir(Path::new("tests/fixtures/project"), dir.path());
-    let glyph = Glyph::spawn_in(dir.path(), &["."]);
+    let mut glyph = Glyph::spawn_in(dir.path(), &["."]);
     glyph.wait_for_text("README.md", START);
     wait_for_tree(&glyph, TOP);
+    // The splash has the keys at launch; these tests work in the tree.
+    glyph.send_keys("ctrl+e");
     (dir, glyph)
 }
 
