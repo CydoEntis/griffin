@@ -378,7 +378,26 @@ async fn a_reverse_request_is_refused() {
     }));
     fake.session.launch(json!({})).unwrap();
     assert_eq!(fake.news(1).await, [DapNews::Launched]);
-    // The fake logs the refusal once it reads it, before this request.
+    // The reverse request can still be queued behind `Launched`; handling it first
+    // puts the refusal on the wire ahead of `threads`, so the fake has logged it
+    // by the time `threads` is answered.
+    let handled = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(app_event) = fake.events.recv().await {
+            if let AppEvent::Dap(event) = app_event {
+                let reverse = matches!(
+                    &event.event,
+                    AdapterEvent::Message(m) if m["type"] == "request"
+                );
+                fake.session.handle(event);
+                if reverse {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(handled, Ok(true), "the fake never sent runInTerminal");
     fake.session.threads().unwrap();
     fake.news(1).await;
     let log = fake.log();
