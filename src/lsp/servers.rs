@@ -37,16 +37,41 @@ pub fn default_for(lang: &str) -> Option<(&'static str, &'static [&'static str])
     })
 }
 
+/// The spec's default install command for `lang`'s server and the tool that
+/// command runs, which has to be on PATH for the install to work.
+pub fn default_install(lang: &str) -> Option<(&'static str, &'static str)> {
+    Some(match lang {
+        "rust" => ("rustup component add rust-analyzer", "rustup"),
+        "go" => ("go install golang.org/x/tools/gopls@latest", "go"),
+        "typescript" | "tsx" | "javascript" | "jsx" => (
+            "npm install -g typescript-language-server typescript",
+            "npm",
+        ),
+        "python" => ("npm install -g pyright", "npm"),
+        "html" | "css" => ("npm install -g vscode-langservers-extracted", "npm"),
+        "sql" => ("go install github.com/sqls-server/sqls@latest", "go"),
+        _ => return None,
+    })
+}
+
 /// The server table for every language: the defaults, overridden by `config`.
 /// A table naming a command replaces the default command and args; one without
 /// a command keeps the default program, so `format_on_save = true` alone doesn't
 /// switch the server off. Tables for languages without a default pass through.
+///
+/// The default install command comes with the default program only: it installs
+/// that program, so a table naming another server gets none unless it sets
+/// `install` itself.
 pub fn with_defaults(mut config: BTreeMap<String, LspServer>) -> BTreeMap<String, LspServer> {
     for lang in LANGUAGES {
         let Some((command, args)) = default_for(lang) else {
             continue;
         };
         let server = config.entry(lang.to_string()).or_default();
+        let default_program = server.command.as_deref().is_none_or(|c| c == command);
+        if server.install.is_none() && default_program {
+            server.install = default_install(lang).map(|(install, _)| install.to_string());
+        }
         if server.command.is_none() {
             server.command = Some(command.to_string());
             if server.args.is_empty() {
@@ -85,6 +110,75 @@ pub fn health(
         out.push_str(&format!("{lang:<11} {line}  {found}\n"));
     }
     out
+}
+
+/// Whether `install` has to be run by the user rather than by Glyph: the run
+/// panel has no stdin, so a `sudo` password prompt would hang it.
+// The catalog is the first caller outside tests.
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the catalog"))]
+pub fn copy_only(install: &str) -> bool {
+    install.split_whitespace().next() == Some("sudo")
+}
+
+/// The program an install command runs, which is what has to be on PATH for it
+/// to work: its first word, after a leading `sudo`.
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the catalog"))]
+pub fn install_tool(install: &str) -> Option<&str> {
+    let mut words = install.split_whitespace();
+    let first = words.next()?;
+    if first == "sudo" {
+        words.next()
+    } else {
+        Some(first)
+    }
+}
+
+/// What the catalog knows about one server: whether it can start now, and what
+/// would install it.
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the catalog"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallState {
+    /// The server's command is on PATH (or exists where its path points).
+    pub command_found: bool,
+    /// The program the install command runs, if there is an install command.
+    pub tool: Option<String>,
+    /// That program is on PATH.
+    pub tool_found: bool,
+    /// The command that installs the server, if one is known.
+    pub install: Option<String>,
+    /// The install command must be copied and run by the user (see `copy_only`).
+    pub copy_only: bool,
+}
+
+/// The install state of `server`, looking programs up in `path` and `pathext`
+/// as `find` does.
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the catalog"))]
+pub fn install_state(
+    server: &LspServer,
+    path: Option<&OsStr>,
+    pathext: Option<&OsStr>,
+) -> InstallState {
+    let command_found = server
+        .command
+        .as_deref()
+        .is_some_and(|c| find(c, path, pathext).is_some());
+    // A blank `install = ""` reads as "no install command", not a command to run.
+    let install = server.install.clone().filter(|i| !i.trim().is_empty());
+    let tool = install
+        .as_deref()
+        .and_then(install_tool)
+        .map(str::to_string);
+    let tool_found = tool
+        .as_deref()
+        .is_some_and(|t| find(t, path, pathext).is_some());
+    let copy_only = install.as_deref().is_some_and(copy_only);
+    InstallState {
+        command_found,
+        tool,
+        tool_found,
+        install,
+        copy_only,
+    }
 }
 
 /// What to start for `command`: where the `--health` lookup finds it in this
@@ -264,6 +358,151 @@ mod tests {
             assert!(languages::for_name(registry).is_some(), "{lang}");
             assert!(default_for(lang).is_some(), "{lang}");
         }
+    }
+
+    #[test]
+    fn every_language_gets_the_spec_install_command_and_tool() {
+        let servers = with_defaults(BTreeMap::new());
+        let ts = "npm install -g typescript-language-server typescript";
+        let html = "npm install -g vscode-langservers-extracted";
+        let expect = [
+            ("rust", "rustup component add rust-analyzer", "rustup"),
+            ("go", "go install golang.org/x/tools/gopls@latest", "go"),
+            ("typescript", ts, "npm"),
+            ("tsx", ts, "npm"),
+            ("javascript", ts, "npm"),
+            ("jsx", ts, "npm"),
+            ("python", "npm install -g pyright", "npm"),
+            ("html", html, "npm"),
+            ("css", html, "npm"),
+            ("sql", "go install github.com/sqls-server/sqls@latest", "go"),
+        ];
+        assert_eq!(expect.len(), LANGUAGES.len());
+        for (lang, install, tool) in expect {
+            assert_eq!(default_install(lang), Some((install, tool)), "{lang}");
+            assert_eq!(servers[lang].install.as_deref(), Some(install), "{lang}");
+            assert_eq!(install_tool(install), Some(tool), "{lang}");
+        }
+        assert_eq!(default_install("zig"), None);
+    }
+
+    #[test]
+    fn a_configured_install_replaces_the_default() {
+        let mut custom = server(None, &[]);
+        custom.install = Some("pip install pyright".into());
+        let mut custom_server = server(Some("pylsp"), &[]);
+        custom_server.install = Some("pipx install python-lsp-server".into());
+        let servers = with_defaults(BTreeMap::from([
+            ("python".to_string(), custom),
+            ("rust".to_string(), custom_server),
+        ]));
+        assert_eq!(
+            servers["python"].install.as_deref(),
+            Some("pip install pyright")
+        );
+        assert_eq!(
+            servers["rust"].install.as_deref(),
+            Some("pipx install python-lsp-server")
+        );
+    }
+
+    #[test]
+    fn a_custom_command_without_install_has_none() {
+        let servers = with_defaults(BTreeMap::from([
+            ("python".to_string(), server(Some("pylsp"), &[])),
+            ("zig".to_string(), server(Some("zls"), &[])),
+            // Naming the default program keeps its default install.
+            ("go".to_string(), server(Some("gopls"), &["serve"])),
+        ]));
+        assert_eq!(servers["python"].install, None);
+        assert_eq!(servers["zig"].install, None);
+        assert_eq!(
+            servers["go"].install.as_deref(),
+            default_install("go").map(|d| d.0)
+        );
+    }
+
+    #[test]
+    fn a_sudo_command_is_copy_only() {
+        assert!(copy_only("sudo apt install clangd"));
+        assert!(copy_only("  sudo   pacman -S gopls"));
+        assert!(!copy_only("npm install -g pyright"));
+        assert!(!copy_only("sudoku install"));
+        assert!(!copy_only(""));
+        assert_eq!(install_tool("sudo apt install clangd"), Some("apt"));
+        assert_eq!(install_tool("sudo"), None);
+        assert_eq!(install_tool("   "), None);
+    }
+
+    fn exe(name: &str) -> String {
+        if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        }
+    }
+
+    #[test]
+    fn install_state_reports_the_server_and_its_tool_on_a_fake_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Some(dir.path().as_os_str());
+        let servers = with_defaults(BTreeMap::new());
+
+        assert_eq!(
+            install_state(&servers["python"], path, None),
+            InstallState {
+                command_found: false,
+                tool: Some("npm".into()),
+                tool_found: false,
+                install: Some("npm install -g pyright".into()),
+                copy_only: false,
+            }
+        );
+
+        touch(&dir.path().join(exe("npm")));
+        let tool_only = install_state(&servers["python"], path, None);
+        assert!(!tool_only.command_found);
+        assert!(tool_only.tool_found);
+
+        touch(&dir.path().join(exe("pyright-langserver")));
+        let both = install_state(&servers["python"], path, None);
+        assert!(both.command_found);
+        assert!(both.tool_found);
+
+        // Another language's tool isn't on this PATH.
+        let rust = install_state(&servers["rust"], path, None);
+        assert_eq!(rust.tool.as_deref(), Some("rustup"));
+        assert!(!rust.tool_found);
+        assert!(!rust.command_found);
+    }
+
+    #[test]
+    fn install_state_without_an_install_command_has_no_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(&dir.path().join(exe("pylsp")));
+        let servers = with_defaults(BTreeMap::from([(
+            "python".to_string(),
+            server(Some("pylsp"), &[]),
+        )]));
+        let state = install_state(&servers["python"], Some(dir.path().as_os_str()), None);
+        assert!(state.command_found);
+        assert_eq!(state.install, None);
+        assert_eq!(state.tool, None);
+        assert!(!state.tool_found);
+        assert!(!state.copy_only);
+    }
+
+    #[test]
+    fn install_state_marks_a_sudo_install_copy_only() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(&dir.path().join(exe("apt")));
+        let mut clangd = server(Some("clangd"), &[]);
+        clangd.install = Some("sudo apt install clangd".into());
+        let state = install_state(&clangd, Some(dir.path().as_os_str()), None);
+        assert!(state.copy_only);
+        assert_eq!(state.tool.as_deref(), Some("apt"));
+        assert!(state.tool_found);
+        assert!(!state.command_found);
     }
 
     fn touch(path: &Path) {
