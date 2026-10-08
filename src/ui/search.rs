@@ -85,7 +85,18 @@ impl ProjectSearch {
         }
     }
 
-    fn query(&self) -> Query {
+    /// The panel holding `text` in its Search field, as cast's `/text` opens
+    /// it.
+    pub fn with_query(text: &str) -> Self {
+        ProjectSearch {
+            query: PromptBar::new("Search", text),
+            ..Self::new()
+        }
+    }
+
+    /// What Enter would search for: the Search field with the case and regex
+    /// toggles.
+    pub fn query(&self) -> Query {
         Query {
             pattern: self.query.text().to_string(),
             case_sensitive: self.case_sensitive,

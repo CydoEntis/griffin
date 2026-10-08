@@ -58,7 +58,7 @@ pub enum Action {
     CycleFocus,
     /// Opens the fuzzy picker over the project's files.
     GoToFile,
-    /// Prompts for a line number and moves the cursor there.
+    /// Opens the cast palette with `:` typed, to go to a line.
     GoToLine,
     /// Opens the find bar over the active buffer.
     Find,
@@ -310,6 +310,108 @@ impl Action {
         }
     }
 
+    /// What the cast palette calls the action: its name in plain words.
+    pub fn title(self) -> &'static str {
+        match self {
+            Action::Quit => "Quit",
+            Action::Save => "Save",
+            Action::Cancel => "Cancel",
+            Action::Move(motion) => match motion {
+                Motion::Left => "Move left",
+                Motion::Right => "Move right",
+                Motion::Up => "Move up",
+                Motion::Down => "Move down",
+                Motion::LineStart => "Go to line start",
+                Motion::LineEnd => "Go to line end",
+                Motion::PageUp => "Page up",
+                Motion::PageDown => "Page down",
+                Motion::WordLeft => "Word left",
+                Motion::WordRight => "Word right",
+                Motion::DocStart => "Go to start of file",
+                Motion::DocEnd => "Go to end of file",
+            },
+            Action::Newline => "Insert line break",
+            Action::Backspace => "Delete back",
+            Action::Delete => "Delete forward",
+            Action::Tab => "Indent",
+            Action::Undo => "Undo",
+            Action::Redo => "Redo",
+            Action::Select(motion) => match motion {
+                Motion::Left => "Select left",
+                Motion::Right => "Select right",
+                Motion::Up => "Select up",
+                Motion::Down => "Select down",
+                Motion::LineStart => "Select to line start",
+                Motion::LineEnd => "Select to line end",
+                Motion::PageUp => "Select page up",
+                Motion::PageDown => "Select page down",
+                Motion::WordLeft => "Select word left",
+                Motion::WordRight => "Select word right",
+                Motion::DocStart => "Select to start of file",
+                Motion::DocEnd => "Select to end of file",
+            },
+            Action::SelectAll => "Select all",
+            Action::Copy => "Copy",
+            Action::Cut => "Cut",
+            Action::Paste => "Paste",
+            Action::ToggleTree => "Toggle file tree",
+            Action::FocusTree => "Focus file tree",
+            Action::TreeNewFile => "New file in tree",
+            Action::TreeNewFolder => "New folder in tree",
+            Action::TreeRename => "Rename in tree",
+            Action::TreeDelete => "Delete in tree",
+            Action::PrevTab => "Previous tab",
+            Action::NextTab => "Next tab",
+            Action::GoToTab(n) => match n {
+                1 => "Go to tab 1",
+                2 => "Go to tab 2",
+                3 => "Go to tab 3",
+                4 => "Go to tab 4",
+                5 => "Go to tab 5",
+                6 => "Go to tab 6",
+                7 => "Go to tab 7",
+                8 => "Go to tab 8",
+                // `ALL` only holds 1..=9, so this arm is tab 9.
+                _ => "Go to tab 9",
+            },
+            Action::CloseTab => "Close tab",
+            Action::NewFile => "New file",
+            Action::SaveAs => "Save as…",
+            Action::ToggleSplit => "Split right",
+            Action::CycleFocus => "Cycle focus",
+            Action::GoToFile => "Go to file…",
+            Action::GoToLine => "Go to line…",
+            Action::Find => "Find…",
+            Action::FindNext => "Find next",
+            Action::FindPrev => "Find previous",
+            Action::FindCase => "Toggle match case",
+            Action::FindRegex => "Toggle regex",
+            Action::Replace => "Replace…",
+            Action::ReplaceAll => "Replace all",
+            Action::ProjectSearch => "Search project…",
+            Action::ProjectReplace => "Replace in project",
+            Action::Run => "Start run…",
+            Action::ToggleRunPanel => "Toggle run panel",
+            Action::StopRun => "Stop run",
+            Action::RestartRun => "Restart run",
+            Action::NextDiagnostic => "Next diagnostic",
+            Action::PrevDiagnostic => "Previous diagnostic",
+            Action::GoToDefinition => "Go to definition",
+            Action::JumpBack => "Jump back",
+            Action::Hover => "Show hover",
+            Action::Complete => "Complete",
+        }
+    }
+
+    /// The actions the cast palette lists: every global one, in `ALL` order,
+    /// except Esc's, which in the palette only closes it.
+    pub fn commands() -> impl Iterator<Item = Action> {
+        Action::ALL
+            .iter()
+            .copied()
+            .filter(|a| a.scope() == Scope::Global && *a != Action::Cancel)
+    }
+
     fn from_name(name: &str) -> Option<Action> {
         Action::ALL.iter().copied().find(|a| a.name() == name)
     }
@@ -500,6 +602,17 @@ impl Keymap {
         }
     }
 
+    /// The key that runs `action` anywhere, as the cast palette shows it
+    /// (`Alt+V`), or `None` when it has no global key. With several keys the
+    /// shortest label wins, then the first in order, so the pick is stable.
+    pub fn key_label(&self, action: Action) -> Option<String> {
+        self.bindings
+            .iter()
+            .filter(|&(_, &bound)| bound == action)
+            .map(|(&key, _)| key_label(key))
+            .min_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)))
+    }
+
     /// What `event` means outside the tree.
     #[cfg(test)]
     pub fn resolve(&self, event: &KeyEvent) -> Input {
@@ -660,6 +773,42 @@ fn parse_key(notation: &str) -> Result<Key, String> {
         },
     };
     Ok(normalize(code, mods))
+}
+
+/// A key as people write it: `Ctrl+Shift+Left`, `Alt+,`, `F5`.
+fn key_label(key: Key) -> String {
+    let mut label = String::new();
+    for (modifier, name) in [
+        (KeyModifiers::CONTROL, "Ctrl+"),
+        (KeyModifiers::SHIFT, "Shift+"),
+        (KeyModifiers::ALT, "Alt+"),
+    ] {
+        if key.mods.contains(modifier) {
+            label.push_str(name);
+        }
+    }
+    let name = match key.code {
+        KeyCode::Char(' ') => "Space".to_string(),
+        KeyCode::Char(c) => c.to_uppercase().collect(),
+        KeyCode::F(n) => format!("F{n}"),
+        KeyCode::Left => "Left".to_string(),
+        KeyCode::Right => "Right".to_string(),
+        KeyCode::Up => "Up".to_string(),
+        KeyCode::Down => "Down".to_string(),
+        KeyCode::Home => "Home".to_string(),
+        KeyCode::End => "End".to_string(),
+        KeyCode::PageUp => "PageUp".to_string(),
+        KeyCode::PageDown => "PageDown".to_string(),
+        KeyCode::Insert => "Insert".to_string(),
+        KeyCode::Delete => "Delete".to_string(),
+        KeyCode::Enter => "Enter".to_string(),
+        KeyCode::Esc => "Esc".to_string(),
+        KeyCode::Backspace => "Backspace".to_string(),
+        KeyCode::Tab => "Tab".to_string(),
+        other => format!("{other:?}"),
+    };
+    label.push_str(&name);
+    label
 }
 
 fn function_key(name: &str) -> Option<u8> {
@@ -837,6 +986,39 @@ mod tests {
             map.bindings.len() + map.tree.len() + map.find.len() + map.search.len(),
             DEFAULT_BINDINGS.len()
         );
+    }
+
+    #[test]
+    fn commands_are_the_global_actions_but_cancel_with_their_keys() {
+        let commands: Vec<Action> = Action::commands().collect();
+        assert!(commands.contains(&Action::ToggleSplit));
+        assert!(commands.contains(&Action::GoToLine));
+        assert!(!commands.contains(&Action::Cancel));
+        assert!(!commands.contains(&Action::TreeRename));
+        assert!(!commands.contains(&Action::FindNext));
+        assert!(!commands.contains(&Action::ProjectReplace));
+
+        let map = Keymap::default();
+        assert_eq!(map.key_label(Action::ToggleSplit).as_deref(), Some("Alt+V"));
+        assert_eq!(map.key_label(Action::GoToLine).as_deref(), Some("Ctrl+G"));
+        assert_eq!(map.key_label(Action::StopRun).as_deref(), Some("Shift+F5"));
+        assert_eq!(map.key_label(Action::PrevTab).as_deref(), Some("Alt+,"));
+        assert_eq!(
+            map.key_label(Action::Select(Motion::WordLeft)).as_deref(),
+            Some("Ctrl+Shift+Left")
+        );
+        // A user's key replaces the default in the label too.
+        let map = Keymap::new(&keys(&[("toggle_split", one("ctrl+\\"))])).unwrap();
+        assert_eq!(
+            map.key_label(Action::ToggleSplit).as_deref(),
+            Some("Ctrl+\\")
+        );
+        let map = Keymap::new(&keys(&[(
+            "toggle_split",
+            KeyBinding::Many(vec!["f9".into(), "ctrl+alt+s".into()]),
+        )]))
+        .unwrap();
+        assert_eq!(map.key_label(Action::ToggleSplit).as_deref(), Some("F9"));
     }
 
     #[test]

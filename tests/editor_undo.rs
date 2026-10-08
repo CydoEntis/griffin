@@ -69,7 +69,7 @@ fn undo_redo_typing() {
 
     // Undo marked the buffer changed, so quitting still asks.
     glyph.send_keys("ctrl+q");
-    glyph.wait_for_text("Unsaved changes", WAIT);
+    glyph.wait_for_text("has unsaved changes", WAIT);
     glyph.type_text("d");
     let status = glyph.wait_exit(WAIT);
     assert!(status.success(), "glyph exited with {status:?}");

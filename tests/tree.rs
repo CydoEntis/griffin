@@ -370,7 +370,7 @@ fn opening_another_file_keeps_unsaved_changes_in_their_tab() {
                 "
 "
             )
-            .contains("Unsaved changes")
+            .contains("has unsaved changes")
     );
     // Back on the first tab, the edit is still there and still unsaved.
     glyph.click(5, FIRST + 3);

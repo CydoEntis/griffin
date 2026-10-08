@@ -5,7 +5,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -39,7 +39,7 @@ use crate::lsp::{
 use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
 use crate::ui::completion::{self, Completion};
-use crate::ui::confirm::{Answer, Choice, Confirm, Labels};
+use crate::ui::confirm::{Answer, Choice, Confirm, Reply};
 use crate::ui::find::{FindBar, Step};
 use crate::ui::hover::render_hover;
 use crate::ui::picker::{self, Picked, Picker};
@@ -142,8 +142,6 @@ enum BarOp {
     Rename(PathBuf),
     /// A path, relative to the project root, to save the active buffer to.
     SaveAs(AfterSave),
-    /// A line number to move the cursor to.
-    GoToLine,
 }
 
 /// The prompt bar while it asks for a name.
@@ -171,48 +169,51 @@ enum Focus {
     Tree,
 }
 
-const UNSAVED_QUIT: Confirm = Confirm {
-    question: Cow::Borrowed("Unsaved changes"),
-    choices: &[
-        Choice {
-            key: 's',
-            label: "save",
-        },
-        Choice {
-            key: 'd',
-            label: "discard",
-        },
-        Choice {
-            key: 'c',
-            label: "cancel",
-        },
-    ],
-    labels: Labels::Bracketed,
-};
+const UNSAVED: &[Choice] = &[
+    Choice {
+        key: 's',
+        label: "Save",
+    },
+    Choice {
+        key: 'd',
+        label: "Discard",
+    },
+    Choice {
+        key: 'c',
+        label: "Cancel",
+    },
+];
 
-const RECOVER: Confirm = Confirm {
-    question: Cow::Borrowed("Recover unsaved changes?"),
-    choices: &[
-        Choice {
-            key: 'r',
-            label: "recover",
-        },
-        Choice {
-            key: 'd',
-            label: "discard",
-        },
-    ],
-    labels: Labels::Words,
-};
+const RECOVER: &[Choice] = &[
+    Choice {
+        key: 'r',
+        label: "Recover",
+    },
+    Choice {
+        key: 'd',
+        label: "Discard",
+    },
+];
 
-const YES_NO: &[Choice] = &[
+const REPLACE: &[Choice] = &[
+    Choice {
+        key: 'r',
+        label: "Replace",
+    },
+    Choice {
+        key: 'c',
+        label: "Cancel",
+    },
+];
+
+const TRASH: &[Choice] = &[
     Choice {
         key: 'y',
-        label: "yes",
+        label: "Move to trash",
     },
     Choice {
         key: 'n',
-        label: "no",
+        label: "Cancel",
     },
 ];
 
@@ -690,6 +691,8 @@ pub struct App {
     message_tone: Tone,
     /// While set, every key goes to the prompt instead of the editor.
     prompt: Option<Prompt>,
+    /// The prompt's focused button, the one Enter presses.
+    prompt_button: usize,
     /// The project's file tree, read from disk as folders expand.
     tree: Tree,
     /// The tree's root as its brand row names it; worked out once, as it reads
@@ -739,6 +742,8 @@ pub struct App {
     backups: Backups,
     /// The backup text the recover prompt is offering.
     recovery: Option<String>,
+    /// When that backup was written, for the recover prompt to say.
+    recovery_from: Option<SystemTime>,
     /// A backup write failed and the status line said so; cleared by the next
     /// success, so a run of failures shows one message instead of one per edit.
     backup_failed: bool,
@@ -831,7 +836,8 @@ impl App {
             && let Some(text) = self.backups.recoverable(&path)
         {
             self.recovery = Some(text);
-            self.prompt = Some(Prompt::Recover);
+            self.recovery_from = self.backups.written(&path);
+            self.ask(Prompt::Recover);
         }
         self
     }
@@ -951,16 +957,40 @@ impl App {
                 // Windows Terminal's own Ctrl+V paste arrives this way too.
                 self.edit(|buffer| buffer.paste(&text));
             }
-            // A click outside a dialog is Esc (SPEC_V1_LAYOUT §7); its confirm
-            // prompt, when open, takes the keys instead.
-            AppEvent::Input(Event::Mouse(mouse))
-                if self.project_search.is_some() && self.prompt.is_none() =>
-            {
+            // A click on a confirm card's button presses it; outside the card
+            // it's Esc (SPEC_V1_LAYOUT §7).
+            AppEvent::Input(Event::Mouse(mouse)) if self.prompt.is_some() => {
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                    && let Some(prompt) = self.prompt
+                    && let Some(step) = self
+                        .confirm(prompt)
+                        .click(self.screen, Position::new(mouse.column, mouse.row))
+                {
+                    self.prompt_step(prompt, step);
+                }
+            }
+            // A click outside a dialog is Esc (SPEC_V1_LAYOUT §7).
+            AppEvent::Input(Event::Mouse(mouse)) if self.project_search.is_some() => {
                 let card = ProjectSearch::card(self.screen);
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                     && !card.contains(Position::new(mouse.column, mouse.row))
                 {
                     self.close_project_search();
+                }
+            }
+            // The cast palette closes on a click outside it, as a dialog does.
+            AppEvent::Input(Event::Mouse(mouse))
+                if self.picker.is_some()
+                    && self.picker_for == PickerFor::File
+                    && self.prompt.is_none() =>
+            {
+                let outside = self.picker.as_ref().is_some_and(|picker| {
+                    !picker
+                        .card(self.screen)
+                        .contains(Position::new(mouse.column, mouse.row))
+                });
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) && outside {
+                    self.finish_picker(Picked::Close);
                 }
             }
             // The mouse bypasses the keymap too: only keys are remappable.
@@ -1083,8 +1113,8 @@ impl App {
             return;
         }
         if let Some(prompt) = self.prompt {
-            if let Some(answer) = self.confirm(prompt).answer(input) {
-                self.answer_prompt(prompt, answer);
+            if let Some(step) = self.confirm(prompt).handle(input, self.prompt_button) {
+                self.prompt_step(prompt, step);
             }
             return;
         }
@@ -1338,7 +1368,8 @@ impl App {
                 self.focus = Focus::Editor;
                 if let Some(text) = self.backups.recoverable(path) {
                     self.recovery = Some(text);
-                    self.prompt = Some(Prompt::Recover);
+                    self.recovery_from = self.backups.written(path);
+                    self.ask(Prompt::Recover);
                 }
                 self.follow_cursor();
             }
@@ -1382,7 +1413,7 @@ impl App {
     fn request_close(&mut self) {
         let doc = self.tabs.active();
         if doc.buffer.dirty && !self.tabs.shown_elsewhere(doc.id) {
-            self.prompt = Some(Prompt::UnsavedClose);
+            self.ask(Prompt::UnsavedClose);
         } else {
             self.close_active();
         }
@@ -1413,7 +1444,7 @@ impl App {
                 self.tabs.reveal(doc);
                 self.reset_mouse();
                 self.follow_cursor();
-                self.prompt = Some(Prompt::UnsavedQuit);
+                self.ask(Prompt::UnsavedQuit);
             }
             None => self.quit(),
         }
@@ -1563,10 +1594,8 @@ impl App {
             Action::SaveAs => self.start_save_as(AfterSave::Nothing),
             Action::ToggleSplit => self.toggle_split(),
             Action::CycleFocus => self.cycle_focus(),
-            Action::GoToFile => self.open_picker(),
-            Action::GoToLine => {
-                self.open_name_prompt(BarOp::GoToLine, PromptBar::new("Go to line", ""));
-            }
+            Action::GoToFile => self.open_picker(""),
+            Action::GoToLine => self.open_picker(":"),
             Action::Find => self.open_find(false),
             Action::Replace => self.open_find(true),
             Action::ProjectSearch => self.project_search = Some(ProjectSearch::new()),
@@ -1594,21 +1623,40 @@ impl App {
         }
     }
 
-    /// The card a confirm prompt shows.
+    /// The card a confirm prompt shows (SPEC_V1_LAYOUT §7.4).
     fn confirm(&self, prompt: Prompt) -> Confirm {
+        let name = self
+            .buffer()
+            .path
+            .as_deref()
+            .map_or_else(|| "untitled".to_string(), file_name);
         match prompt {
-            Prompt::UnsavedQuit | Prompt::UnsavedClose => UNSAVED_QUIT,
-            Prompt::Recover => RECOVER,
+            Prompt::UnsavedQuit | Prompt::UnsavedClose => Confirm {
+                question: Cow::Owned(format!("{name} has unsaved changes")),
+                explanation: Cow::Borrowed("Closing discards them unless you save."),
+                choices: UNSAVED,
+            },
+            Prompt::Recover => Confirm {
+                question: Cow::Owned(format!("Recover unsaved changes to {name}?")),
+                explanation: Cow::Owned(match self.recovery_from {
+                    Some(time) => format!(
+                        "A backup from {} is newer than the file on disk.",
+                        chrono::DateTime::<chrono::Local>::from(time).format("%H:%M")
+                    ),
+                    None => "A backup is newer than the file on disk.".to_string(),
+                }),
+                choices: RECOVER,
+            },
             Prompt::Trash => Confirm {
                 question: Cow::Owned(format!(
-                    "Move {} to trash?",
+                    "Move {} to the trash?",
                     self.pending_trash
                         .as_deref()
                         .map(file_name)
                         .unwrap_or_default()
                 )),
-                choices: YES_NO,
-                labels: Labels::Keys,
+                explanation: Cow::Borrowed("You can restore it from the system trash."),
+                choices: TRASH,
             },
             Prompt::ProjectReplace => {
                 let (matches, files) = self
@@ -1621,10 +1669,26 @@ impl App {
                         plural(matches, "match", "matches"),
                         plural(files, "file", "files")
                     )),
-                    choices: YES_NO,
-                    labels: Labels::Keys,
+                    explanation: Cow::Borrowed(
+                        "Open buffers are edited in place (undo with Ctrl+Z); other files are saved.",
+                    ),
+                    choices: REPLACE,
                 }
             }
+        }
+    }
+
+    /// Opens the confirm card for `prompt`, its first button focused.
+    fn ask(&mut self, prompt: Prompt) {
+        self.prompt = Some(prompt);
+        self.prompt_button = 0;
+    }
+
+    /// Acts on a key or click while `prompt`'s card is open.
+    fn prompt_step(&mut self, prompt: Prompt, step: Reply) {
+        match step {
+            Reply::Answer(answer) => self.answer_prompt(prompt, answer),
+            Reply::Focus(button) => self.prompt_button = button,
         }
     }
 
@@ -1683,7 +1747,7 @@ impl App {
     fn start_trash(&mut self) {
         if let Some(row) = self.tree.selected_row() {
             self.pending_trash = Some(row.entry.path.clone());
-            self.prompt = Some(Prompt::Trash);
+            self.ask(Prompt::Trash);
         }
     }
 
@@ -1701,12 +1765,6 @@ impl App {
             self.after_save(after, saved);
             return;
         }
-        if op == BarOp::GoToLine {
-            if outcome == Outcome::Submit {
-                self.go_to_line(bar.text());
-            }
-            return;
-        }
         if outcome == Outcome::Cancel {
             return;
         }
@@ -1716,7 +1774,7 @@ impl App {
             BarOp::NewFolder(dir) => ops::create_folder(dir, name),
             BarOp::Rename(path) => ops::rename(path, name),
             // Handled above.
-            BarOp::SaveAs(_) | BarOp::GoToLine => return,
+            BarOp::SaveAs(_) => return,
         };
         let path = match result {
             Ok(path) => path,
@@ -1737,21 +1795,15 @@ impl App {
                 self.say(Tone::Ok, format!("renamed to {name}"));
                 self.follow_rename(&old, &path);
             }
-            BarOp::SaveAs(_) | BarOp::GoToLine => {}
+            BarOp::SaveAs(_) => {}
         }
     }
 
-    /// Moves the cursor to the line `text` names, counting from 1; past the end
-    /// means the last line.
-    fn go_to_line(&mut self, text: &str) {
-        match text.trim().parse::<usize>() {
-            Ok(line) => {
-                self.focus = Focus::Editor;
-                self.buffer_mut().go_to_line(line);
-                self.follow_cursor();
-            }
-            Err(_) => self.say(Tone::Err, format!("not a line number: {}", text.trim())),
-        }
+    /// Moves the cursor to `line`, counting from 1.
+    fn go_to_line(&mut self, line: usize) {
+        self.focus = Focus::Editor;
+        self.buffer_mut().go_to_line(line);
+        self.follow_cursor();
     }
 
     /// Ctrl+F (or Ctrl+R, `replace`, which adds the Replace field): opens the find
@@ -1834,12 +1886,23 @@ impl App {
         }
     }
 
-    /// Ctrl+P: opens the picker and lists the project's files on a background
-    /// thread, so a large project never stalls typing (ADR-0001). Outside the
-    /// event loop (unit tests) the walk runs inline.
-    fn open_picker(&mut self) {
+    /// Ctrl+P (or Ctrl+G, with `:` typed): opens the cast palette holding
+    /// `query`, with every global command and its key, and lists the project's
+    /// files on a background thread, so a large project never stalls typing
+    /// (ADR-0001). The files are walked whatever the query, as deleting its
+    /// prefix goes back to listing them. Outside the event loop (unit tests) the
+    /// walk runs inline.
+    fn open_picker(&mut self, query: &str) {
         self.picker_for = PickerFor::File;
-        let mut picker = Picker::new();
+        let commands = Action::commands()
+            .map(|action| picker::Command {
+                action,
+                title: action.title(),
+                key: self.keymap.key_label(action),
+            })
+            .collect();
+        let lines = self.buffer().rope.len_lines();
+        let mut picker = Picker::cast(commands, lines, query);
         let root = self.tree.root().to_path_buf();
         match &self.events {
             Some(events) => {
@@ -1851,6 +1914,17 @@ impl App {
             None => picker.set_files(list_files(&root)),
         }
         self.picker = Some(picker);
+    }
+
+    /// Cast's `/text`: opens project search holding `text` and, as Enter was
+    /// already pressed on it, searches for it.
+    fn open_project_search(&mut self, text: &str) {
+        let panel = ProjectSearch::with_query(text);
+        let query = panel.query();
+        self.project_search = Some(panel);
+        if !query.pattern.is_empty() {
+            self.start_project_search(query);
+        }
     }
 
     /// Follows what a key did in the project search panel.
@@ -1908,7 +1982,7 @@ impl App {
             files: kept,
             matches,
         });
-        self.prompt = Some(Prompt::ProjectReplace);
+        self.ask(Prompt::ProjectReplace);
     }
 
     /// The replace prompt's yes: open buffers are edited in place, one undo step
@@ -2072,13 +2146,26 @@ impl App {
         }
     }
 
-    /// Closes the picker and, on Enter, opens the chosen file in a tab or runs
-    /// the chosen command.
+    /// Closes the picker and, on Enter, opens the chosen file in a tab, runs the
+    /// chosen command or action, goes to the line or searches the project.
     fn finish_picker(&mut self, picked: Picked) {
         self.picker = None;
         let picker_for = std::mem::take(&mut self.picker_for);
-        let Picked::Open(choice) = picked else {
-            return;
+        let choice = match picked {
+            Picked::Open(choice) => choice,
+            Picked::Close => return,
+            Picked::Run(action) => {
+                self.handle_action(action);
+                return;
+            }
+            Picked::Line(line) => {
+                self.go_to_line(line);
+                return;
+            }
+            Picked::Search(text) => {
+                self.open_project_search(&text);
+                return;
+            }
         };
         match picker_for {
             PickerFor::File => {
@@ -2502,7 +2589,7 @@ impl App {
             (Prompt::UnsavedClose, _) => {}
             (Prompt::Trash, Answer::Picked('y')) => self.trash_pending(),
             (Prompt::Trash, _) => self.pending_trash = None,
-            (Prompt::ProjectReplace, Answer::Picked('y')) => self.replace_in_project(),
+            (Prompt::ProjectReplace, Answer::Picked('r')) => self.replace_in_project(),
             (Prompt::ProjectReplace, _) => self.pending_replace = None,
             (Prompt::Recover, Answer::Picked('r')) => {
                 if let Some(text) = self.recovery.take() {
@@ -2516,7 +2603,7 @@ impl App {
             }
             // Esc would leave the backup's fate open; quitting later would then
             // delete it unasked. Only an explicit answer closes this one.
-            (Prompt::Recover, _) => self.prompt = Some(Prompt::Recover),
+            (Prompt::Recover, _) => self.ask(Prompt::Recover),
         }
     }
 
@@ -3031,7 +3118,8 @@ impl App {
             frame.set_cursor_position(at);
         }
         if let Some(prompt) = self.prompt {
-            self.confirm(prompt).render(theme, frame, frame.area());
+            self.confirm(prompt)
+                .render(theme, frame, frame.area(), self.prompt_button);
         }
     }
 }
@@ -4028,8 +4116,8 @@ world",
         press(&mut app, &["d"]);
         assert_eq!(app.prompt, Some(Prompt::Trash));
         assert_eq!(
-            app.confirm(Prompt::Trash).text(),
-            "Move a.txt to trash? y / n"
+            app.confirm(Prompt::Trash).question,
+            "Move a.txt to the trash?"
         );
         // `n` and Esc both leave everything alone.
         press(&mut app, &["n"]);
@@ -4541,10 +4629,10 @@ needle
         replace_todo(&mut app);
         assert_eq!(app.prompt, Some(Prompt::ProjectReplace));
         assert_eq!(
-            app.confirm(Prompt::ProjectReplace).text(),
-            "Replace 4 matches in 2 files? y / n"
+            app.confirm(Prompt::ProjectReplace).question,
+            "Replace 4 matches in 2 files?"
         );
-        press(&mut app, &["y"]);
+        press(&mut app, &["r"]);
         assert_eq!(app.prompt, None);
         assert_eq!(app.message.as_deref(), Some("Replaced 4 in 2 files"));
         // Rewritten on disk, still CRLF, and no temp file left beside it.
@@ -4585,7 +4673,7 @@ needle
         perms.set_readonly(true);
         std::fs::set_permissions(&notes, perms.clone())?;
         replace_todo(&mut app);
-        press(&mut app, &["y"]);
+        press(&mut app, &["r"]);
         let notes_after = std::fs::read(&notes)?;
         // tempdir can't delete a read-only file on Windows.
         #[expect(
@@ -4609,12 +4697,12 @@ needle
     }
 
     #[test]
-    fn project_replace_does_nothing_when_answered_no() -> Result<()> {
+    fn project_replace_does_nothing_when_cancelled() -> Result<()> {
         let (dir, mut app) = replace_project()?;
         let notes = dir.path().join("notes.txt");
         let before = std::fs::read(&notes)?;
         replace_todo(&mut app);
-        press(&mut app, &["n"]);
+        press(&mut app, &["c"]);
         assert_eq!(app.prompt, None);
         assert_eq!(app.pending_replace, None);
         assert_eq!(std::fs::read(&notes)?, before);
