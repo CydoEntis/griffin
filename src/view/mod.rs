@@ -250,9 +250,12 @@ pub fn render_buffer(
         }
         let line_start = buf.rope.line_to_char(line_idx);
         let line_end = line_start + buf.rope.line(line_idx).len_chars();
-        // The first of the most severe diagnostics on the line: it picks the
-        // gutter mark's colour and is the one the lens shows.
+        // The first of the most severe diagnostics touching the line picks the
+        // gutter mark's colour. The lens only shows one that starts on the line,
+        // as glyph-magic.js `code()` does, so a range over many lines (a long
+        // signature, an inactive `#[cfg]` item) gets one lens, not one per line.
         let mut worst: Option<&Diagnostic> = None;
+        let mut lens: Option<&Diagnostic> = None;
         for diagnostic in diagnostics.iter().take_while(|d| d.range.start < line_end) {
             let range = &diagnostic.range;
             // An empty range (a missing `;`, say) still gets one cell to show it.
@@ -266,6 +269,9 @@ pub fn render_buffer(
             }
             if worst.is_none_or(|w| diagnostic.severity < w.severity) {
                 worst = Some(diagnostic);
+            }
+            if range.start >= line_start && lens.is_none_or(|l| diagnostic.severity < l.severity) {
+                lens = Some(diagnostic);
             }
             // The text keeps its syntax colour; the underline alone carries the
             // severity. The underline colour is what the terminal backend turns
@@ -292,6 +298,8 @@ pub fn render_buffer(
                 usize::from(area.width),
                 Style::new().fg(severity_color(theme, diagnostic.severity)),
             );
+        }
+        if let Some(diagnostic) = lens {
             let line_cells = line_width(buf.rope.line(line_idx), tab_width);
             draw_lens(theme, diagnostic, x, line_cells, view, area, y, out);
         }
@@ -1022,6 +1030,27 @@ ab foo foo",
         assert!(rows[0].trim_end().ends_with("◈ too far"), "{rows:?}");
         let (rows, _) = draw_diagnostics(&theme, &"a".repeat(18), 0, &diagnostics)?;
         assert!(!rows[0].contains('◈'), "{rows:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_diagnostic_over_two_lines_shows_its_lens_on_the_first_only() -> Result<()> {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        // From `c` on line 1 to `e` on line 2.
+        let diagnostics = [diagnostic(2..6, Severity::Error, "spans")];
+        let (rows, screen) = draw_diagnostics(
+            &theme,
+            "abc
+def
+",
+            0,
+            &diagnostics,
+        )?;
+        assert_eq!(rows[0].trim_end(), "◆  1  abc    ◈ spans");
+        assert_eq!(rows[1].trim_end(), "◆  2  def");
+        // Both lines keep their gutter mark and underline.
+        assert_eq!(screen[(0, 1)].fg, theme.err);
+        assert_eq!(screen[(6, 1)].underline_color, theme.err);
         Ok(())
     }
 
