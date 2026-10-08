@@ -58,6 +58,10 @@ fn lens_color(theme: &Theme, severity: Severity) -> Color {
 /// In the gutter's first cell, on a line with a diagnostic.
 const GUTTER_MARK: &str = "◆";
 
+/// In the gutter's first cell, on a line with a breakpoint; it wins over a
+/// diagnostic mark there (glyph-debugger spec D2).
+const BREAKPOINT_MARK: &str = "●";
+
 /// Starts the inline lens, before the message.
 const LENS_MARK: &str = "◈ ";
 
@@ -144,7 +148,7 @@ fn number_width(buf: &Buffer) -> usize {
     buf.rope.len_lines().to_string().len().max(MIN_NUMBER_WIDTH)
 }
 
-/// Cells left of the text: the diagnostic mark cell, the line number, the gap.
+/// Cells left of the text: the mark cell, the line number, the gap.
 fn gutter_width(buf: &Buffer) -> usize {
     1 + number_width(buf) + GUTTER_GAP
 }
@@ -295,7 +299,15 @@ pub fn render_buffer(
                 }
             }
         }
-        if let Some(diagnostic) = worst {
+        if buf.breakpoints.contains(&line_idx) {
+            out.set_stringn(
+                area.x,
+                y,
+                BREAKPOINT_MARK,
+                usize::from(area.width),
+                Style::new().fg(theme.err),
+            );
+        } else if let Some(diagnostic) = worst {
             out.set_stringn(
                 area.x,
                 y,
@@ -1187,6 +1199,61 @@ def
         assert_eq!(screen[(13, 0)].fg, theme.warn);
         assert_eq!(screen[(15, 0)].fg, theme.muted);
         assert!(screen[(15, 0)].modifier.contains(Modifier::ITALIC));
+        Ok(())
+    }
+
+    /// Draws `text` with a breakpoint on each of `lines` and an error on its
+    /// first char, returning the mark cells of the first two rows.
+    fn draw_breakpoints(
+        theme: &Theme,
+        text: &str,
+        lines: &[usize],
+    ) -> Result<[ratatui::buffer::Cell; 2]> {
+        let mut buf = buffer_at(text, 0);
+        for &line in lines {
+            buf.toggle_breakpoint(line);
+        }
+        let diagnostics = [diagnostic(0..text.len(), Severity::Warning, "w")];
+        let mut terminal = Terminal::new(TestBackend::new(40, 3))?;
+        let marks = Marks {
+            diagnostics: &diagnostics,
+            ..Marks::default()
+        };
+        terminal.draw(|frame| {
+            render_buffer(
+                theme,
+                &buf,
+                &View::default(),
+                4,
+                marks,
+                false,
+                frame.area(),
+                frame,
+            )
+        })?;
+        let screen = terminal.backend().buffer();
+        Ok([screen[(0, 0)].clone(), screen[(0, 1)].clone()])
+    }
+
+    #[test]
+    fn a_breakpoint_takes_the_mark_cell_from_a_diagnostic() -> Result<()> {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let [first, second] = draw_breakpoints(&theme, "abc\ndef\n", &[0])?;
+        assert_eq!(first.symbol(), "●");
+        assert_eq!(first.fg, theme.err);
+        // The diagnostic still marks the line without a breakpoint.
+        assert_eq!(second.symbol(), "◆");
+        assert_eq!(second.fg, theme.warn);
+        Ok(())
+    }
+
+    #[test]
+    fn mono_still_draws_a_breakpoint() -> Result<()> {
+        let theme = Theme::named("mono").expect("mono exists");
+        let [first, second] = draw_breakpoints(&theme, "abc\ndef\n", &[1])?;
+        assert_eq!(first.symbol(), "◆");
+        assert_eq!(second.symbol(), "●");
+        assert_eq!(second.fg, theme.err);
         Ok(())
     }
 }

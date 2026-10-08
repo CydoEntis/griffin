@@ -90,6 +90,10 @@ pub enum Action {
     NextDiagnostic,
     /// Moves the cursor to the previous diagnostic in the buffer, wrapping around.
     PrevDiagnostic,
+    /// Sets a breakpoint on the cursor's line, or takes away the one there.
+    ToggleBreakpoint,
+    /// Takes away every breakpoint, in open and closed files alike.
+    ClearBreakpoints,
     /// Asks the language server where the symbol under the cursor is defined and
     /// goes there.
     GoToDefinition,
@@ -217,6 +221,8 @@ impl Action {
         Action::RestartRun,
         Action::NextDiagnostic,
         Action::PrevDiagnostic,
+        Action::ToggleBreakpoint,
+        Action::ClearBreakpoints,
         Action::GoToDefinition,
         Action::JumpBack,
         Action::Hover,
@@ -342,6 +348,8 @@ impl Action {
             Action::RestartRun => "restart_run",
             Action::NextDiagnostic => "next_diagnostic",
             Action::PrevDiagnostic => "prev_diagnostic",
+            Action::ToggleBreakpoint => "toggle_breakpoint",
+            Action::ClearBreakpoints => "clear_breakpoints",
             Action::GoToDefinition => "go_to_definition",
             Action::JumpBack => "jump_back",
             Action::Hover => "hover",
@@ -444,6 +452,8 @@ impl Action {
             Action::RestartRun => "Restart run",
             Action::NextDiagnostic => "Next diagnostic",
             Action::PrevDiagnostic => "Previous diagnostic",
+            Action::ToggleBreakpoint => "Toggle breakpoint",
+            Action::ClearBreakpoints => "Clear breakpoints",
             Action::GoToDefinition => "Go to definition",
             Action::JumpBack => "Jump back",
             Action::Hover => "Show hover",
@@ -558,6 +568,7 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::RestartRun, "ctrl+f5"),
     (Action::NextDiagnostic, "f8"),
     (Action::PrevDiagnostic, "shift+f8"),
+    (Action::ToggleBreakpoint, "f9"),
     (Action::GoToDefinition, "f12"),
     (Action::JumpBack, "alt+left"),
     (Action::Hover, "alt+k"),
@@ -580,7 +591,7 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
 /// `[keys]`: the spec gives them none. Only the check that every action is
 /// accounted for reads it.
 #[cfg(test)]
-const UNBOUND: &[Action] = &[Action::OpenDirectory];
+const UNBOUND: &[Action] = &[Action::OpenDirectory, Action::ClearBreakpoints];
 
 /// What a key event means to the editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -973,6 +984,7 @@ mod tests {
             ("f4", ev(KeyCode::F(4), KeyModifiers::NONE)),
             ("f8", ev(KeyCode::F(8), KeyModifiers::NONE)),
             ("shift+f8", ev(KeyCode::F(8), KeyModifiers::SHIFT)),
+            ("f9", ev(KeyCode::F(9), KeyModifiers::NONE)),
             ("alt+/", alt('/')),
         ];
         const DIGITS: [(&str, char); 9] = [
@@ -1032,6 +1044,18 @@ mod tests {
             map.resolve(&ev(KeyCode::F(8), KeyModifiers::SHIFT)),
             Input::Action(Action::PrevDiagnostic)
         );
+    }
+
+    #[test]
+    fn f9_toggles_a_breakpoint_and_clearing_them_has_no_key() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(9), KeyModifiers::NONE)),
+            Input::Action(Action::ToggleBreakpoint)
+        );
+        assert!(Action::commands().any(|a| a == Action::ClearBreakpoints));
+        assert_eq!(Action::ToggleBreakpoint.title(), "Toggle breakpoint");
+        assert_eq!(Action::ClearBreakpoints.title(), "Clear breakpoints");
     }
 
     #[test]
@@ -1296,7 +1320,7 @@ mod tests {
             Input::Ignored
         );
         assert_eq!(
-            map.resolve(&ev(KeyCode::F(9), KeyModifiers::NONE)),
+            map.resolve(&ev(KeyCode::F(11), KeyModifiers::NONE)),
             Input::Ignored
         );
     }
