@@ -1,7 +1,8 @@
 //! The splash Glyph opens on with nothing to edit (glyph-splash spec S1–S5,
 //! S7): when it shows, how it's drawn, its keys and clicks, *New file*, *New
-//! directory* and *Open directory*, and that a project switch from it lands on
-//! the tree beside an empty pane rather than on a new splash.
+//! directory* and *Open directory*, its status bar, `q`, the tree it hides, and
+//! that a project switch from it lands on the tree beside an empty pane rather
+//! than on a new splash.
 
 mod harness;
 
@@ -10,7 +11,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use harness::{Glyph, ROWS, pill_text};
+use harness::{COLS, Glyph, ROWS, pill_text};
 use tempfile::TempDir;
 use vt100::Color;
 
@@ -112,8 +113,7 @@ fn glyph_alone_and_glyph_on_a_folder_show_the_splash_but_a_file_does_not() {
     let (_dir, _glyph) = start_bare();
 
     let glyph = Glyph::spawn(&[PROJECT]);
-    glyph.wait_for_text("README.md", START);
-    glyph.wait_for_text("Open directory", WAIT);
+    glyph.wait_for_text("Open directory", START);
 
     let glyph = Glyph::spawn(&["tests/fixtures/project/notes.txt"]);
     glyph.wait_for_text("notes for the tree test", START);
@@ -312,7 +312,10 @@ fn opening_a_file_with_ctrl_p_replaces_the_splash() {
 #[test]
 fn with_the_tree_open_the_splash_has_focus_and_ctrl_e_moves_it_to_the_tree() {
     let mut glyph = Glyph::spawn(&[PROJECT]);
-    glyph.wait_for_text("README.md", START);
+    glyph.wait_for_text("Open directory", START);
+    // Ctrl+B shows the tree the splash hides, leaving the keys on the splash.
+    glyph.send_keys("ctrl+b");
+    glyph.wait_for_text("README.md", WAIT);
     // Beside the 28-column tree and its blank column the editor area is 71
     // wide from column 29, so the action rows start at 36 and `✦` is at 38.
     let text_x = 38;
@@ -413,6 +416,7 @@ fn new_directory_creates_the_folder_and_opens_it_as_the_project() {
     // cwd is the parent, so the project folder isn't where Glyph runs.
     let mut glyph = Glyph::spawn_in(parent.path(), &["proj"]);
     glyph.wait_for_text("Open directory", START);
+    glyph.send_keys("ctrl+b");
     glyph.wait_for_text("a.txt", WAIT);
 
     // A taken name is refused as in the tree, and nothing switches.
@@ -484,4 +488,71 @@ fn open_directory_switches_and_lands_on_the_tree_and_an_empty_pane() {
     glyph.wait_for_text(&pill_text(&["untitled"], 0), WAIT);
     glyph.send_keys("enter");
     glyph.wait_for_text(&pill_text(&["inside.txt"], 0), WAIT);
+}
+
+#[test]
+fn the_splash_hides_the_tree_until_ctrl_b_or_ctrl_e_shows_it() {
+    let (_home, mut glyph) = start_bare();
+    let screen = glyph.screen().join("\n");
+    assert!(!screen.contains("a.txt"), "{screen}");
+    glyph.send_keys("ctrl+b");
+    glyph.wait_for_text("a.txt", WAIT);
+    // The keys stay on the splash beside it: the rows moved right of the tree.
+    glyph.send_keys("down");
+    wait_for_selected(&glyph, 38, NEW_DIR_ROW);
+
+    let mut glyph = Glyph::spawn(&[PROJECT]);
+    glyph.wait_for_text("Open directory", START);
+    let screen = glyph.screen().join("\n");
+    assert!(!screen.contains("README.md"), "{screen}");
+    glyph.send_keys("ctrl+e");
+    glyph.wait_for_text("README.md", WAIT);
+}
+
+#[test]
+fn the_status_bar_names_the_project_and_the_splash_keys_and_version() {
+    let (_home, mut glyph) = start_bare();
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    wait_for_status(&glyph, &version);
+    let status = glyph.screen()[usize::from(STATUS)].clone();
+    // The project where `untitled` would be, and no cursor or language.
+    assert_eq!(glyph.text_col(STATUS, "~/src"), Some(20), "{status:?}");
+    assert!(!status.contains("untitled"), "{status:?}");
+    assert!(!status.contains("Ln 1"), "{status:?}");
+    assert!(
+        status
+            .trim_end()
+            .ends_with(&format!("↑↓ select  ⏎ choose  q quit    {version}")),
+        "{status:?}"
+    );
+    // Right-aligned to end two cells short of the edge.
+    let version_x = COLS - 2 - u16::try_from(version.len()).expect("short version");
+    assert_eq!(glyph.text_col(STATUS, &version), Some(version_x));
+    // Keys lit; their labels and the version muted.
+    let q = glyph.text_col(STATUS, "q quit").expect("q quit shown");
+    assert_eq!(glyph.fg_at(q, STATUS), TEXT);
+    assert_eq!(glyph.fg_at(q + 2, STATUS), MUTED);
+    assert_eq!(glyph.fg_at(version_x, STATUS), MUTED);
+
+    // Leaving the splash gives the untitled buffer's status back.
+    glyph.send_keys("esc");
+    wait_for_status(&glyph, "Ln 1, Col 1");
+    assert!(!glyph.screen()[usize::from(STATUS)].contains("q quit"));
+}
+
+#[test]
+fn q_on_the_splash_quits() {
+    let (_home, mut glyph) = start_bare();
+    glyph.send_keys("q");
+    assert!(glyph.wait_exit(WAIT).success());
+}
+
+#[test]
+fn q_typed_in_a_buffer_inserts_q() {
+    let (_home, mut glyph) = start_bare();
+    glyph.send_keys("ctrl+n");
+    glyph.wait_for_text_gone("Open directory", WAIT);
+    glyph.type_text("q");
+    glyph.wait_for_text("1  q", WAIT);
+    glyph.assert_running_for(Duration::from_millis(300));
 }

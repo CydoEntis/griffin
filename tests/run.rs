@@ -136,7 +136,7 @@ fn assert_restart_rule(glyph: &Glyph) {
 #[test]
 fn ansi_colours_take_the_theme_roles() {
     let mut glyph = Glyph::spawn_in_with_env(Path::new(COLOURS), &fixture_path(), &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     glyph.send_keys("f5");
     glyph.wait_for_text("palette  exited 0", WAIT);
     let first = OUTPUT_ROW;
@@ -192,7 +192,7 @@ fn f4_toggles_the_panel_at_about_a_third_of_the_height() {
 #[test]
 fn f5_with_several_entries_picks_one_by_name() {
     let mut glyph = Glyph::spawn_in_with_env(Path::new(MULTI), &fixture_path(), &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     glyph.send_keys("f5");
     glyph.wait_for_text("✦ Run", WAIT);
     glyph.wait_for_text("hello", WAIT);
@@ -225,7 +225,7 @@ fn mono_dims_behind_the_run_picker_and_reverses_the_selected_row() {
         &fixture_path(),
         &[],
     );
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     glyph.send_keys("f5");
     glyph.wait_for_text("✦ Run", WAIT);
     // The whole first row of the 60-wide card at column 20.
@@ -233,7 +233,8 @@ fn mono_dims_behind_the_run_picker_and_reverses_the_selected_row() {
     glyph.wait_for_reversed(13, &selected, WAIT);
     assert!(!glyph.reversed_text(14).contains("hello"));
     let status = ROWS - 1;
-    let position = glyph.text_col(status, "Ln 1").expect("the position");
+    // The splash is still up under the card, so its keys are in the status line.
+    let position = glyph.text_col(status, "quit").expect("the splash's keys");
     assert!(glyph.dim_at(position, status), "the status line is dimmed");
     assert!(!glyph.dim_at(22, 14), "the card isn't");
 }
@@ -243,7 +244,7 @@ fn a_malformed_project_file_says_so_in_the_status_line() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(".glyph.toml"), "[[run]]\nname = = 1\n").unwrap();
     let mut glyph = Glyph::spawn_in(dir.path(), &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     glyph.send_keys("f5");
     glyph.wait_for_screen("the error in the status line", WAIT, |screen| {
         screen[usize::from(ROWS) - 1].contains(".glyph.toml line 2")
@@ -301,7 +302,7 @@ fn shift_f5_stops_the_command_and_ctrl_f5_restarts_it() {
 fn f5_in_a_project_with_nothing_to_run_says_how_to_add_one() {
     let dir = tempfile::tempdir().unwrap();
     let mut glyph = Glyph::spawn_in(dir.path(), &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     glyph.send_keys("f5");
     glyph.wait_for_screen("the hint in the status line", WAIT, |screen| {
         screen[usize::from(ROWS) - 1].contains("add a [[run]] entry to .glyph.toml")
@@ -320,7 +321,7 @@ fn f5_without_run_entries_offers_detected_commands() {
     .unwrap();
     std::fs::write(dir.path().join("pnpm-lock.yaml"), "").unwrap();
     let mut glyph = Glyph::spawn_in(dir.path(), &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     glyph.send_keys("f5");
     glyph.wait_for_text("✦ Run", WAIT);
     glyph.wait_for_text("pnpm run dev", WAIT);

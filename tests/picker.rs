@@ -63,7 +63,7 @@ fn glow() -> Color {
 /// Glyph in the fixture project with no file open, so the root is its folder.
 fn open_project() -> Glyph {
     let glyph = Glyph::spawn_in(Path::new(PROJECT), &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     glyph
 }
 
@@ -242,7 +242,8 @@ fn esc_closes_the_picker_without_opening_anything() {
     glyph.send_keys("esc");
     glyph.wait_for_text_gone(SCOPE, WAIT);
     glyph.wait_for_text_gone("notes.txt", WAIT);
-    assert!(status_line(&glyph).contains("untitled"));
+    // Nothing was opened, so the status bar is still the splash's.
+    assert!(status_line(&glyph).contains("q quit"));
     // Nothing was opened, so the splash is back; leaving it, typing goes to the
     // editor, not to a hidden query.
     glyph.wait_for_text("New file", WAIT);
@@ -262,20 +263,22 @@ fn a_click_outside_the_card_closes_it_and_one_inside_does_not() {
     glyph.wait_for_text("✦ x", WAIT);
     glyph.click(2, 20);
     glyph.wait_for_text_gone(SCOPE, WAIT);
-    assert!(status_line(&glyph).contains("untitled"));
+    // Nothing was opened, so the status bar is still the splash's.
+    assert!(status_line(&glyph).contains("q quit"));
 }
 
 #[test]
 fn mono_dims_with_the_modifier_and_reverses_the_selected_row() {
     let mut glyph = Glyph::spawn_in_with_config(Path::new(PROJECT), "theme = \"mono\"\n", &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     open_picker(&mut glyph);
     glyph.wait_for_text("main.rs  src", WAIT);
     let selected = glyph.reversed_text(FIRST_ROW);
     assert_eq!(selected.chars().count(), 86, "{selected:?}");
     assert!(selected.contains(".gitignore"), "{selected:?}");
     let status = ROWS - 1;
-    let position = glyph.text_col(status, "Ln 1").unwrap();
+    // The splash is still up under the card, so its keys are in the status line.
+    let position = glyph.text_col(status, "quit").unwrap();
     assert!(glyph.dim_at(position, status), "the status line is dimmed");
     assert!(!glyph.dim_at(TEXT_X, HEADER_ROW), "the card isn't");
 }
@@ -395,7 +398,7 @@ fn a_line_out_of_range_shows_in_err_and_enter_keeps_the_cast_open() {
 #[test]
 fn slash_text_opens_project_search_for_the_text() {
     let mut glyph = Glyph::spawn_in(Path::new(SEARCH_PROJECT), &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     open_picker(&mut glyph);
     glyph.type_text("/TODO");
     glyph.wait_for_text("cast · text", WAIT);

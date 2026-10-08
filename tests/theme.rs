@@ -30,7 +30,7 @@ fn assert_status_bg(glyph: &Glyph, color: Color) {
 #[test]
 fn nord_paints_the_status_line_with_its_sidebar_colour() {
     let mut glyph = Glyph::spawn_with_config("theme = \"nord\"\n", &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     assert_status_bg(&glyph, NORD_SIDEBAR);
     // Leave the splash, whose card covers the middle of the editor area.
     glyph.send_keys("ctrl+n");
@@ -44,7 +44,7 @@ fn an_override_changes_the_colour() {
         "theme = \"nord\"\n[theme_overrides]\nsidebar_bg = \"#123456\"\n",
         &[],
     );
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     assert_status_bg(&glyph, Color::Rgb(0x12, 0x34, 0x56));
     glyph.send_keys("ctrl+n");
     glyph.wait_for_bg(50, 10, NORD_BG, WAIT);
@@ -79,7 +79,7 @@ fn a_bad_override_falls_back_to_hydra_and_says_so() {
 #[test]
 fn mono_draws_the_glyph_block_on_flat_accent() {
     let glyph = Glyph::spawn_with_config("theme = \"mono\"\n", &[]);
-    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph.wait_for_text("Open directory", START);
     // mono has no ramps: every block cell is its accent, the terminal's white.
     let accent = glyph.bg_at(0, STATUS_ROW);
     assert_ne!(accent, Color::Default);

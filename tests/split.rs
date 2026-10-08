@@ -76,7 +76,10 @@ fn open_file(dir: &TempDir) -> Glyph {
 /// The folder opened with the tree showing and a.txt open in the left split.
 fn open_folder(dir: &TempDir) -> Glyph {
     let mut glyph = Glyph::spawn_in(dir.path(), &["."]);
-    glyph.wait_for_text("b.txt", START);
+    glyph.wait_for_text("Open directory", START);
+    // The splash hides the tree; Ctrl+B shows it.
+    glyph.send_keys("ctrl+b");
+    glyph.wait_for_text("b.txt", WAIT);
     glyph.click(3, A_ROW);
     glyph.wait_for_text("1  alpha", WAIT);
     glyph
