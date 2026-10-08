@@ -1,6 +1,7 @@
 //! The splash Glyph opens on with nothing to edit (glyph-splash spec S1–S5,
 //! S7): when it shows, how it's drawn, its keys and clicks, *New file*, *New
-//! directory* and *Open directory*, and landing on it after a project switch.
+//! directory* and *Open directory*, and that a project switch from it lands on
+//! the tree beside an empty pane rather than on a new splash.
 
 mod harness;
 
@@ -417,18 +418,17 @@ fn new_directory_creates_the_folder_and_opens_it_as_the_project() {
     glyph.wait_for_files("fresh-dir in the project", WAIT, || fresh.is_dir());
     assert!(!parent.path().join("fresh-dir").exists());
 
-    // The tree and brand show the new, empty folder, under a fresh splash.
+    // The tree and brand show the new, empty folder beside an empty untitled
+    // pane; the splash is gone.
     wait_for_brand(&glyph, &fresh);
     glyph.wait_for_screen("the old folder's files gone", WAIT, |screen| {
         !screen.iter().any(|line| line.contains("a.txt"))
     });
-    // Beside the tree the card's text starts at column 42.
-    wait_for_selected(&glyph, 42, NEW_FILE_ROW);
-    let path_row = cells(&glyph, PATH_ROW, 42, 44);
-    assert!(path_row.ends_with("fresh-dir"), "{path_row:?}");
+    glyph.wait_for_text_gone("Open directory", WAIT);
+    glyph.wait_for_text(&pill_text(&["untitled"], 0), WAIT);
 
-    // New file now goes into the new folder.
-    glyph.type_text("n");
+    // The tree has the keys: its `a` makes a file in the new folder.
+    glyph.type_text("a");
     glyph.wait_for_text("⏎ create   esc cancel", WAIT);
     glyph.type_text("b.txt");
     glyph.send_keys("enter");
@@ -438,7 +438,7 @@ fn new_directory_creates_the_folder_and_opens_it_as_the_project() {
 }
 
 #[test]
-fn open_directory_switches_and_lands_on_the_splash() {
+fn open_directory_switches_and_lands_on_the_tree_and_an_empty_pane() {
     let dir = tempfile::tempdir().expect("create temp dir");
     fs::write(dir.path().join("a.txt"), "alpha\n").expect("write a.txt");
     let other = dir.path().join("other");
@@ -461,10 +461,12 @@ fn open_directory_switches_and_lands_on_the_splash() {
     glyph.send_keys("enter");
     glyph.wait_for_text_gone(BROWSER, WAIT);
 
-    // The tree and brand show `other`, with the splash up and taking keys.
+    // The tree and brand show `other` beside an empty untitled pane, and the
+    // tree takes the keys: Enter opens the file it selects.
     glyph.wait_for_text("inside.txt", WAIT);
     wait_for_brand(&glyph, &other);
-    wait_for_selected(&glyph, 42, NEW_FILE_ROW);
-    glyph.send_keys("down");
-    wait_for_selected(&glyph, 42, NEW_DIR_ROW);
+    glyph.wait_for_text_gone("Open directory", WAIT);
+    glyph.wait_for_text(&pill_text(&["untitled"], 0), WAIT);
+    glyph.send_keys("enter");
+    glyph.wait_for_text(&pill_text(&["inside.txt"], 0), WAIT);
 }
