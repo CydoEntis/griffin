@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,7 @@ use crate::buffer::movement::Motion;
 use crate::buffer::{Buffer, Caret};
 use crate::clipboard::Clipboard;
 use crate::config::{self, EditorConfig, RunEntry};
+use crate::dap::{DapEvent, DapNews, Session};
 use crate::highlight::languages;
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
@@ -94,6 +95,8 @@ pub enum AppEvent {
     },
     /// A language server sent a message or exited.
     Lsp(LspEvent),
+    /// A debug adapter sent a message, exited, or couldn't be started.
+    Dap(DapEvent),
     /// Format on save number `format` has waited `FORMAT_TIMEOUT` for its server.
     FormatTimedOut {
         format: u64,
@@ -354,6 +357,10 @@ struct Tabs {
     /// The split keys and tab actions go to; index into `splits`.
     focused: usize,
     next_id: u64,
+    /// The breakpoints of closed files, by absolute path, so reopening one while
+    /// Glyph runs brings them back (glyph-debugger spec D2). Open files keep
+    /// theirs on the buffer.
+    kept_breakpoints: HashMap<PathBuf, BTreeSet<usize>>,
 }
 
 impl Default for Tabs {
@@ -369,6 +376,7 @@ impl Tabs {
             splits: vec![Split::default()],
             focused: 0,
             next_id: 0,
+            kept_breakpoints: HashMap::new(),
         };
         tabs.push(buffer);
         tabs
@@ -530,6 +538,9 @@ impl Tabs {
         let (closed, kept): (Vec<Doc>, Vec<Doc>) =
             std::mem::take(&mut self.docs).into_iter().partition(close);
         self.docs = kept;
+        for doc in &closed {
+            self.keep_breakpoints(doc);
+        }
         for split in &mut self.splits {
             let mut index = 0;
             while index < split.tabs.len() {
@@ -555,7 +566,44 @@ impl Tabs {
             return None;
         }
         let index = self.docs.iter().position(|open| open.id == doc)?;
-        Some(self.docs.remove(index))
+        let closed = self.docs.remove(index);
+        self.keep_breakpoints(&closed);
+        Some(closed)
+    }
+
+    /// Remembers a closing buffer's breakpoints under its path. An untitled
+    /// buffer's have nowhere to come back to.
+    fn keep_breakpoints(&mut self, doc: &Doc) {
+        let Some(path) = &doc.buffer.path else {
+            return;
+        };
+        let path = absolute(path);
+        if doc.buffer.breakpoints.is_empty() {
+            self.kept_breakpoints.remove(&path);
+        } else {
+            self.kept_breakpoints
+                .insert(path, doc.buffer.breakpoints.clone());
+        }
+    }
+
+    /// The breakpoints a closed `path` had, dropping any past the end of
+    /// `buffer`, whose file may have shrunk on disk since.
+    fn take_breakpoints(&mut self, path: &Path, buffer: &Buffer) -> BTreeSet<usize> {
+        let lines = buffer.rope.len_lines();
+        self.kept_breakpoints
+            .remove(&absolute(path))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|&line| line < lines)
+            .collect()
+    }
+
+    /// Takes away every breakpoint, open files' and closed ones'.
+    fn clear_breakpoints(&mut self) {
+        self.kept_breakpoints.clear();
+        for doc in &mut self.docs {
+            doc.buffer.breakpoints.clear();
+        }
     }
 
     /// Gives every split left without tabs a fresh untitled one.
@@ -827,6 +875,8 @@ pub struct App {
     formatting: Option<PendingFormat>,
     /// Format requests made, for numbering the next.
     formats: u64,
+    /// The debug session, while there is one.
+    debug: Option<Session>,
     should_quit: bool,
 }
 
@@ -1119,6 +1169,21 @@ impl App {
                     && view.status == RunStatus::Running
                 {
                     view.status = RunStatus::Exited(code);
+                }
+            }
+            AppEvent::Dap(event) => {
+                let news = match &mut self.debug {
+                    Some(session) => session.handle(event),
+                    None => Vec::new(),
+                };
+                for news in news {
+                    // A missing or crashed adapter is said once and costs nothing
+                    // else: editing goes on. The rest of the news has no screen
+                    // to go to until the debugger's panels exist.
+                    if let DapNews::Failed(why) = news {
+                        self.debug = None;
+                        self.say(Tone::Err, why);
+                    }
                 }
             }
             AppEvent::FormatTimedOut { format } => {
@@ -1451,7 +1516,8 @@ impl App {
             return;
         }
         match Buffer::open(path) {
-            Ok(buffer) => {
+            Ok(mut buffer) => {
+                buffer.breakpoints = self.tabs.take_breakpoints(path, &buffer);
                 let active = self.tabs.active();
                 if active.is_pristine() && !self.tabs.shown_elsewhere(active.id) {
                     self.tabs.active_mut().buffer = buffer;
@@ -1638,7 +1704,8 @@ impl App {
                 | Action::Run
                 | Action::ToggleRunPanel
                 | Action::StopRun
-                | Action::RestartRun => {}
+                | Action::RestartRun
+                | Action::ClearBreakpoints => {}
                 // The rest act on a buffer, and the splash stands for there
                 // being none yet.
                 _ => return,
@@ -1726,6 +1793,11 @@ impl App {
             Action::RestartRun => self.restart_run(),
             Action::NextDiagnostic => self.jump_to_diagnostic(true),
             Action::PrevDiagnostic => self.jump_to_diagnostic(false),
+            Action::ToggleBreakpoint => {
+                let (line, _) = self.buffer().cursor_line_col();
+                self.buffer_mut().toggle_breakpoint(line);
+            }
+            Action::ClearBreakpoints => self.tabs.clear_breakpoints(),
             Action::GoToDefinition => self.request_definition(),
             Action::JumpBack => self.jump_back(),
             Action::Hover => self.request_hover(),
@@ -2787,6 +2859,21 @@ impl App {
                 .screen_to_char(app.buffer(), area, col, row, tab_width)
         };
         match (mouse.kind, hovered) {
+            // The gutter's mark cell sets or takes away the breakpoint on the
+            // clicked line; the line numbers place the cursor as text does.
+            (MouseEventKind::Down(MouseButton::Left), Some(split))
+                if col == panes.splits[split].editor.x =>
+            {
+                if split != self.tabs.focused {
+                    self.switch_to(split, self.tabs.splits[split].active);
+                }
+                self.focus = Focus::Editor;
+                self.reset_mouse();
+                let area = panes.splits[split].editor;
+                let view = self.tabs.active_tab().view;
+                let line = view.scroll_row + usize::from(row.saturating_sub(area.y));
+                self.buffer_mut().toggle_breakpoint(line);
+            }
             (MouseEventKind::Down(MouseButton::Left), Some(split))
                 if !mouse.modifiers.contains(KeyModifiers::CONTROL) =>
             {
@@ -3651,6 +3738,26 @@ mod tests {
         assert!(app.should_quit);
     }
 
+    #[tokio::test]
+    async fn a_missing_debug_adapter_is_one_status_message_and_editing_goes_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut app = App::default();
+        let missing = dir.path().join("no-such-adapter");
+        app.debug = Some(Session::start(1, &missing, &[], dir.path(), tx));
+        let event = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        app.handle_event(event);
+        assert!(app.debug.is_none());
+        assert_eq!(app.message_tone, Tone::Err);
+        let message = app.message.clone().unwrap_or_default();
+        assert!(message.contains("no-such-adapter"), "{message}");
+        app.handle_event(key("x"));
+        assert_eq!(app.buffer().rope.to_string(), "x");
+    }
+
     #[test]
     fn ctrl_q_with_unsaved_changes_asks_first() {
         let mut app = App::default();
@@ -3956,6 +4063,74 @@ world",
         // The status line isn't the editor.
         click(&mut app, 5, 29, Instant::now());
         assert_eq!(app.buffer().cursor_line_col(), (1, 2));
+    }
+
+    fn breakpoints(app: &App) -> Vec<usize> {
+        app.buffer().breakpoints.iter().copied().collect()
+    }
+
+    #[test]
+    fn f9_toggles_the_cursor_lines_breakpoint_and_clear_takes_them_all() {
+        let mut app = app_with("a\nb\nc", &FakeClipboard::default());
+        press(&mut app, &["down", "f9"]);
+        assert_eq!(breakpoints(&app), [1]);
+        press(&mut app, &["down", "f9", "up", "f9"]);
+        assert_eq!(breakpoints(&app), [2]);
+        app.handle_action(Action::ClearBreakpoints);
+        assert!(app.buffer().breakpoints.is_empty());
+    }
+
+    #[test]
+    fn a_click_in_the_mark_cell_toggles_that_lines_breakpoint() {
+        let mut app = app_with("hello\nworld", &FakeClipboard::default());
+        let t0 = Instant::now();
+        click(&mut app, 0, 4, t0);
+        assert_eq!(breakpoints(&app), [1]);
+        // The cursor stays put; only the line numbers move it.
+        assert_eq!(app.buffer().cursor, 0);
+        click(&mut app, 2, 4, t0 + Duration::from_secs(1));
+        assert_eq!(app.buffer().cursor_line_col(), (1, 0));
+        assert_eq!(breakpoints(&app), [1]);
+        click(&mut app, 0, 4, t0 + Duration::from_secs(2));
+        assert!(app.buffer().breakpoints.is_empty());
+        // Below the last line there's no line to break on.
+        click(&mut app, 0, 8, t0 + Duration::from_secs(3));
+        assert!(app.buffer().breakpoints.is_empty());
+    }
+
+    #[test]
+    fn breakpoints_come_back_when_a_closed_file_reopens() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "one\ntwo\nthree\n")?;
+        let mut app = app_with("", &FakeClipboard::default());
+        app.open(&path);
+        press(&mut app, &["down", "f9", "ctrl+w"]);
+        assert_eq!(app.buffer().path, None);
+        assert!(app.buffer().breakpoints.is_empty());
+        app.open(&path);
+        assert_eq!(breakpoints(&app), [1]);
+        // Cleared while closed, they stay gone.
+        press(&mut app, &["ctrl+w"]);
+        app.handle_action(Action::ClearBreakpoints);
+        app.open(&path);
+        assert!(app.buffer().breakpoints.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn an_untitled_buffers_breakpoints_move_to_its_saved_path() -> Result<()> {
+        let (dir, mut app) = project()?;
+        press(&mut app, &["ctrl+n", "a", "enter", "b", "f9", "alt+s"]);
+        type_keys(&mut app, "new.txt");
+        press(&mut app, &["enter"]);
+        let new = dir.path().join("new.txt");
+        assert_eq!(app.buffer().path.as_deref(), Some(new.as_path()));
+        assert_eq!(breakpoints(&app), [1]);
+        press(&mut app, &["ctrl+w"]);
+        app.open(&new);
+        assert_eq!(breakpoints(&app), [1]);
+        Ok(())
     }
 
     #[test]

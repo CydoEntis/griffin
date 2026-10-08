@@ -20,6 +20,18 @@ pub struct Config {
     pub keys: KeysConfig,
     /// `[lsp.<lang>]`: the language server for each language id.
     pub lsp: BTreeMap<String, LspServer>,
+    /// `[debug.<lang>]`: the debug adapter for each language id.
+    pub debug: BTreeMap<String, DebugAdapter>,
+}
+
+/// One `[debug.<lang>]` table, laid over the language's default adapter by
+/// `dap::adapters::adapter_for`.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct DebugAdapter {
+    /// The adapter program, found on PATH or given as a path.
+    pub adapter: Option<String>,
+    pub args: Vec<String>,
 }
 
 /// One `[lsp.<lang>]` table. Every field is optional so a table that only sets
@@ -33,6 +45,9 @@ pub struct LspServer {
     /// Ctrl+S formats the buffer through this server before writing it. Off
     /// unless asked for, since a formatter rewrites the user's text.
     pub format_on_save: bool,
+    /// The shell command that installs the server. `servers::with_defaults`
+    /// fills in the default for a built-in server; set here, it replaces it.
+    pub install: Option<String>,
 }
 
 /// `[editor]`.
@@ -150,6 +165,23 @@ pub const PROJECT_FILE: &str = ".glyph.toml";
 #[serde(default)]
 pub struct ProjectConfig {
     pub run: Vec<RunEntry>,
+    pub debug: DebugLaunch,
+}
+
+/// `.glyph.toml` `[debug]`: how this project's program is launched under the
+/// debugger. Each field set replaces the language's default for it.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct DebugLaunch {
+    /// Relative to the project root unless absolute.
+    pub program: Option<String>,
+    /// The program's arguments; `None` keeps the default (none), so an empty
+    /// list and a missing one mean the same thing.
+    pub args: Option<Vec<String>>,
+    /// Relative to the project root; the root itself when absent.
+    pub cwd: Option<String>,
+    /// Run before the adapter starts; an empty string means no build at all.
+    pub build: Option<String>,
 }
 
 /// One `[[run]]` entry: a command F5 can run.
@@ -281,6 +313,7 @@ mod tests {
                 command: Some("pyright-langserver".into()),
                 args: vec!["--stdio".into()],
                 format_on_save: false,
+                install: None,
             }
         );
         assert_eq!(
@@ -292,6 +325,17 @@ mod tests {
         let on = parse("[lsp.rust]\nformat_on_save = true\n");
         assert!(on.config.lsp["rust"].format_on_save);
         assert!(parse("").config.lsp.is_empty());
+    }
+
+    #[test]
+    fn an_lsp_table_reads_its_install_command() {
+        let loaded = parse("[lsp.python]\ninstall = \"pip install pyright\"\n");
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert_eq!(
+            loaded.config.lsp["python"].install.as_deref(),
+            Some("pip install pyright")
+        );
+        assert_eq!(parse("[lsp.go]\n").config.lsp["go"].install, None);
     }
 
     #[test]
@@ -437,6 +481,55 @@ mod tests {
         let error = loaded.error.expect("malformed toml is an error");
         assert!(error.starts_with(".glyph.toml line 3:"), "{error}");
         assert!(!error.contains('\n'), "{error}");
+    }
+
+    #[test]
+    fn debug_tables_select_an_adapter_and_args_per_language() {
+        let loaded = parse(
+            r#"
+            [debug.rust]
+            adapter = "codelldb"
+            args = ["--port", "0"]
+            [debug.python]
+            args = ["-X"]
+            "#,
+        );
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        let debug = &loaded.config.debug;
+        assert_eq!(
+            debug["rust"],
+            DebugAdapter {
+                adapter: Some("codelldb".into()),
+                args: vec!["--port".into(), "0".into()],
+            }
+        );
+        assert_eq!(debug["python"].adapter, None);
+        assert_eq!(debug["python"].args, ["-X"]);
+        assert!(parse("").config.debug.is_empty());
+    }
+
+    #[test]
+    fn the_project_debug_table_reads_each_launch_field() {
+        let loaded = parse_project(
+            r#"
+            [debug]
+            program = "bin/app"
+            args = ["--verbose"]
+            cwd = "work"
+            build = "make"
+            "#,
+        );
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert_eq!(
+            loaded.config.debug,
+            DebugLaunch {
+                program: Some("bin/app".into()),
+                args: Some(vec!["--verbose".into()]),
+                cwd: Some("work".into()),
+                build: Some("make".into()),
+            }
+        );
+        assert_eq!(parse_project("").config.debug, DebugLaunch::default());
     }
 
     #[test]

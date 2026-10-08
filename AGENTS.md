@@ -42,7 +42,11 @@ All three must pass before a change is done. CI runs them on Windows and Ubuntu.
 | `src/highlight/` | tree-sitter engine; one file per language under `languages/` |
 | `src/run/` | run commands: spawning, process trees, detection |
 | `src/lsp/` | transport, client, per-language server config |
+| `src/dap/` | Debug Adapter Protocol: per-language adapters and launch settings |
 | `src/bin/fake_lsp.rs` | scripted fake language server used by LSP tests |
+| `src/framing.rs` | `Content-Length` message framing shared by LSP and DAP |
+| `src/dap/` | Debug Adapter Protocol: adapter transport and session |
+| `src/bin/fake_dap.rs` | scripted fake debug adapter used by DAP tests |
 | `tests/harness/` | the PTY harness; `tests/*.rs` use it |
 
 Create a path the first time a ticket needs it. Keep to this table; if a ticket

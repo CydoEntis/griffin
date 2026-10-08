@@ -1062,6 +1062,74 @@ impl Lsp {
         Some(tokio::spawn(reap(tasks)))
     }
 
+    /// Forgets every server for `lang` that is failed (never found, or crashed),
+    /// in every root, and detaches the buffers that followed them, so the next
+    /// `sync` tries starting it again: a server installed since then starts
+    /// without reopening the project. Running servers are left alone. Returns
+    /// whether anything was forgotten.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the catalog's install calls it once it lands")
+    )]
+    pub fn forget_failed(&mut self, lang: &str) -> bool {
+        let failed: HashSet<u64> = self
+            .by_root
+            .iter()
+            .filter(|((l, _), id)| {
+                *l == lang
+                    && self
+                        .servers
+                        .get(id)
+                        .is_some_and(|c| c.state == client::State::Failed)
+            })
+            .map(|(_, &id)| id)
+            .collect();
+        if failed.is_empty() {
+            return false;
+        }
+        self.by_root.retain(|_, id| !failed.contains(id));
+        // `sync` only re-attaches buffers that aren't attached, so these must go
+        // for the retry to happen. A failed server isn't ready, so no close is sent.
+        let docs: Vec<u64> = self
+            .docs
+            .iter()
+            .filter(|(_, doc)| failed.contains(&doc.server))
+            .map(|(&id, _)| id)
+            .collect();
+        for id in docs {
+            self.detach(id);
+        }
+        // A crashed server may still have had a request out; its reply can't come.
+        let live = |pending: Option<(u64, i64)>| pending.filter(|(s, _)| !failed.contains(s));
+        self.definition = live(self.definition);
+        self.hover = live(self.hover);
+        if self
+            .completion
+            .as_ref()
+            .is_some_and(|p| failed.contains(&p.server))
+        {
+            self.completion = None;
+        }
+        if self
+            .format
+            .as_ref()
+            .is_some_and(|p| failed.contains(&p.server))
+        {
+            self.format = None;
+        }
+        for id in &failed {
+            // One that refused to initialize may still be running; aborting the
+            // reader drops the child, which kills it (`kill_on_drop`). Nothing is
+            // waited on, so editing never stalls here.
+            if let Some(mut client) = self.servers.remove(id) {
+                for task in client.shutdown() {
+                    task.abort();
+                }
+            }
+        }
+        true
+    }
+
     /// Asks every server to stop and gives them a moment to go; whatever is
     /// still running after that is killed.
     pub async fn finish(&mut self) {
@@ -1690,5 +1758,143 @@ mod tests {
         if let Some(handle) = crashed {
             reaped(Some(handle)).await;
         }
+    }
+
+    /// Points `fake`'s server for `lang` at `command`, keeping its log and adding
+    /// `script` when given, as a config change between syncs would.
+    fn set_server(fake: &mut Fake, lang: &str, command: &Path, script: Option<&str>) {
+        let mut args = vec![
+            "--log".to_string(),
+            fake.files.path().join("log.jsonl").display().to_string(),
+        ];
+        if let Some(script) = script {
+            let path = fake.files.path().join(format!("{lang}-script.json"));
+            std::fs::write(&path, script).unwrap();
+            args.extend(["--script".to_string(), path.display().to_string()]);
+        }
+        fake.lsp.config.insert(
+            lang.to_string(),
+            LspServer {
+                command: Some(command.display().to_string()),
+                args,
+                ..LspServer::default()
+            },
+        );
+    }
+
+    fn sorted(ids: impl Iterator<Item = u64>) -> Vec<u64> {
+        let mut ids: Vec<u64> = ids.collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[tokio::test]
+    async fn forgetting_failed_servers_drops_every_failed_one_of_the_language_only() {
+        let roots: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+        let (one, two, three) = (roots[0].path(), roots[1].path(), roots[2].path());
+        let missing = one.join("glyph-no-such-server");
+        let mut fake = Fake::new(None);
+        let a = rust_buffer(one, "a.rs");
+        fake.run_until(one, &[(1, &a)], opened(1)).await;
+        let running = fake.lsp.docs[&1].server;
+
+        // Not found under `two`, for Rust and for Python.
+        let b = rust_buffer(two, "b.rs");
+        let py = Buffer {
+            path: Some(two.join("d.py")),
+            ..Buffer::empty()
+        };
+        set_server(&mut fake, "rust", &missing, None);
+        set_server(&mut fake, "python", &missing, None);
+        fake.lsp.sync(two, &[(1, &a), (2, &b), (4, &py)]);
+        assert_eq!(fake.lsp.server_state(2).unwrap().0, ServerState::NotFound);
+        assert_eq!(fake.lsp.server_state(4).unwrap().0, ServerState::NotFound);
+        let python = fake.lsp.docs[&4].server;
+
+        // Crashed under `three`.
+        let c = rust_buffer(three, "c.rs");
+        set_server(
+            &mut fake,
+            "rust",
+            &fake_lsp(),
+            Some(r#"{"exit_on": "initialize"}"#),
+        );
+        let docs = [(1, &a), (2, &b), (3, &c), (4, &py)];
+        fake.run_until(three, &docs, |lsp| {
+            lsp.server_state(3)
+                .is_some_and(|(state, _)| state == ServerState::Crashed)
+        })
+        .await;
+
+        assert!(fake.lsp.forget_failed("rust"));
+        assert_eq!(
+            sorted(fake.lsp.by_root.values().copied()),
+            [running, python]
+        );
+        assert_eq!(sorted(fake.lsp.servers.keys().copied()), [running, python]);
+        assert_eq!(sorted(fake.lsp.docs.keys().copied()), [1, 4]);
+        // The running server never heard a thing about it.
+        assert_eq!(fake.lsp.docs[&1].server, running);
+        assert!(fake.lsp.servers[&running].is_ready());
+        assert!(fake.exits(running).is_empty());
+        reaped(fake.lsp.stop_root(one)).await;
+        let log = fake.log();
+        let sent = methods(&log, pid_of(&log, "a.rs"));
+        // Its only close is the one stopping the root sent.
+        assert_eq!(
+            sent.iter()
+                .filter(|m| *m == "textDocument/didClose")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn forgetting_with_nothing_failed_does_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let mut empty = Lsp::new(config("glyph-no-such-server"));
+        assert!(!empty.forget_failed("rust"));
+
+        let mut fake = Fake::new(None);
+        let a = rust_buffer(root.path(), "a.rs");
+        fake.run_until(root.path(), &[(1, &a)], opened(1)).await;
+        let server = fake.lsp.docs[&1].server;
+        assert!(!fake.lsp.forget_failed("rust"));
+        assert!(!fake.lsp.forget_failed("python"));
+        assert_eq!(fake.lsp.by_root.len(), 1);
+        assert_eq!(sorted(fake.lsp.servers.keys().copied()), [server]);
+        assert!(fake.lsp.docs[&1].opened && fake.lsp.docs[&1].server == server);
+        assert!(fake.lsp.servers[&server].is_ready());
+        reaped(fake.lsp.stop_root(root.path())).await;
+    }
+
+    #[tokio::test]
+    async fn a_server_installed_after_it_was_missing_starts_once_forgotten() {
+        let root = tempfile::tempdir().unwrap();
+        let mut fake = Fake::new(None);
+        // Where the server will be installed; nothing is there yet.
+        let installed = fake
+            .files
+            .path()
+            .join(format!("late-server{}", std::env::consts::EXE_SUFFIX));
+        set_server(&mut fake, "rust", &installed, None);
+        let a = rust_buffer(root.path(), "a.rs");
+        let messages = fake.lsp.sync(root.path(), &[(1, &a)]);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].starts_with("rust: server not found"));
+
+        std::fs::copy(fake_lsp(), &installed).unwrap();
+        // Still remembered as missing until it's forgotten.
+        assert!(fake.lsp.sync(root.path(), &[(1, &a)]).is_empty());
+        assert_eq!(fake.lsp.server_state(1).unwrap().0, ServerState::NotFound);
+
+        assert!(fake.lsp.forget_failed("rust"));
+        fake.run_until(root.path(), &[(1, &a)], opened(1)).await;
+        assert_eq!(fake.lsp.server_state(1).unwrap().0, ServerState::Ready);
+        // Once it has exited, everything it was sent is in the log.
+        reaped(fake.lsp.stop_root(root.path())).await;
+        let log = fake.log();
+        let sent = methods(&log, pid_of(&log, "a.rs"));
+        assert!(sent.iter().any(|m| m == "textDocument/didOpen"));
     }
 }

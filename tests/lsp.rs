@@ -125,6 +125,14 @@ fn syncs_document() {
     glyph.wait_for_text("cast · files · commands", WAIT);
     glyph.type_text("b.rs");
     glyph.wait_for_text("✦ b.rs", WAIT);
+    // The query echoes before the file walk fills the list; Enter on an empty
+    // list does nothing, so wait for b.rs's own row to be selected.
+    glyph.wait_for_screen("b.rs's row in the picker", WAIT, |lines| {
+        lines.iter().any(|line| {
+            let row = line.trim();
+            row.starts_with("b.rs") && row.ends_with('⏎')
+        })
+    });
     glyph.send_keys("enter");
     glyph.wait_for_text_gone("cast · files · commands", WAIT);
     project.wait_for(&glyph, "textDocument/didOpen", "b.rs");
