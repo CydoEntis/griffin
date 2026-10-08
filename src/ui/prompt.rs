@@ -1,5 +1,6 @@
 //! The one-row prompt bar above the status line: a label and a single line of
-//! text being typed, e.g. `New file: notes.md`.
+//! text being typed, e.g. ` New file  notes.md`, with what Enter and Esc do at
+//! the right.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -101,24 +102,68 @@ impl PromptBar {
             .map_or(self.text.len(), |(at, _)| at)
     }
 
-    /// Draws `label: text` across `area` on `card2` and returns where the cursor
-    /// goes.
-    pub fn render(&self, theme: &Theme, frame: &mut Frame, area: Rect) -> (u16, u16) {
-        let head = format!("{}: ", self.label);
-        let before: String = self.text.chars().take(self.cursor).collect();
-        let line = format!("{head}{}", self.text);
-        let width = usize::from(area.width);
-        frame.buffer_mut().set_stringn(
-            area.x,
+    /// Draws the prompt bar: ` Label  text` on `raised`, with `hint` (what Enter
+    /// and Esc do) right-aligned in `muted` so it ends one cell short of the edge.
+    /// Returns where the cursor goes.
+    pub fn render(&self, theme: &Theme, frame: &mut Frame, area: Rect, hint: &str) -> (u16, u16) {
+        let buf = frame.buffer_mut();
+        buf.set_style(area, Style::new().bg(theme.raised).fg(theme.strong));
+        let hint_width = u16::try_from(hint.width()).unwrap_or(u16::MAX);
+        let label_width = u16::try_from(self.label.width()).unwrap_or(u16::MAX);
+        // The hint goes before the field is squeezed below its label and a few
+        // letters of text.
+        let field_width = area.width.saturating_sub(hint_width.saturating_add(2));
+        if field_width < label_width.saturating_add(8) {
+            return self.render_field(theme, buf, area, true, Style::new());
+        }
+        buf.set_string(
+            area.right() - hint_width - 1,
             area.y,
-            format!("{line:<width$}"),
-            width,
-            Style::new().bg(theme.card2).fg(theme.strong),
+            hint,
+            Style::new().bg(theme.raised).fg(theme.muted),
         );
-        let col = u16::try_from(head.width() + before.width())
-            .unwrap_or(u16::MAX)
-            .min(area.width.saturating_sub(1));
-        (area.x + col, area.y)
+        let field = Rect {
+            width: field_width,
+            ..area
+        };
+        self.render_field(theme, buf, field, true, Style::new())
+    }
+
+    /// Draws one field of a bar across `area` on `raised`: ` Label  text`, the
+    /// label in `text` while the field has focus and `muted` while it doesn't, the
+    /// text in `strong` patched with `value`. Returns where the cursor goes when
+    /// the field has focus.
+    pub fn render_field(
+        &self,
+        theme: &Theme,
+        buf: &mut Buffer,
+        area: Rect,
+        focused: bool,
+        value: Style,
+    ) -> (u16, u16) {
+        let base = Style::new().bg(theme.raised).fg(theme.strong);
+        buf.set_style(area, base);
+        if area.width == 0 {
+            return (area.x, area.y);
+        }
+        let label = base.fg(if focused { theme.text } else { theme.muted });
+        buf.set_stringn(
+            area.x + 1,
+            area.y,
+            self.label,
+            usize::from(area.width - 1),
+            label,
+        );
+        let head = u16::try_from(self.label.width() + 3).unwrap_or(u16::MAX);
+        if head >= area.width {
+            return (area.right() - 1, area.y);
+        }
+        let text = Rect {
+            x: area.x + head,
+            width: area.width - head,
+            ..area
+        };
+        self.render_value(buf, text, base.patch(value))
     }
 
     /// Draws just the text in `style` from the left of `area`, without the label,
@@ -197,15 +242,47 @@ mod tests {
     }
 
     #[test]
-    fn renders_label_text_and_cursor() -> anyhow::Result<()> {
+    fn renders_label_text_hint_and_cursor() -> anyhow::Result<()> {
+        const HINT: &str = "⏎ create   esc cancel";
+        let theme = Theme::default();
         let bar = PromptBar::new("New file", "notes.md");
-        let mut terminal = Terminal::new(TestBackend::new(30, 2))?;
+        let mut terminal = Terminal::new(TestBackend::new(50, 2))?;
         let mut at = (0, 0);
-        terminal.draw(|frame| at = bar.render(&Theme::default(), frame, Rect::new(0, 1, 30, 1)))?;
+        terminal.draw(|frame| at = bar.render(&theme, frame, Rect::new(0, 1, 50, 1), HINT))?;
         let buffer = terminal.backend().buffer();
-        let row: String = (0..30).map(|x| buffer[(x, 1)].symbol()).collect();
-        assert_eq!(row.trim_end(), "New file: notes.md");
-        assert_eq!(at, (18, 1));
+        let row: String = (0..50).map(|x| buffer[(x, 1)].symbol()).collect();
+        // The hint ends at W-2.
+        assert_eq!(row, format!("{:<28}{HINT} ", " New file  notes.md"));
+        assert_eq!(at, (19, 1));
+        assert_eq!(buffer[(1, 1)].fg, theme.text);
+        assert_eq!(buffer[(11, 1)].fg, theme.strong);
+        assert_eq!(buffer[(28, 1)].fg, theme.muted);
+        for x in 0..50 {
+            assert_eq!(buffer[(x, 1)].bg, theme.raised, "{x}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_narrow_bar_drops_the_hint_and_an_unfocused_label_is_muted() -> anyhow::Result<()> {
+        let theme = Theme::default();
+        let bar = PromptBar::new("Rename", "a.md");
+        let mut terminal = Terminal::new(TestBackend::new(20, 1))?;
+        terminal.draw(|frame| {
+            bar.render(&theme, frame, frame.area(), "⏎ rename   esc cancel");
+        })?;
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..20).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert_eq!(row, format!("{:<20}", " Rename  a.md"));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        bar.render_field(
+            &theme,
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            false,
+            Style::new(),
+        );
+        assert_eq!(buf[(1, 0)].fg, theme.muted);
         Ok(())
     }
 
