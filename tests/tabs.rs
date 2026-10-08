@@ -199,6 +199,15 @@ fn mono_reverses_the_active_pill_and_draws_the_thread_in_accent() {
     }
     glyph.send_keys("alt+,");
     glyph.wait_for_reversed(PILL_ROW, " a.txt ", WAIT);
+
+    // A dirty active pill keeps its dot inside the fill, in the pill's own colour,
+    // not a `warn` block cut into it.
+    glyph.type_text("y");
+    glyph.wait_for_reversed(PILL_ROW, " a.txt • ", WAIT);
+    let name = glyph.text_col(PILL_ROW, "a.txt").expect("a.txt on screen");
+    let dot = glyph.text_col(PILL_ROW, "•").expect("dirty dot on screen");
+    assert_eq!(glyph.fg_at(dot, PILL_ROW), glyph.fg_at(name, PILL_ROW));
+    assert_eq!(glyph.bg_at(dot, PILL_ROW), glyph.bg_at(name, PILL_ROW));
 }
 
 #[test]

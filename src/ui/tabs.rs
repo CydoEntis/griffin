@@ -142,15 +142,9 @@ pub fn render_tabs(
             centre = Some(f64::from(pill.x) + 1.0 + label.text().width() as f64 / 2.0);
         } else {
             put(out, pill, 1, &label.text(), Style::new().fg(theme.muted));
-        }
-        if label.dirty {
-            put(
-                out,
-                pill,
-                3 + label.name.width(),
-                "•",
-                Style::new().fg(theme.warn),
-            );
+            if label.dirty {
+                put_dot(out, pill, label, Style::new().fg(theme.warn));
+            }
         }
     }
     draw_thread(out, theme, focused, centre, thread_row(header));
@@ -194,9 +188,10 @@ fn draw_active(out: &mut Buffer, theme: &Theme, label: &TabLabel, focused: bool,
         };
         let name = match (flat, focused) {
             (true, true) => fill,
+            // Not bold: in mono, bold marks only the focused split's name.
             (true, false) => Style::new()
                 .fg(theme.strong)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                .add_modifier(Modifier::UNDERLINED),
             (false, true) => Style::new()
                 .fg(grad(&[theme.strong, theme.accent], t))
                 .add_modifier(Modifier::BOLD),
@@ -205,6 +200,22 @@ fn draw_active(out: &mut Buffer, theme: &Theme, label: &TabLabel, focused: bool,
         put(out, pill, x, &c.to_string(), name);
         x += c.width().unwrap_or(0);
     }
+    if label.dirty {
+        // Setting only a colour keeps the cell's REVERSED, so a `warn` dot on the
+        // mono fill would show as a coloured block; there it takes the fill's
+        // style (SPEC_V1_LAYOUT §2).
+        let dot = if flat && focused {
+            fill
+        } else {
+            Style::new().fg(theme.warn)
+        };
+        put_dot(out, pill, label, dot);
+    }
+}
+
+/// The dirty `•`, one space after the name.
+fn put_dot(out: &mut Buffer, pill: Rect, label: &TabLabel, style: Style) {
+    put(out, pill, 3 + label.name.width(), "•", style);
 }
 
 /// The aurora thread (README §2.3): `─` across the row, its hue running from
@@ -375,5 +386,27 @@ mod tests {
         assert_eq!(reversed, " b.txt ");
         assert!(buffer[(13, 1)].modifier.contains(Modifier::BOLD));
         assert!((0..40).all(|x| buffer[(x, 2)].fg == theme.accent));
+    }
+
+    #[test]
+    fn mono_draws_a_dirty_active_pills_dot_in_the_fill() {
+        let theme = Theme::named("mono").expect("mono exists");
+        let labels = [label("a.txt", false), label("b.txt", true)];
+        let buffer = draw(&theme, &labels, 1, true);
+        assert_eq!(buffer[(19, 1)].symbol(), "•");
+        assert_eq!(buffer[(19, 1)].style(), buffer[(13, 1)].style());
+        assert!(buffer[(19, 1)].modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn mono_underlines_the_unfocused_active_name_without_bold() {
+        let theme = Theme::named("mono").expect("mono exists");
+        let labels = [label("a.txt", false)];
+        let buffer = draw(&theme, &labels, 0, false);
+        let name = &buffer[(3, 1)];
+        assert_eq!(name.symbol(), "a");
+        assert_eq!(name.fg, theme.strong);
+        assert!(name.modifier.contains(Modifier::UNDERLINED));
+        assert!(!name.modifier.contains(Modifier::BOLD));
     }
 }
