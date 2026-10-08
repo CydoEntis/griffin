@@ -243,7 +243,10 @@ fn esc_closes_the_picker_without_opening_anything() {
     glyph.wait_for_text_gone(SCOPE, WAIT);
     glyph.wait_for_text_gone("notes.txt", WAIT);
     assert!(status_line(&glyph).contains("untitled"));
-    // Typing goes to the editor again, not to a hidden query.
+    // Nothing was opened, so the splash is back; leaving it, typing goes to the
+    // editor, not to a hidden query.
+    glyph.wait_for_text("New file", WAIT);
+    glyph.send_keys("ctrl+n");
     glyph.type_text("x");
     glyph.wait_for_text("1  x", WAIT);
 }

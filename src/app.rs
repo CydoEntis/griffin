@@ -46,6 +46,7 @@ use crate::ui::picker::{self, Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
 use crate::ui::run::{RunStatus, RunView, render_run_panel};
 use crate::ui::search::{ProjectSearch, Searched};
+use crate::ui::splash::{self, Splash};
 use crate::ui::status::{Status, Tone, render_status};
 use crate::ui::tabs::{HEADER_HEIGHT, TabLabel, render_tabs, tab_at};
 use crate::ui::tree::{
@@ -711,6 +712,10 @@ pub struct App {
     project: String,
     tree_visible: bool,
     focus: Focus,
+    /// The splash, while Glyph is still as it started with nothing to edit
+    /// (glyph-splash spec S1). It's drawn over the editor area in place of the
+    /// untouched untitled tab underneath, which is what leaving it shows.
+    splash: Option<Splash>,
     /// The prompt bar, while it's asking for a name; it takes every key.
     name_prompt: Option<NamePrompt>,
     /// The picker, while it's open; it takes every key.
@@ -799,6 +804,8 @@ impl App {
     ) -> Self {
         let mut messages: Vec<String> = message.into_iter().collect();
         let launch = Launch::from_arg(path.as_deref());
+        // Only a named file gives Glyph something to edit at launch.
+        let splash = launch.file.is_none().then(Splash::default);
         let buffer = match launch.file {
             Some(path) => Buffer::open(&path).unwrap_or_else(|err| {
                 messages.push(format!("cannot open {}: {err}", path.display()));
@@ -817,12 +824,9 @@ impl App {
             tree: Tree::new(&launch.root),
             project: project_label(&launch.root, std::env::home_dir().as_deref()),
             tree_visible: launch.show_tree,
-            // With only a folder open there's nothing to edit yet.
-            focus: if launch.show_tree {
-                Focus::Tree
-            } else {
-                Focus::Editor
-            },
+            // The splash takes the keys at launch, the tree open beside it or not.
+            focus: Focus::Editor,
+            splash,
             ..Self::default()
         }
     }
@@ -962,6 +966,11 @@ impl App {
                 if let Some(find) = &mut self.find {
                     let step = find.paste(&text, &self.tabs.active().buffer.rope);
                     self.find_step(step);
+                    return;
+                }
+                // The splash hides the untitled buffer; text pasted there would
+                // land out of sight.
+                if self.splash.is_some() {
                     return;
                 }
                 // Bracketed paste bypasses the keymap: it is text, not a key.
@@ -1105,6 +1114,8 @@ impl App {
             && self.picker.is_none()
         {
             Scope::Tree
+        } else if self.splash_has_keys() {
+            Scope::Splash
         } else {
             Scope::Global
         };
@@ -1159,9 +1170,12 @@ impl App {
         }
         match input {
             Input::Action(action) if self.focus == Focus::Tree => self.handle_tree_action(action),
+            Input::Action(action) if self.splash_has_keys() => self.handle_splash_action(action),
             Input::Action(action) => self.handle_action(action),
             // Typing in the tree does nothing until type-to-find exists.
             Input::Text(_) if self.focus == Focus::Tree => {}
+            // There's nothing under the splash to type into.
+            Input::Text(_) if self.splash_has_keys() => {}
             Input::Text(ch) => {
                 self.edit(|buffer| buffer.type_text(ch.encode_utf8(&mut [0; 4])));
                 if self.lsp.is_trigger(self.tabs.active().id, ch) {
@@ -1359,6 +1373,9 @@ impl App {
     /// Both happen in the focused split; a file open only in the other split gets
     /// a tab here too, on the same buffer.
     fn open(&mut self, path: &Path) {
+        // Whatever is opened replaces the splash, which only stood in for the
+        // untouched untitled tab.
+        self.splash = None;
         if let Some(doc) = self.tabs.find(path) {
             self.tabs.show(doc);
             self.reset_mouse();
@@ -1534,6 +1551,30 @@ impl App {
     }
 
     fn handle_action(&mut self, action: Action) {
+        if self.splash.is_some() {
+            match action {
+                // Ctrl+N's new untitled buffer is the one under the splash.
+                Action::NewFile => {
+                    self.leave_splash();
+                    return;
+                }
+                // What makes sense with nothing open: quitting, the tree, going
+                // to a file or a search hit (which replaces the splash), runs.
+                Action::Quit
+                | Action::ToggleTree
+                | Action::FocusTree
+                | Action::CycleFocus
+                | Action::GoToFile
+                | Action::ProjectSearch
+                | Action::Run
+                | Action::ToggleRunPanel
+                | Action::StopRun
+                | Action::RestartRun => {}
+                // The rest act on a buffer, and the splash stands for there
+                // being none yet.
+                _ => return,
+            }
+        }
         // Enter joins the run of typing it ends; every other action closes it.
         if action != Action::Newline {
             self.buffer_mut().seal_undo_group();
@@ -1630,8 +1671,66 @@ impl App {
             | Action::FindCase
             | Action::FindRegex
             | Action::ReplaceAll
-            | Action::ProjectReplace => {}
+            | Action::ProjectReplace
+            | Action::SplashUp
+            | Action::SplashDown
+            | Action::SplashRun
+            | Action::SplashNewFile
+            | Action::SplashNewDirectory
+            | Action::SplashOpenDirectory
+            | Action::SplashDismiss => {}
         }
+    }
+
+    /// Whether keys go to the splash: it's up, the editor side has focus and
+    /// nothing else is reading keys.
+    fn splash_has_keys(&self) -> bool {
+        self.splash.is_some() && self.focus == Focus::Editor && !self.modal_open()
+    }
+
+    /// A key while the splash has the keys: its own actions, or a global one,
+    /// which `handle_action` filters down to what makes sense with nothing open.
+    fn handle_splash_action(&mut self, action: Action) {
+        let Some(splash) = &mut self.splash else {
+            return;
+        };
+        match action {
+            Action::SplashUp => splash.move_by(-1),
+            Action::SplashDown => splash.move_by(1),
+            Action::SplashRun => {
+                let item = splash.selected();
+                self.run_splash_item(item);
+            }
+            Action::SplashNewFile => self.run_splash_item(splash::Item::NewFile),
+            Action::SplashNewDirectory => self.run_splash_item(splash::Item::NewDirectory),
+            Action::SplashOpenDirectory => self.run_splash_item(splash::Item::OpenDirectory),
+            Action::SplashDismiss => self.leave_splash(),
+            other => self.handle_action(other),
+        }
+    }
+
+    /// Does what a splash row offers. The splash stays up underneath, so
+    /// cancelling the name prompt, or a name that's refused, comes back to it.
+    fn run_splash_item(&mut self, item: splash::Item) {
+        match item {
+            // New files go in the project folder, whatever the tree has selected.
+            splash::Item::NewFile => {
+                let root = self.tree.root().to_path_buf();
+                self.open_name_prompt(BarOp::NewFile(root), PromptBar::new("New file", ""));
+            }
+            splash::Item::NewDirectory | splash::Item::OpenDirectory => {
+                self.say(Tone::Warn, "coming soon");
+            }
+        }
+    }
+
+    /// Esc or Ctrl+N on the splash: the empty untitled buffer underneath takes
+    /// its place.
+    fn leave_splash(&mut self) {
+        self.splash = None;
+        self.focus = Focus::Editor;
+        self.reset_mouse();
+        self.follow_cursor();
     }
 
     /// The card a confirm prompt shows (SPEC_V1_LAYOUT §7.4).
@@ -2436,6 +2535,21 @@ impl App {
             self.handle_tree_mouse(mouse, tree);
             return;
         }
+        // Over the splash only its rows answer, to a left click; there's no
+        // buffer to place a cursor in or tab to pick.
+        if self.splash.is_some() {
+            let editor = panes.splits[self.tabs.focused].editor;
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                && let Some(item) = Splash::item_at(editor, at)
+            {
+                self.focus = Focus::Editor;
+                if let Some(splash) = &mut self.splash {
+                    splash.select(item);
+                }
+                self.run_splash_item(item);
+            }
+            return;
+        }
         if let Some(split) = panes.splits.iter().position(|s| s.header.contains(at)) {
             self.handle_tab_mouse(mouse, split, panes.splits[split].header);
             return;
@@ -2984,6 +3098,13 @@ impl App {
         for split in order {
             let area = panes.splits[split];
             let tabs = &self.tabs.splits[split];
+            // The splash has the editor area to itself: no pills or thread over
+            // it, and no cursor in a buffer that isn't shown.
+            if let Some(splash) = &self.splash {
+                let project = absolute(self.tree.root()).display().to_string();
+                splash.render(theme, &project, frame, area.editor);
+                continue;
+            }
             render_tabs(
                 theme,
                 &self.tabs.labels(split),
@@ -3896,14 +4017,51 @@ world",
         Ok((dir, app))
     }
 
+    /// `project`, with Ctrl+E taking focus from the splash to the tree.
+    fn project_in_tree() -> Result<(tempfile::TempDir, App)> {
+        let (dir, mut app) = project()?;
+        press(&mut app, &["ctrl+e"]);
+        assert_eq!(app.focus, Focus::Tree);
+        Ok((dir, app))
+    }
+
     #[test]
-    fn a_folder_opens_with_the_tree_focused_and_typing_does_not_edit() -> Result<()> {
+    fn a_folder_opens_on_the_splash_beside_the_tree_and_typing_does_not_edit() -> Result<()> {
         let (_dir, mut app) = project()?;
         assert!(app.tree_visible);
+        assert!(app.splash.is_some());
+        assert_eq!(app.focus, Focus::Editor);
+        press(&mut app, &["x", "backspace", "ctrl+v", "ctrl+e"]);
         assert_eq!(app.focus, Focus::Tree);
         press(&mut app, &["x", "backspace", "ctrl+v"]);
         assert_eq!(app.buffer().rope.to_string(), "");
         assert!(!app.buffer().dirty);
+        assert!(app.splash.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn the_splash_ignores_buffer_actions_and_its_name_prompt_comes_back_to_it() -> Result<()> {
+        let (dir, mut app) = project()?;
+        // Splitting, finding or saving need a buffer the splash stands in for.
+        press(&mut app, &["alt+v", "ctrl+f", "ctrl+s", "ctrl+g"]);
+        assert_eq!(app.tabs.splits.len(), 1);
+        assert!(app.find.is_none() && app.name_prompt.is_none() && app.picker.is_none());
+        assert!(app.splash.is_some());
+
+        press(&mut app, &["n"]);
+        let label = app.name_prompt.as_ref().map(|p| p.bar.label);
+        assert_eq!(label, Some("New file"));
+        press(&mut app, &["esc"]);
+        assert!(app.name_prompt.is_none());
+        assert!(app.splash.is_some());
+
+        press(&mut app, &["enter"]);
+        type_keys(&mut app, "c.txt");
+        press(&mut app, &["enter"]);
+        assert!(app.splash.is_none());
+        assert_eq!(tab_names(&app), ["c.txt"]);
+        assert!(dir.path().join("c.txt").is_file());
         Ok(())
     }
 
@@ -3943,7 +4101,7 @@ world",
 
     #[test]
     fn opening_from_the_tree_opens_tabs_and_reuses_open_ones() -> Result<()> {
-        let (_dir, mut app) = project()?;
+        let (_dir, mut app) = project_in_tree()?;
         press(&mut app, &["enter"]);
         // The untouched untitled tab made way for the file.
         assert_eq!(tab_names(&app), ["a.txt"]);
@@ -3995,7 +4153,7 @@ world",
 
     #[test]
     fn ctrl_q_asks_about_each_dirty_tab_in_turn() -> Result<()> {
-        let (dir, mut app) = project()?;
+        let (dir, mut app) = project_in_tree()?;
         press(&mut app, &["enter", "x", "ctrl+e", "down", "enter", "y"]);
         press(&mut app, &["ctrl+n", "ctrl+q"]);
         // The first dirty tab comes up first.
@@ -4018,7 +4176,7 @@ world",
 
     #[test]
     fn save_as_writes_the_new_path_and_renames_the_tab() -> Result<()> {
-        let (dir, mut app) = project()?;
+        let (dir, mut app) = project_in_tree()?;
         press(&mut app, &["ctrl+n", "h", "i", "alt+s"]);
         let bar = app.name_prompt.as_ref().map(|p| p.bar.text().to_string());
         assert_eq!(bar.as_deref(), Some(""));
@@ -4041,7 +4199,8 @@ world",
         let new = dir.path().join("new.txt");
         assert_eq!(std::fs::read_to_string(&new)?, "hi");
         assert_eq!(app.buffer().path.as_deref(), Some(new.as_path()));
-        assert_eq!(tab_names(&app), ["untitled", "new.txt"]);
+        // Ctrl+N from the splash took the untitled buffer under it.
+        assert_eq!(tab_names(&app), ["new.txt"]);
         // The bar now offers the current path, relative to the root.
         press(&mut app, &["alt+s"]);
         let bar = app.name_prompt.as_ref().map(|p| p.bar.text().to_string());
@@ -4124,7 +4283,7 @@ world",
 
     #[test]
     fn d_asks_then_trashes_and_closes_the_open_buffer() -> Result<()> {
-        let (dir, mut app) = project()?;
+        let (dir, mut app) = project_in_tree()?;
         let trash = ops::FakeTrash::default();
         app.trash = Box::new(trash.clone());
         let a = dir.path().join("a.txt");
@@ -4159,7 +4318,7 @@ world",
 
     #[test]
     fn a_failed_trash_says_why_and_keeps_the_buffer() -> Result<()> {
-        let (dir, mut app) = project()?;
+        let (dir, mut app) = project_in_tree()?;
         app.trash = Box::new(ops::FakeTrash {
             fail: true,
             ..ops::FakeTrash::default()
@@ -4177,7 +4336,7 @@ world",
 
     #[test]
     fn tree_letters_type_into_the_editor_and_the_bar() -> Result<()> {
-        let (dir, mut app) = project()?;
+        let (dir, mut app) = project_in_tree()?;
         // In the tree `a` opens the bar; inside the bar `a`, `r`, `d` are text.
         press(&mut app, &["a"]);
         assert!(app.name_prompt.is_some());
@@ -4196,7 +4355,7 @@ world",
 
     #[test]
     fn rename_moves_the_open_buffer_to_the_new_path() -> Result<()> {
-        let (dir, mut app) = project()?;
+        let (dir, mut app) = project_in_tree()?;
         press(&mut app, &["enter", "x", "ctrl+e", "r"]);
         let bar = app.name_prompt.as_ref().map(|p| p.bar.text().to_string());
         assert_eq!(bar.as_deref(), Some("a.txt"));
@@ -4292,6 +4451,8 @@ world",
     #[test]
     fn f6_cycles_tree_left_right_skipping_what_is_hidden() -> Result<()> {
         let (_dir, mut app) = project()?;
+        // Splits need a buffer, so the splash goes first.
+        press(&mut app, &["esc", "ctrl+e"]);
         let at = |app: &App| match app.focus {
             Focus::Tree => "tree",
             Focus::Editor if app.tabs.focused == 0 => "left",
@@ -4319,7 +4480,7 @@ world",
 
     #[test]
     fn a_click_focuses_its_split_and_opening_goes_there() -> Result<()> {
-        let (_dir, mut app) = project()?;
+        let (_dir, mut app) = project_in_tree()?;
         press(&mut app, &["enter", "alt+v"]);
         assert_eq!(app.tabs.focused, 1);
         // The left split's editor starts at column 29, below its three header rows.
@@ -4536,7 +4697,7 @@ world",
 
     #[test]
     fn project_search_toggles_research_and_esc_closes() -> Result<()> {
-        let (_dir, mut app) = project()?;
+        let (_dir, mut app) = project_in_tree()?;
         press(&mut app, &["alt+f", "shift+a", "enter"]);
         assert_eq!(hit_rows(&app), ["a.txt:1: a"]);
         press(&mut app, &["alt+c"]);

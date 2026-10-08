@@ -31,8 +31,10 @@ fn wait_for_row(glyph: &Glyph, row: u16, number: usize, text: &str) {
 
 /// An untitled buffer, with the starting cell of its text.
 fn start_empty(config: &str) -> (Glyph, u16) {
-    let glyph = Glyph::spawn_with_config(config, &[]);
+    let mut glyph = Glyph::spawn_with_config(config, &[]);
     glyph.wait_for_text("Ln 1, Col 1", START);
+    // Leave the splash for the untitled buffer under it.
+    glyph.send_keys("ctrl+n");
     glyph.wait_for_text("   1", WAIT);
     // Text starts two blank cells after the line number. The terminal cursor
     // moves there only after the frame is drawn, so wait for it rather than read

@@ -72,9 +72,12 @@ fn wait_for_selected(glyph: &Glyph, row: u16, text: &str) {
     glyph.wait_for_bg(27, row, GLOW_END, WAIT);
 }
 
+/// The fixture project with the tree focused: it opens on the splash, and
+/// Ctrl+E moves the keys to the tree.
 fn open_project() -> Glyph {
-    let glyph = Glyph::spawn(&[PROJECT]);
+    let mut glyph = Glyph::spawn(&[PROJECT]);
     glyph.wait_for_text("README.md", START);
+    glyph.send_keys("ctrl+e");
     glyph
 }
 
@@ -137,15 +140,14 @@ fn folder_opens_with_a_28_column_tree_on_surface_under_the_brand() {
     // Names are `text`, markers `muted`.
     assert_eq!(glyph.fg_at(2, FIRST + 1), MUTED);
     assert_eq!(glyph.fg_at(4, FIRST + 1), TEXT);
-    // The empty editor starts one column right of the tree, below the tab header.
+    // Right of the tree, nothing is open yet: the splash has the editor area.
     assert!(
-        screen[3]
+        screen.iter().any(|line| line
             .chars()
             .skip(TREE + 1)
             .collect::<String>()
-            .starts_with("   1"),
-        "{:?}",
-        screen[3]
+            .contains("New file")),
+        "{screen:#?}"
     );
 }
 
@@ -163,6 +165,7 @@ fn nodes_have_guides_cut_names_and_a_dirty_mark() {
     let path = dir.path().to_str().expect("temp path is UTF-8");
     let mut glyph = Glyph::spawn(&[path]);
     glyph.wait_for_text("lib", START);
+    glyph.send_keys("ctrl+e");
     glyph.send_keys("enter");
     wait_for_tree(&glyph, &["  ▾ lib", "   │  a_rather_long_file…"]);
     assert_eq!(glyph.fg_at(2, FIRST), MUTED);
@@ -193,6 +196,7 @@ fn nodes_have_guides_cut_names_and_a_dirty_mark() {
 fn mono_reverses_the_selection_and_bolds_the_active_name() {
     let mut glyph = Glyph::spawn_with_config("theme = \"mono\"\n", &[PROJECT]);
     glyph.wait_for_text("README.md", START);
+    glyph.send_keys("ctrl+e");
     wait_for_tree(&glyph, TOP);
     glyph.wait_for_reversed(FIRST, &format!("{:<TREE$}", "  ▸ docs"), WAIT);
 
@@ -242,6 +246,7 @@ fn dot_git_and_nested_ignores_are_hidden() {
     let mut glyph = Glyph::spawn(&[path]);
     glyph.wait_for_text("visible.txt", START);
     wait_for_tree(&glyph, &["  ▸ lib", "    .gitignore", "    visible.txt"]);
+    glyph.send_keys("ctrl+e");
     glyph.send_keys("enter");
     wait_for_tree(
         &glyph,
@@ -296,6 +301,7 @@ fn page_keys_move_the_selection_by_the_rows_the_tree_shows() {
     let path = dir.path().to_str().expect("temp path is UTF-8");
     let mut glyph = Glyph::spawn(&[path]);
     glyph.wait_for_text("f00.txt", START);
+    glyph.send_keys("ctrl+e");
     // Node rows run from FIRST to the row above the status line.
     let last = ROWS - 2;
     let visible = usize::from(last - FIRST + 1);
