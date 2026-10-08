@@ -36,7 +36,7 @@ use crate::keymap::burst_as_paste;
 use crate::keymap::{Action, Input, Keymap, Scope};
 use crate::lsp::{
     CompletionItem, Diagnostic, FormatRequest, HoverText, Location, Lsp, LspEvent, LspNews,
-    Severity, char_index, diagnostic_at, diagnostic_jump, servers,
+    Severity, char_index, diagnostic_at, diagnostic_jump,
 };
 use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
@@ -2390,15 +2390,10 @@ impl App {
     /// `>language servers`: the catalog, with what's on PATH as of now, so a
     /// server installed outside Glyph shows once the catalog is opened again.
     fn open_catalog(&mut self) {
-        let path = std::env::var_os("PATH");
-        let pathext = std::env::var_os("PATHEXT");
         let lsp = &self.lsp;
-        self.catalog = Some(Catalog::new(
-            lsp.config(),
-            |lang| lsp.is_running(lang),
-            path.as_deref(),
-            pathext.as_deref(),
-        ));
+        let catalog =
+            with_lookup(|lookup| Catalog::new(lsp.config(), |lang| lsp.is_running(lang), lookup));
+        self.catalog = Some(catalog);
     }
 
     /// Follows what a key did in the catalog. It stays open under a message.
@@ -2454,21 +2449,13 @@ impl App {
     fn installed(&mut self, install: &catalog::Install, code: Option<i32>) {
         match code {
             Some(0) => {
-                let path = std::env::var_os("PATH");
-                let pathext = std::env::var_os("PATHEXT");
-                if servers::find(&install.command, path.as_deref(), pathext.as_deref()).is_some() {
+                if with_lookup(|lookup| lookup.found(&install.command, install.probe)) {
                     for lang in install.langs {
                         self.lsp.forget_failed(lang);
                     }
                     self.say(Tone::Ok, format!("{} installed", install.name));
                 } else {
-                    self.say(
-                        Tone::Warn,
-                        format!(
-                            "installed, but {} isn't on PATH; restart your terminal",
-                            install.command
-                        ),
-                    );
+                    self.say(Tone::Warn, install.not_found());
                 }
             }
             Some(code) => self.say(
@@ -4297,6 +4284,21 @@ impl App {
                 .render(theme, frame, frame.area(), self.prompt_button);
         }
     }
+}
+
+/// Calls `f` with the catalog's lookup in this process's environment. PATH is
+/// read each time, so the catalog shows a program installed outside Glyph once
+/// it's opened again.
+fn with_lookup<R>(f: impl FnOnce(&catalog::Lookup) -> R) -> R {
+    let path = std::env::var_os("PATH");
+    let pathext = std::env::var_os("PATHEXT");
+    let llvm_bin = adapters::llvm_bin();
+    f(&catalog::Lookup {
+        path: path.as_deref(),
+        pathext: pathext.as_deref(),
+        llvm_bin: llvm_bin.as_deref(),
+        imports: &adapters::imports,
+    })
 }
 
 /// `count` and the noun that goes with it, e.g. `1 file` or `2 files`.
