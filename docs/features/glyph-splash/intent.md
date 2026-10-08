@@ -34,10 +34,12 @@ Ctrl+P cast palette.
 ## Constraints
 
 - The splash shows only when nothing is open at launch: bare `glyph`, or `glyph <folder>`
-  before any file is open. `glyph file.rs` opens the file directly. Closing the last tab
-  still leaves an untitled one, as today (decided 2026-10-08).
-- It replaces the planned "no file open" key-list screen (SPEC_V1_LAYOUT 9a), which is not
-  built (decided 2026-10-08).
+  before any file is open. `glyph file.rs` opens the file directly (decided 2026-10-08).
+- Whenever no file is open otherwise (after opening a folder, after closing the last tab),
+  the editor area shows the "no file open" key list of SPEC_V1_LAYOUT 9a, with an empty tab
+  bar (decided 2026-10-08, after Cody tried the first build; first decided as not built).
+- The splash and the key list follow Cody's images in [design/](design/); colours follow
+  the theme (decided 2026-10-08).
 - New file and New directory are created in the project folder, named through the same
   prompt the tree's `a` / `A` use.
 - Switching projects with unsaved tabs shows one confirm card listing them: Save all /
@@ -58,4 +60,4 @@ Ctrl+P cast palette.
 
 ## Tickets
 
-#113–#117, in the order and with the blockers in [the plan](../../PLANNING.md).
+#113–#117, #124, #126–#128, in the order and with the blockers in [the plan](../../PLANNING.md).
