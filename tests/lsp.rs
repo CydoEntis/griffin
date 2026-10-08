@@ -1143,10 +1143,17 @@ fn completion_script(extra: &str) -> String {
 /// A project with `comp.rs` open on the fake server, the cursor at the end of
 /// its indented empty line 2.
 fn completion_project(script: &str) -> (Project, Glyph) {
+    completion_project_with(
+        script,
+        &format!("{}{COMPLETION_THEME}", rust_server(fake())),
+    )
+}
+
+/// `completion_project` under `config` rather than the pinned theme.
+fn completion_project_with(script: &str, config: &str) -> (Project, Glyph) {
     let project = Project::new(Some(script));
     fs::write(project.dir.path().join("comp.rs"), "fn main() {\n    \n}\n").expect("write comp.rs");
-    let config = format!("{}{COMPLETION_THEME}", rust_server(fake()));
-    let mut glyph = project.open(&config, "comp.rs");
+    let mut glyph = project.open(config, "comp.rs");
     project.wait_for(&glyph, "textDocument/didOpen", "comp.rs");
     glyph.send_keys("down");
     glyph.wait_for_text("Ln 2, Col 1", WAIT);
@@ -1272,6 +1279,38 @@ fn a_trigger_character_or_alt_slash_shows_up_to_ten_items_with_kinds() {
         requests[1]["params"]["position"],
         serde_json::json!({"line": 1, "character": 6})
     );
+}
+
+#[test]
+fn mono_reverses_the_selected_completion_row() {
+    let config = format!("theme = \"mono\"\n{}", rust_server(fake()));
+    let (project, mut glyph) = completion_project_with(&completion_script(""), &config);
+    open_completion(&project, &mut glyph, 2);
+    glyph.wait_for_cursor(12, 4, WAIT);
+    let screen = glyph.screen();
+    // The selected row is reverse video across the card, kind and label in it.
+    let selected = glyph.reversed_text(ITEM_ROW);
+    assert!(
+        selected.contains("field  as_str"),
+        "{selected:?} {screen:#?}"
+    );
+    assert_eq!(selected.chars().count(), 40 - 2, "{selected:?}");
+    // Its label keeps the row's own colours rather than `strong`, so it reads
+    // as reversed like the rest of the row.
+    assert_eq!(
+        glyph.fg_at(LABEL_COL, ITEM_ROW),
+        glyph.fg_at(KIND_COL - 1, ITEM_ROW)
+    );
+    assert_ne!(
+        glyph.fg_at(LABEL_COL, ITEM_ROW),
+        vt100::Color::Idx(15),
+        "{screen:#?}"
+    );
+    // The next row isn't reversed: kind in `muted` (dark grey), label in `fg`
+    // (the terminal's default).
+    assert_eq!(glyph.reversed_text(ITEM_ROW + 1), "", "{screen:#?}");
+    assert_eq!(glyph.fg_at(KIND_COL, ITEM_ROW + 1), vt100::Color::Idx(8));
+    assert_eq!(glyph.fg_at(LABEL_COL, ITEM_ROW + 1), vt100::Color::Default);
 }
 
 #[test]

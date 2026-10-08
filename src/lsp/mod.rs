@@ -144,21 +144,41 @@ fn strip_fences(markdown: &str) -> String {
         .join("\n")
 }
 
-/// `markdown` as (code, docs): the code inside the fence it opens with, if it
-/// opens with one, then the rest with its fences stripped. Servers put the
-/// signature in that first fence, and the popup draws a rule under it.
+/// Whether `line` is a markdown thematic break (`---`, `***`, `___`).
+fn is_thematic_break(line: &str) -> bool {
+    let marks: Vec<char> = line.chars().filter(|c| !c.is_whitespace()).collect();
+    marks.len() >= 3 && matches!(marks[0], '-' | '*' | '_') && marks.iter().all(|&c| c == marks[0])
+}
+
+/// `markdown` as (code, docs): the code inside the fences it opens with, then
+/// the rest with its fences stripped. Servers put the signature in those leading
+/// fences (rust-analyzer sends the module path and the signature as two, split
+/// by blank lines), and the popup draws a rule under them. A thematic break
+/// opening the docs goes: it is the server's own rule, and the popup has one.
 fn split_fence(markdown: &str) -> (String, String) {
-    let mut lines = markdown
-        .lines()
-        .skip_while(|line| line.trim().is_empty())
-        .peekable();
-    if !lines.peek().is_some_and(|line| is_fence(line)) {
-        return (String::new(), strip_fences(markdown));
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut at = 0;
+    let mut blocks = Vec::new();
+    loop {
+        while lines.get(at).is_some_and(|line| line.trim().is_empty()) {
+            at += 1;
+        }
+        if !lines.get(at).is_some_and(|line| is_fence(line)) {
+            break;
+        }
+        let start = at + 1;
+        let close = lines[start..]
+            .iter()
+            .position(|line| is_fence(line))
+            .map_or(lines.len(), |offset| start + offset);
+        blocks.push(lines[start..close].join("\n"));
+        at = (close + 1).min(lines.len());
     }
-    lines.next();
-    let code: Vec<&str> = lines.by_ref().take_while(|line| !is_fence(line)).collect();
-    let rest: Vec<&str> = lines.collect();
-    (code.join("\n"), strip_fences(&rest.join("\n")))
+    let mut rest = &lines[at..];
+    if !blocks.is_empty() && rest.first().is_some_and(|line| is_thematic_break(line)) {
+        rest = &rest[1..];
+    }
+    (blocks.join("\n\n"), strip_fences(&rest.join("\n")))
 }
 
 /// A hover reply as the popup shows it: the code it opens with (the signature)
@@ -1218,6 +1238,20 @@ mod tests {
         assert_eq!(hover_text(&serde_json::json!({"contents": []})), None);
         let fences = serde_json::json!({"contents": {"kind": "markdown", "value": "```\n```"}});
         assert_eq!(hover_text(&fences), None);
+        // rust-analyzer: module path and signature as two fences, then `---`.
+        let rust_analyzer = serde_json::json!({"contents": {"kind": "markdown",
+            "value": "```rust\nmy_crate\n```\n\n```rust\npub fn greet()\n```\n\n---\n\nSays hello."}});
+        assert_eq!(
+            hover_text(&rust_analyzer),
+            text("my_crate\n\npub fn greet()", "Says hello.")
+        );
+        // pyright: the break straight under the fence; a later break stays.
+        let pyright = serde_json::json!({"contents": {"kind": "markdown",
+            "value": "```python\ndef f()\n```\n---\nDoes.\n\n***\n\nMore."}});
+        assert_eq!(
+            hover_text(&pyright),
+            text("def f()", "Does.\n\n***\n\nMore.")
+        );
     }
 
     #[test]
