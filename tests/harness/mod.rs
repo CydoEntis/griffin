@@ -958,17 +958,51 @@ impl FrameGate {
                 .min();
             match next {
                 Some((pos, marker_len)) => {
-                    parser.process(&rest[..pos]);
+                    parser.process(&plain_underlines(&rest[..pos]));
                     rest = &rest[pos + marker_len..];
                 }
                 None => {
-                    parser.process(rest);
+                    parser.process(&plain_underlines(rest));
                     rest = &[];
                 }
             }
         }
         self.pending.drain(..len);
     }
+}
+
+/// `bytes` with each underline style (`4:1` curly and the rest, `4:0` off) in an
+/// SGR sequence turned into the plain `4` or `24` vt100 knows; it ignores the
+/// styled forms. A curly diagnostic underline is still an underline to a test,
+/// and ConPTY re-emits glyph's `4` + `4:3` as `4:3` alone (CI run 37715924579).
+fn plain_underlines(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while let Some(pos) = find(&bytes[at..], b"[") {
+        let params_start = at + pos + 2;
+        out.extend_from_slice(&bytes[at..params_start]);
+        let params_len = bytes[params_start..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit() || matches!(b, b';' | b':'))
+            .count();
+        let params = &bytes[params_start..params_start + params_len];
+        if bytes.get(params_start + params_len) == Some(&b'm') {
+            let groups: Vec<&[u8]> = params
+                .split(|b| *b == b';')
+                .map(|group| match group {
+                    b"4:0" => b"24".as_slice(),
+                    [b'4', b':', ..] => b"4".as_slice(),
+                    group => group,
+                })
+                .collect();
+            out.extend_from_slice(&groups.join(&b';'));
+        } else {
+            out.extend_from_slice(params);
+        }
+        at = params_start + params_len;
+    }
+    out.extend_from_slice(&bytes[at..]);
+    out
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1330,6 +1364,18 @@ mod tests {
     fn gate_contents(gate: &mut FrameGate, parser: &mut vt100::Parser, bytes: &[u8]) -> String {
         gate.feed(parser, bytes);
         parser.screen().contents()
+    }
+
+    #[test]
+    fn underline_styles_read_as_plain_underlines() {
+        assert_eq!(
+            plain_underlines(b"a[4:3mb[1;4:1;58:2::1:2:3mc[4:0md[2Ke"),
+            b"a[4mb[1;4;58:2::1:2:3mc[24md[2Ke"
+        );
+        let mut parser = vt100::Parser::new(1, 10, 0);
+        parser.process(&plain_underlines(b"[4:3mx[0my"));
+        assert!(parser.screen().cell(0, 0).is_some_and(|c| c.underline()));
+        assert!(parser.screen().cell(0, 1).is_some_and(|c| !c.underline()));
     }
 
     #[test]
