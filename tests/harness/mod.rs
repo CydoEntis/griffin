@@ -22,6 +22,15 @@ use tempfile::{NamedTempFile, TempDir};
 pub const COLS: u16 = 100;
 pub const ROWS: u16 = 30;
 
+/// Whether `status` shows `position` (`Ln 3, Col 1`) whole: not as the start of
+/// a longer column like `Col 12`. The language follows the position, so it no
+/// longer ends the status line.
+pub fn shows_position(status: &str, position: &str) -> bool {
+    status
+        .match_indices(position)
+        .any(|(at, _)| !status[at + position.len()..].starts_with(|c: char| c.is_ascii_digit()))
+}
+
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 /// Device status report "where is the cursor?".

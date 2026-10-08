@@ -107,6 +107,23 @@ pub fn for_name(name: &str) -> Option<&'static Language> {
 }
 
 impl Language {
+    /// The name the status line shows. `name` stays lower case because config
+    /// keys and injection queries use it.
+    pub fn display_name(&self) -> &'static str {
+        match self.name {
+            "rust" => "Rust",
+            "typescript" => "TypeScript",
+            "tsx" => "TSX",
+            "javascript" => "JavaScript",
+            "html" => "HTML",
+            "css" => "CSS",
+            "go" => "Go",
+            "python" => "Python",
+            "sql" => "SQL",
+            other => other,
+        }
+    }
+
     /// The compiled query and role table, built on first use. `None` if the query
     /// doesn't compile against the grammar, which the unit tests rule out for
     /// every registered language; highlighting is then just skipped.
@@ -173,6 +190,16 @@ mod tests {
         assert!(for_path(Path::new("LIB.RS")).is_some());
         assert!(for_path(Path::new("notes.txt")).is_none());
         assert!(for_path(Path::new("Makefile")).is_none());
+    }
+
+    #[test]
+    fn every_language_has_a_capitalised_display_name() {
+        assert_eq!(rust::RUST.display_name(), "Rust");
+        for lang in LANGUAGES {
+            let shown = lang.display_name();
+            assert_ne!(shown, lang.name, "{} has no display name", lang.name);
+            assert!(shown.starts_with(|c: char| c.is_ascii_uppercase()));
+        }
     }
 
     #[test]

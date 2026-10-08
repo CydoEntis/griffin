@@ -300,6 +300,88 @@ fn crashed_server_keeps_editing() {
     assert_eq!(changes, 1);
 }
 
+// aurora's roles, for the server segment's colours.
+const AURORA_OK: vt100::Color = vt100::Color::Rgb(0x7f, 0xe3, 0xc9);
+const AURORA_ERR: vt100::Color = vt100::Color::Rgb(0xff, 0x6f, 0x91);
+const AURORA_MUTED: vt100::Color = vt100::Color::Rgb(0x67, 0x62, 0x7d);
+const AURORA_TEXT: vt100::Color = vt100::Color::Rgb(0xa6, 0xa2, 0xbb);
+
+/// `rust_server(command)` under the aurora theme. The theme key goes first, since
+/// after `[lsp.rust]` it would belong to that table.
+fn aurora_server(command: &str) -> String {
+    format!("theme = \"aurora\"\n{}", rust_server(command))
+}
+
+/// The status line's column of `text`, which must be on it.
+fn status_col(glyph: &Glyph, text: &str) -> u16 {
+    glyph
+        .text_col(ROWS - 1, text)
+        .unwrap_or_else(|| panic!("{text:?} on the status line: {:?}", status_line(glyph)))
+}
+
+#[test]
+fn a_ready_server_shows_after_the_language() {
+    let project = Project::new(None);
+    let glyph = project.open(&aurora_server(fake()), "a.rs");
+    project.wait_for(&glyph, "textDocument/didOpen", "a.rs");
+    glyph.wait_for_text("Rust    ● fake_lsp", WAIT);
+
+    let status = status_line(&glyph);
+    assert!(
+        status.ends_with("Ln 1, Col 1    Rust    ● fake_lsp"),
+        "{status:?}"
+    );
+    // It ends two cells from the right edge, like every right-hand segment.
+    let name = status_col(&glyph, "fake_lsp");
+    assert_eq!(name + 8, harness::COLS - 2);
+    assert_eq!(glyph.fg_at(name - 2, ROWS - 1), AURORA_OK);
+    assert_eq!(glyph.fg_at(name, ROWS - 1), AURORA_TEXT);
+    assert_eq!(
+        glyph.fg_at(status_col(&glyph, "Rust"), ROWS - 1),
+        AURORA_TEXT
+    );
+}
+
+#[test]
+fn a_missing_server_shows_no_server_in_muted() {
+    let project = Project::new(None);
+    let mut glyph = project.open(&aurora_server("glyph-no-such-server"), "a.rs");
+    glyph.wait_for_text("rust: server not found (glyph-no-such-server)", WAIT);
+    // Any key clears the message, and the path and full right side come back.
+    glyph.send_keys("right");
+    glyph.wait_for_text("Ln 1, Col 2    Rust    ○ no server", WAIT);
+    let label = status_col(&glyph, "no server");
+    assert_eq!(glyph.fg_at(label - 2, ROWS - 1), AURORA_MUTED);
+    assert_eq!(glyph.fg_at(label, ROWS - 1), AURORA_MUTED);
+    assert!(!status_line(&glyph).contains("glyph-no-such-server"));
+}
+
+#[test]
+fn a_crashed_server_shows_its_name_in_err() {
+    let project = Project::new(Some(r#"{"exit_on": "textDocument/didChange"}"#));
+    let mut glyph = project.open(&aurora_server(fake()), "a.rs");
+    project.wait_for(&glyph, "textDocument/didOpen", "a.rs");
+    glyph.wait_for_text("● fake_lsp", WAIT);
+
+    glyph.type_text("q");
+    glyph.wait_for_text("rust: server crashed (exit code 3)", WAIT);
+    glyph.send_keys("left");
+    glyph.wait_for_text("Rust    ✕ fake_lsp", WAIT);
+    let name = status_col(&glyph, "fake_lsp");
+    assert_eq!(glyph.fg_at(name - 2, ROWS - 1), AURORA_ERR);
+    assert_eq!(glyph.fg_at(name, ROWS - 1), AURORA_ERR);
+}
+
+#[test]
+fn a_file_without_a_language_says_plain_text_and_has_no_server() {
+    let project = Project::new(None);
+    fs::write(project.dir.path().join("notes.txt"), "hi\n").expect("write notes.txt");
+    let glyph = project.open(&aurora_server(fake()), "notes.txt");
+    let status = status_line(&glyph);
+    assert!(status.ends_with("Ln 1, Col 1    Plain text"), "{status:?}");
+    assert!(!status.contains("fake_lsp"), "{status:?}");
+}
+
 #[test]
 fn quitting_shuts_the_server_down() {
     let project = Project::new(None);

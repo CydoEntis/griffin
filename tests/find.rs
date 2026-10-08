@@ -35,11 +35,11 @@ fn wait_for_count(glyph: &Glyph, count: &str) {
     });
 }
 
-/// Waits for the status line to end with `Ln <line>, Col <col>`.
+/// Waits for the status line to show `Ln <line>, Col <col>` (see `shows_position`).
 fn wait_for_position(glyph: &Glyph, line: usize, col: usize) {
     let position = format!("Ln {line}, Col {col}");
     glyph.wait_for_screen(&position, WAIT, |lines| {
-        lines[usize::from(ROWS - 1)].ends_with(&position)
+        harness::shows_position(&lines[usize::from(ROWS - 1)], &position)
     });
 }
 
