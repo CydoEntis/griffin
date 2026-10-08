@@ -22,6 +22,9 @@ const TAB: &str = "    ";
 /// (SPEC_V1_LAYOUT §9).
 const RUNNING_HINTS: &str = "shift+F5 stop   ctrl+F5 restart   F4 hide";
 const DONE_HINTS: &str = "F5 run again   F4 hide";
+/// The same for a debug session's output: Alt+F6 is what stops it.
+const DEBUG_RUNNING_HINTS: &str = "alt+F6 stop   F4 hide";
+const DEBUG_DONE_HINTS: &str = "alt+F5 debug again   F4 hide";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatus {
@@ -51,6 +54,9 @@ pub struct RunView {
     /// The command line, shown after the state in the title.
     pub command: String,
     pub status: RunStatus,
+    /// The output is a debugged program's, which the debugger's keys control
+    /// rather than the run keys.
+    pub debug: bool,
     lines: VecDeque<Row>,
 }
 
@@ -61,7 +67,16 @@ impl RunView {
             name,
             command,
             status: RunStatus::Running,
+            debug: false,
             lines: VecDeque::new(),
+        }
+    }
+
+    /// A panel for a debugged program's output.
+    pub fn debug(id: u64, name: String, command: String) -> Self {
+        RunView {
+            debug: true,
+            ..RunView::new(id, name, command)
         }
     }
 
@@ -236,10 +251,11 @@ fn render_title(theme: &Theme, run: &RunView, row: Rect, frame: &mut Frame) {
     put(&word, state);
     put("   ", Style::new());
 
-    let hints = if run.status == RunStatus::Running {
-        RUNNING_HINTS
-    } else {
-        DONE_HINTS
+    let hints = match (run.debug, run.status == RunStatus::Running) {
+        (false, true) => RUNNING_HINTS,
+        (false, false) => DONE_HINTS,
+        (true, true) => DEBUG_RUNNING_HINTS,
+        (true, false) => DEBUG_DONE_HINTS,
     };
     let hints_width = u16::try_from(hints.width()).unwrap_or(u16::MAX);
     let hints_x = right.saturating_sub(hints_width.saturating_add(1));

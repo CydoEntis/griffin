@@ -6,8 +6,8 @@
 //! `adapters` says which adapter debugs each language and how the program is
 //! launched.
 
-// Nothing starts a session yet: the keys and screens that do come with the
-// debugger tickets that follow this one.
+// Stepping, the call stack and the variables have no keys or screens yet: they
+// come with the debugger tickets that follow this one.
 #![allow(dead_code)]
 
 pub mod adapters;
@@ -15,6 +15,7 @@ mod transport;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -22,6 +23,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
 use crate::app::AppEvent;
+
+/// How long a stopped session's adapter gets to answer `disconnect` and exit
+/// before it is killed.
+const STOP_GRACE: Duration = Duration::from_secs(2);
 
 /// Something one adapter did, tagged with the session it belongs to.
 #[derive(Debug)]
@@ -328,6 +333,31 @@ impl Session {
         let seq = self.request("disconnect", arguments, Pending::Disconnect)?;
         self.disconnecting = true;
         Some(seq)
+    }
+
+    /// Ends the session for good: asks the adapter to end the program and exit,
+    /// and kills it if it hasn't within `STOP_GRACE`. Nothing it says after
+    /// this reaches the app, as the session is gone.
+    pub fn stop(mut self) {
+        if !self.over {
+            self.disconnect();
+        }
+        // Dropping the sender lets the writer send what's queued, `disconnect`
+        // included, then close the adapter's stdin.
+        self.outgoing = None;
+        let tasks = std::mem::take(&mut self.tasks);
+        // Without a runtime no tasks were ever spawned, so there is nothing to
+        // kill. Aborting the reader drops the child, which kills it.
+        if !tasks.is_empty()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(async move {
+                tokio::time::sleep(STOP_GRACE).await;
+                for task in tasks {
+                    task.abort();
+                }
+            });
+        }
     }
 
     /// What `event` means for this session. Events for another session, or after

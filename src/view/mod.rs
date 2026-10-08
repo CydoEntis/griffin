@@ -29,6 +29,10 @@ pub struct Marks<'a> {
     /// The language server's diagnostics, sorted by start; underlined in their
     /// severity's colour, with a mark in the gutter.
     pub diagnostics: &'a [Diagnostic],
+    /// The 0-based line the debugged program is paused on, when it's in this
+    /// buffer: `▶` in the mark cell and a glow in `accent2` (glyph-debugger
+    /// spec D5).
+    pub paused: Option<usize>,
 }
 
 /// The colour a diagnostic of `severity` is drawn in (README §2.4): its gutter
@@ -61,6 +65,10 @@ const GUTTER_MARK: &str = "◆";
 /// In the gutter's first cell, on a line with a breakpoint; it wins over a
 /// diagnostic mark there (glyph-debugger spec D2).
 const BREAKPOINT_MARK: &str = "●";
+
+/// In the gutter's first cell, on the line the debugged program is paused on;
+/// it wins over a breakpoint there, which is usually what it stopped at.
+const PAUSED_MARK: &str = "▶";
 
 /// Starts the inline lens, before the message.
 const LENS_MARK: &str = "◈ ";
@@ -162,9 +170,19 @@ fn text_width(buf: &Buffer, area: Rect) -> usize {
 /// §2.4): it lights up out of the gutter and settles into `cur_line` around the
 /// middle, so the eye finds the row without a bright band across the screen.
 fn glow_at(theme: &Theme, dx: u16, width: u16) -> Color {
+    glow_in(theme, theme.accent, dx, width)
+}
+
+/// The paused line's glow: the cursor row's, lit by `accent2` instead, so the
+/// line the program stopped on reads apart from the cursor.
+fn paused_glow_at(theme: &Theme, dx: u16, width: u16) -> Color {
+    glow_in(theme, theme.accent2, dx, width)
+}
+
+fn glow_in(theme: &Theme, light: Color, dx: u16, width: u16) -> Color {
     let stops = [
-        mix(theme.bg, theme.accent, 0.20),
-        mix(theme.bg, theme.accent, 0.07),
+        mix(theme.bg, light, 0.20),
+        mix(theme.bg, light, 0.07),
         theme.cur_line,
         theme.cur_line,
     ];
@@ -193,6 +211,7 @@ pub fn render_buffer(
         highlights,
         current,
         diagnostics,
+        paused,
     } = marks;
     let digits = number_width(buf);
     let gutter_width = gutter_width(buf);
@@ -220,7 +239,17 @@ pub fn render_buffer(
         // `take(area.height)` keeps the row inside a u16.
         let y = area.y + screen_row as u16;
         let is_cursor_line = line_idx == cursor_line;
-        if is_cursor_line && glow {
+        let is_paused_line = paused == Some(line_idx);
+        // The paused line glows in every split, focused or not: it's where the
+        // program is, wherever the typing is.
+        let row_glow: Option<fn(&Theme, u16, u16) -> Color> = if is_paused_line && !theme.flat() {
+            Some(paused_glow_at)
+        } else if is_cursor_line && glow {
+            Some(glow_at)
+        } else {
+            None
+        };
+        if let Some(glow_at) = row_glow {
             for dx in 0..area.width {
                 if let Some(cell) = out.cell_mut((area.x + dx, y)) {
                     cell.set_bg(glow_at(theme, dx, area.width));
@@ -299,7 +328,15 @@ pub fn render_buffer(
                 }
             }
         }
-        if buf.breakpoints.contains(&line_idx) {
+        if is_paused_line {
+            out.set_stringn(
+                area.x,
+                y,
+                PAUSED_MARK,
+                usize::from(area.width),
+                Style::new().fg(theme.accent2),
+            );
+        } else if buf.breakpoints.contains(&line_idx) {
             out.set_stringn(
                 area.x,
                 y,
@@ -1254,6 +1291,65 @@ def
         assert_eq!(first.symbol(), "◆");
         assert_eq!(second.symbol(), "●");
         assert_eq!(second.fg, theme.err);
+        Ok(())
+    }
+
+    /// Draws three lines with the cursor on the first, a breakpoint on the
+    /// second and the program paused there, in an unfocused split.
+    fn draw_paused(theme: &Theme) -> Result<ratatui::buffer::Buffer> {
+        let mut buf = buffer_at(
+            "one
+two
+three",
+            0,
+        );
+        buf.toggle_breakpoint(1);
+        let mut terminal = Terminal::new(TestBackend::new(40, 3))?;
+        let marks = Marks {
+            paused: Some(1),
+            ..Marks::default()
+        };
+        terminal.draw(|frame| {
+            render_buffer(
+                theme,
+                &buf,
+                &View::default(),
+                4,
+                marks,
+                false,
+                frame.area(),
+                frame,
+            )
+        })?;
+        Ok(terminal.backend().buffer().clone())
+    }
+
+    #[test]
+    fn the_paused_line_is_marked_and_glows_in_accent2() -> Result<()> {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let screen = draw_paused(&theme)?;
+        // `▶` takes the mark cell from the breakpoint it stopped at.
+        assert_eq!(screen[(0, 1)].symbol(), "▶");
+        assert_eq!(screen[(0, 1)].fg, theme.accent2);
+        // The row glows out of the gutter in `accent2`, though the split isn't
+        // focused, and settles into `cur_line` as the cursor row does.
+        assert_eq!(screen[(0, 1)].bg, mix(theme.bg, theme.accent2, 0.20));
+        assert_eq!(screen[(8, 1)].bg, paused_glow_at(&theme, 8, 40));
+        assert_ne!(screen[(8, 1)].bg, glow_at(&theme, 8, 40));
+        assert_eq!(screen[(39, 1)].bg, theme.cur_line);
+        // The other rows keep the ground.
+        assert_eq!(screen[(8, 0)].bg, Color::Reset);
+        assert_eq!(screen[(8, 2)].bg, Color::Reset);
+        Ok(())
+    }
+
+    #[test]
+    fn mono_marks_the_paused_line_without_a_glow() -> Result<()> {
+        let theme = Theme::named("mono").expect("mono exists");
+        let screen = draw_paused(&theme)?;
+        assert_eq!(screen[(0, 1)].symbol(), "▶");
+        assert_eq!(screen[(0, 1)].fg, theme.accent2);
+        assert_eq!(screen[(8, 1)].bg, screen[(8, 0)].bg);
         Ok(())
     }
 }

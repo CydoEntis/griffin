@@ -82,7 +82,7 @@ pub fn char_col_at(line: RopeSlice, goal: usize, tab_width: usize) -> usize {
 }
 
 /// Chars in `line` before its line break.
-fn line_len(line: RopeSlice) -> usize {
+pub fn line_len(line: RopeSlice) -> usize {
     let len = line.len_chars();
     if len > 0 && line.char(len - 1) == '\n' {
         len - 1

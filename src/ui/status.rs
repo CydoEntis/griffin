@@ -1,6 +1,6 @@
 //! The status bar on the last row (design README §2.5): the glyph block, the
-//! path slot at x = 20, and on the right the cursor position, the language, its
-//! server's state and the diagnostic counts — or, while the splash is up, its
+//! path slot at x = 20, and on the right the debug session's state, the cursor
+//! position, the language, its server's state and the diagnostic counts — or, while the splash is up, its
 //! keys and Glyph's version.
 
 use ratatui::Frame;
@@ -47,6 +47,16 @@ impl Tone {
     }
 }
 
+/// Where a debug session is, for its segment (glyph-debugger spec D4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Debugging<'a> {
+    /// The program is running (or starting).
+    Running,
+    /// The program is stopped; the text is where, `main.rs:12`, or empty when
+    /// the adapter didn't say.
+    Paused(&'a str),
+}
+
 /// What the status line shows about the active buffer.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Status<'a> {
@@ -70,6 +80,9 @@ pub struct Status<'a> {
     /// The splash is up (glyph-splash spec S3): there's no cursor or language to
     /// report, so the right side says how to drive the splash instead.
     pub splash: bool,
+    /// The debug session's state, while there is one. It leads the right side
+    /// and is never dropped for room: it says the program is still alive.
+    pub debug: Option<Debugging<'a>>,
 }
 
 /// A piece of text and how to draw it.
@@ -210,9 +223,30 @@ fn right_runs(theme: &Theme, status: &Status, shown: Shown) -> Vec<Run> {
     if status.splash {
         return splash_runs(theme, shown.language);
     }
-    let (line, col) = status.position;
-    let mut runs = vec![(format!("Ln {}, Col {}", line + 1, col + 1), text)];
     let gap = || (GAP.to_string(), Style::new());
+    let mut runs = Vec::new();
+    match status.debug {
+        // `●` in the run panel's running colour, so the two read as one state.
+        Some(Debugging::Running) => {
+            runs.push(("● ".to_string(), Style::new().fg(theme.warn)));
+            runs.push(("debugging".to_string(), text));
+            runs.push(gap());
+        }
+        // `accent2`, the paused line's own colour in the editor.
+        Some(Debugging::Paused(at)) => {
+            runs.push(("‖ ".to_string(), Style::new().fg(theme.accent2)));
+            let label = if at.is_empty() {
+                "paused".to_string()
+            } else {
+                format!("paused {at}")
+            };
+            runs.push((label, text));
+            runs.push(gap());
+        }
+        None => {}
+    }
+    let (line, col) = status.position;
+    runs.push((format!("Ln {}, Col {}", line + 1, col + 1), text));
     if shown.language {
         runs.push(gap());
         runs.push((status.language.to_string(), text));
@@ -493,6 +527,37 @@ mod tests {
             layout(&theme, &status, 20 + 7 + 1 + 39 + 1),
             shown(false, false, false)
         );
+    }
+
+    #[test]
+    fn a_debug_session_leads_the_right_side() {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let status = |debug| Status {
+            language: "Rust",
+            debug: Some(debug),
+            ..Status::default()
+        };
+        let running = right_runs(
+            &theme,
+            &status(Debugging::Running),
+            shown(false, true, true),
+        );
+        assert_eq!(text(&running), "● debugging    Ln 1, Col 1    Rust");
+        assert_eq!(running[0].1.fg, Some(theme.warn));
+        let paused = right_runs(
+            &theme,
+            &status(Debugging::Paused("main.rs:12")),
+            shown(false, false, true),
+        );
+        assert_eq!(text(&paused), "‖ paused main.rs:12    Ln 1, Col 1");
+        assert_eq!(paused[0].1.fg, Some(theme.accent2));
+        assert_eq!(paused[1].1.fg, Some(theme.text));
+        let nowhere = right_runs(
+            &theme,
+            &status(Debugging::Paused("")),
+            shown(false, false, true),
+        );
+        assert_eq!(text(&nowhere), "‖ paused    Ln 1, Col 1");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -24,11 +24,12 @@ use tokio::time::timeout;
 
 use crate::Tui;
 use crate::backup::{self, Backups};
-use crate::buffer::movement::Motion;
+use crate::buffer::movement::{Motion, line_len};
 use crate::buffer::{Buffer, Caret};
 use crate::clipboard::Clipboard;
-use crate::config::{self, EditorConfig, RunEntry};
-use crate::dap::{DapEvent, DapNews, Session};
+use crate::config::{self, DebugAdapter, EditorConfig, RunEntry};
+use crate::dap::adapters::{self, Adapter};
+use crate::dap::{DapEvent, DapNews, Session, StackFrame, Thread};
 use crate::highlight::languages;
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
@@ -51,7 +52,7 @@ use crate::ui::prompt::{Outcome, PromptBar};
 use crate::ui::run::{RunStatus, RunView, render_run_panel};
 use crate::ui::search::{ProjectSearch, Searched};
 use crate::ui::splash::{self, Splash};
-use crate::ui::status::{Status, Tone, render_status};
+use crate::ui::status::{Debugging, Status, Tone, render_status};
 use crate::ui::tabs::{HEADER_HEIGHT, TabLabel, render_tabs, tab_at};
 use crate::ui::tree::{
     TREE_WIDTH, TreeMarks, nodes_area, project_label, render_divider, render_tree,
@@ -769,6 +770,55 @@ struct Jump {
     cursor: usize,
 }
 
+/// A build running in the run panel before a debug session starts.
+#[derive(Debug)]
+struct PendingDebug {
+    /// The build's run number; its exit starts the session.
+    run: u64,
+    adapter: Adapter,
+    launch: adapters::Launch,
+}
+
+/// Where the debugged program stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Paused {
+    /// The thread that stopped, once known; the stack is asked of it.
+    thread: Option<i64>,
+    /// The top frame's file (absolute) and 0-based line, once the stack came
+    /// back with one.
+    at: Option<(PathBuf, usize)>,
+}
+
+/// The debug session (one at a time) and what Glyph knows of its program.
+#[derive(Debug)]
+struct DebugSession {
+    session: Session,
+    launch: adapters::Launch,
+    /// The run panel view holding the program's output.
+    run: u64,
+    /// `initialized` came and every breakpoint was sent, so breakpoints toggled
+    /// from now on are sent as they change.
+    configured: bool,
+    /// While the program is stopped.
+    paused: Option<Paused>,
+    /// Output since its last newline: adapters send output in pieces that
+    /// don't follow lines.
+    partial: String,
+}
+
+impl DebugSession {
+    fn new(session: Session, launch: adapters::Launch, run: u64) -> Self {
+        Self {
+            session,
+            launch,
+            run,
+            configured: false,
+            paused: None,
+            partial: String::new(),
+        }
+    }
+}
+
 /// `path` made absolute, so two spellings of one file compare equal.
 fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
@@ -897,7 +947,14 @@ pub struct App {
     /// Format requests made, for numbering the next.
     formats: u64,
     /// The debug session, while there is one.
-    debug: Option<Session>,
+    debug: Option<DebugSession>,
+    /// The build a debug session waits on, while it runs.
+    debug_build: Option<PendingDebug>,
+    /// `config.toml`'s `[debug.<lang>]` tables.
+    debug_adapters: BTreeMap<String, DebugAdapter>,
+    /// How many debug sessions have started, numbering them so an old
+    /// adapter's last words are dropped.
+    debug_sessions: u64,
     should_quit: bool,
 }
 
@@ -952,6 +1009,12 @@ impl App {
     /// Starts language servers from `[lsp.<lang>]` as files of each language open.
     pub fn with_lsp(mut self, lsp: Lsp) -> Self {
         self.lsp = lsp;
+        self
+    }
+
+    /// Debugs with the adapters `[debug.<lang>]` names in place of the defaults.
+    pub fn with_debug_adapters(mut self, adapters: BTreeMap<String, DebugAdapter>) -> Self {
+        self.debug_adapters = adapters;
         self
     }
 
@@ -1223,20 +1286,24 @@ impl App {
                 {
                     self.installed(&install, code);
                 }
+                // A build stopped by hand starts nothing and needs no message.
+                if let Some(pending) = self.debug_build.take_if(|p| p.run == run)
+                    && !stopped
+                {
+                    if code == Some(0) {
+                        self.begin_debugging(pending.adapter, pending.launch);
+                    } else {
+                        self.say(Tone::Err, "build failed");
+                    }
+                }
             }
             AppEvent::Dap(event) => {
                 let news = match &mut self.debug {
-                    Some(session) => session.handle(event),
+                    Some(debug) => debug.session.handle(event),
                     None => Vec::new(),
                 };
                 for news in news {
-                    // A missing or crashed adapter is said once and costs nothing
-                    // else: editing goes on. The rest of the news has no screen
-                    // to go to until the debugger's panels exist.
-                    if let DapNews::Failed(why) = news {
-                        self.debug = None;
-                        self.say(Tone::Err, why);
-                    }
+                    self.debug_news(news);
                 }
             }
             AppEvent::FormatTimedOut { format } => {
@@ -1786,7 +1853,8 @@ impl App {
                 | Action::ToggleRunPanel
                 | Action::StopRun
                 | Action::RestartRun
-                | Action::ClearBreakpoints => {}
+                | Action::ClearBreakpoints
+                | Action::DebugStop => {}
                 // The rest act on a buffer, and the splash and the key list
                 // stand for there being none.
                 _ => return,
@@ -1877,8 +1945,19 @@ impl App {
             Action::ToggleBreakpoint => {
                 let (line, _) = self.buffer().cursor_line_col();
                 self.buffer_mut().toggle_breakpoint(line);
+                self.send_active_breakpoints();
             }
-            Action::ClearBreakpoints => self.tabs.clear_breakpoints(),
+            Action::ClearBreakpoints => {
+                let had: Vec<PathBuf> = self
+                    .all_breakpoints()
+                    .into_iter()
+                    .map(|(path, _)| path)
+                    .collect();
+                self.tabs.clear_breakpoints();
+                self.send_breakpoints(&had);
+            }
+            Action::DebugStart => self.start_debugging(),
+            Action::DebugStop => self.stop_debugging(),
             Action::GoToDefinition => self.request_definition(),
             Action::JumpBack => self.jump_back(),
             Action::Hover => self.request_hover(),
@@ -2467,6 +2546,9 @@ impl App {
         if let Some(tree) = self.run_tree.take() {
             tree.kill();
         }
+        // The program being debugged is the old folder's too.
+        self.debug_build = None;
+        self.end_debugging(RunStatus::Stopped);
         // Ctrl+F5 would run the old command in the new folder; without it,
         // Ctrl+F5 is F5, which reads the new folder's `.glyph.toml`.
         self.run_entry = None;
@@ -2835,6 +2917,9 @@ impl App {
         };
         // The previous run's leftovers die with its tree.
         self.run_tree = None;
+        // A debug session waiting on a build waits on that build alone; the
+        // caller starting a build sets it again.
+        self.debug_build = None;
         self.runs += 1;
         match crate::run::spawn(self.runs, &entry, self.tree.root(), events) {
             Ok(tree) => {
@@ -2862,6 +2947,14 @@ impl App {
 
     /// Shift+F5: kills the running command and everything it started.
     fn stop_run(&mut self) {
+        // The panel showing a debugged program: stopping it is Alt+F6's job,
+        // which ends the session with it.
+        if let (Some(debug), Some(view)) = (&self.debug, &self.run)
+            && debug.run == view.id
+        {
+            self.stop_debugging();
+            return;
+        }
         match &mut self.run {
             Some(view) if view.status == RunStatus::Running => {
                 view.status = RunStatus::Stopped;
@@ -2892,6 +2985,381 @@ impl App {
         // The editor pane just changed height.
         self.follow_cursor();
         self.follow_tree();
+    }
+
+    /// Alt+F5 with no session: works out the adapter and launch for the active
+    /// file's language, reading `.glyph.toml` afresh as F5 does, then runs the
+    /// build in the run panel if there is one, or starts the adapter at once.
+    fn start_debugging(&mut self) {
+        // One session at a time; Alt+F5 during one is continue's, not this.
+        if self.debug.is_some() || self.debug_build.is_some() {
+            return;
+        }
+        // The program's output takes the run panel, so it never replaces a
+        // command still going there.
+        if let Some(run) = &self.run
+            && run.status == RunStatus::Running
+        {
+            self.say(
+                Tone::Warn,
+                format!("{} is running; stop it first", run.name),
+            );
+            return;
+        }
+        let Some(file) = self.buffer().path.as_deref().map(absolute) else {
+            self.say(Tone::Warn, adapters::DebugError::NeedsFile.to_string());
+            return;
+        };
+        let Some(lang) = languages::for_path(&file).map(|lang| lang.name) else {
+            self.say(Tone::Warn, "no debugger for plain text");
+            return;
+        };
+        let adapter = match adapters::adapter_for(lang, &self.debug_adapters) {
+            Ok(adapter) => adapter,
+            Err(err) => {
+                self.say(Tone::Warn, err.to_string());
+                return;
+            }
+        };
+        let root = absolute(self.tree.root());
+        let loaded = config::load_project(&root);
+        if let Some(error) = loaded.error {
+            self.say(Tone::Err, error);
+            return;
+        }
+        let launch = match adapters::launch_for(lang, &root, Some(&file), &loaded.config.debug) {
+            Ok(launch) => launch,
+            Err(err) => {
+                self.say(Tone::Warn, err.to_string());
+                return;
+            }
+        };
+        let Some(build) = launch.build.clone() else {
+            self.begin_debugging(adapter, launch);
+            return;
+        };
+        let before = self.runs;
+        self.start_entry(
+            RunEntry {
+                name: "build".to_string(),
+                command: build,
+                cwd: None,
+            },
+            false,
+        );
+        // `start_entry` numbers the run only when it started; when it didn't,
+        // it said why.
+        if self.runs != before && self.run.as_ref().is_some_and(|r| r.id == self.runs) {
+            self.debug_build = Some(PendingDebug {
+                run: self.runs,
+                adapter,
+                launch,
+            });
+        }
+    }
+
+    /// Starts `adapter` and asks it to initialize; the rest of the start follows
+    /// its answers in `debug_news`. The program's output gets a fresh run panel
+    /// titled `debug <program>`. Outside the event loop (unit tests) there's no
+    /// channel for the adapter to answer on, so nothing starts.
+    fn begin_debugging(&mut self, adapter: Adapter, launch: adapters::Launch) {
+        let Some(events) = self.events.clone() else {
+            return;
+        };
+        self.debug_sessions += 1;
+        let program = adapters::program(&adapter.command);
+        let root = absolute(self.tree.root());
+        let mut session =
+            Session::start(self.debug_sessions, &program, &adapter.args, &root, events);
+        let id = Path::new(&adapter.command).file_stem().map_or_else(
+            || adapter.command.clone(),
+            |s| s.to_string_lossy().into_owned(),
+        );
+        session.initialize(&id);
+
+        // The build that came before is done; whatever it left running goes.
+        self.run_tree = None;
+        self.runs += 1;
+        let name = format!("debug {}", file_name(&launch.program));
+        let command = launch.program.display().to_string();
+        self.run = Some(RunView::debug(self.runs, name, command));
+        // Ctrl+F5 would only build again, without the debugger.
+        self.run_entry = None;
+        self.install = None;
+        if !self.run_panel_visible {
+            self.toggle_run_panel();
+        }
+        self.debug = Some(DebugSession::new(session, launch, self.runs));
+    }
+
+    /// Alt+F6: ends the session and the program, or stops the build one is
+    /// waiting on.
+    fn stop_debugging(&mut self) {
+        if let Some(pending) = self.debug_build.take() {
+            if let Some(view) = &mut self.run
+                && view.id == pending.run
+                && view.status == RunStatus::Running
+            {
+                view.status = RunStatus::Stopped;
+                if let Some(tree) = &self.run_tree {
+                    tree.kill();
+                }
+            }
+            self.say(Tone::Ok, "debugging stopped");
+            return;
+        }
+        if self.debug.is_none() {
+            self.say(Tone::Warn, "not debugging");
+            return;
+        }
+        self.end_debugging(RunStatus::Stopped);
+        self.say(Tone::Ok, "debugging stopped");
+    }
+
+    /// Ends the session, if there is one: the adapter is told to end the
+    /// program and killed if it lingers, and the output panel takes `status`.
+    fn end_debugging(&mut self, status: RunStatus) {
+        let Some(mut debug) = self.debug.take() else {
+            return;
+        };
+        if let Some(view) = &mut self.run
+            && view.id == debug.run
+        {
+            // Output with no newline before the end is still output.
+            if !debug.partial.is_empty() {
+                view.push(&std::mem::take(&mut debug.partial));
+            }
+            if view.status == RunStatus::Running {
+                view.status = status;
+            }
+        }
+        debug.session.stop();
+    }
+
+    /// Acts on one piece of news from the debug adapter.
+    fn debug_news(&mut self, news: DapNews) {
+        let Some(debug) = &mut self.debug else {
+            // An earlier piece of the same batch ended the session.
+            return;
+        };
+        match news {
+            // DAP's order: `launch` once initialized, then the breakpoints and
+            // `configurationDone` once the adapter says it's ready for them.
+            DapNews::Capabilities(_) => {
+                let arguments = debug.launch.arguments();
+                debug.session.launch(arguments);
+            }
+            DapNews::Initialized => self.configure_debugging(),
+            DapNews::Stopped { thread, .. } => {
+                debug.paused = Some(Paused { thread, at: None });
+                // Without a thread there's no stack to ask for yet.
+                match thread {
+                    Some(thread) => debug.session.stack_trace(thread),
+                    None => debug.session.threads(),
+                };
+            }
+            DapNews::Threads(threads) => self.stack_of_first(&threads),
+            DapNews::StackTrace { frames, .. } => self.show_paused(&frames),
+            DapNews::Resumed(_) => debug.paused = None,
+            DapNews::Output { category, text } => {
+                // Telemetry is the adapter talking to its makers, not output.
+                if category != "telemetry" {
+                    self.debug_output(&text);
+                }
+            }
+            DapNews::Exited(code) => {
+                let code = i32::try_from(code).ok();
+                self.end_debugging(RunStatus::Exited(code));
+                match code {
+                    Some(0) => self.say(Tone::Ok, "exited 0"),
+                    Some(code) => self.say(Tone::Warn, format!("exited {code}")),
+                    None => self.say(Tone::Warn, "exited"),
+                }
+            }
+            // Adapters usually say `exited` first, which already ended it.
+            DapNews::Terminated => {
+                self.end_debugging(RunStatus::Exited(None));
+                self.say(Tone::Ok, "debugging ended");
+            }
+            // Without these two there is no program to debug.
+            DapNews::Refused { command, message }
+                if command == "initialize" || command == "launch" =>
+            {
+                self.end_debugging(RunStatus::Exited(None));
+                self.say(Tone::Err, format!("debugger: {command} failed: {message}"));
+            }
+            DapNews::Refused { command, message } => {
+                self.say(Tone::Warn, format!("debugger: {command} failed: {message}"));
+            }
+            // A missing or crashed adapter is said once and costs nothing else:
+            // editing goes on.
+            DapNews::Failed(why) => {
+                self.end_debugging(RunStatus::Exited(None));
+                self.say(Tone::Err, why);
+            }
+            DapNews::Launched
+            | DapNews::Breakpoints { .. }
+            | DapNews::ConfigurationDone
+            | DapNews::Scopes { .. }
+            | DapNews::Variables { .. }
+            | DapNews::Ended => {}
+        }
+    }
+
+    /// Sends every breakpoint, file by file, then `configurationDone`, which
+    /// lets the program run.
+    fn configure_debugging(&mut self) {
+        let files = self.all_breakpoints();
+        let Some(debug) = &mut self.debug else {
+            return;
+        };
+        for (path, lines) in files {
+            debug.session.set_breakpoints(&path, &lines);
+        }
+        debug.session.configuration_done();
+        debug.configured = true;
+    }
+
+    /// Every file with breakpoints, open or closed, by absolute path, with its
+    /// lines counted from 1 as DAP is asked to.
+    fn all_breakpoints(&self) -> Vec<(PathBuf, Vec<usize>)> {
+        let mut files: BTreeMap<PathBuf, Vec<usize>> = self
+            .tabs
+            .kept_breakpoints
+            .iter()
+            .map(|(path, lines)| (path.clone(), lines.iter().map(|l| l + 1).collect()))
+            .collect();
+        for doc in &self.tabs.docs {
+            if let Some(path) = &doc.buffer.path
+                && !doc.buffer.breakpoints.is_empty()
+            {
+                let lines = doc.buffer.breakpoints.iter().map(|l| l + 1).collect();
+                files.insert(absolute(path), lines);
+            }
+        }
+        files.into_iter().collect()
+    }
+
+    /// Tells a configured session about the active file's breakpoints after
+    /// they changed.
+    fn send_active_breakpoints(&mut self) {
+        if let Some(path) = self.buffer().path.as_deref().map(absolute) {
+            self.send_breakpoints(&[path]);
+        }
+    }
+
+    /// Sends each of `paths`' breakpoints as they are now, none included, so
+    /// the adapter drops the ones taken away. Before `configurationDone` they
+    /// all go together, so nothing is sent then.
+    fn send_breakpoints(&mut self, paths: &[PathBuf]) {
+        if !self.debug.as_ref().is_some_and(|d| d.configured) {
+            return;
+        }
+        let lines: Vec<Vec<usize>> = paths
+            .iter()
+            .map(|path| {
+                let set = match self.tabs.find(path) {
+                    Some(doc) => self.tabs.doc(doc).buffer.breakpoints.clone(),
+                    None => self
+                        .tabs
+                        .kept_breakpoints
+                        .get(path)
+                        .cloned()
+                        .unwrap_or_default(),
+                };
+                set.iter().map(|l| l + 1).collect()
+            })
+            .collect();
+        if let Some(debug) = &mut self.debug {
+            for (path, lines) in paths.iter().zip(lines) {
+                debug.session.set_breakpoints(path, &lines);
+            }
+        }
+    }
+
+    /// A stop that named no thread: the stack is asked of the first thread.
+    fn stack_of_first(&mut self, threads: &[Thread]) {
+        let Some(debug) = &mut self.debug else {
+            return;
+        };
+        if let Some(paused) = &mut debug.paused
+            && paused.thread.is_none()
+            && let Some(first) = threads.first()
+        {
+            paused.thread = Some(first.id);
+            debug.session.stack_trace(first.id);
+        }
+    }
+
+    /// Opens the top frame's file at its line and marks it as where the program
+    /// is paused. A stack for a program that has run on since is stale.
+    fn show_paused(&mut self, frames: &[StackFrame]) {
+        let Some(paused) = self.debug.as_mut().and_then(|d| d.paused.as_mut()) else {
+            return;
+        };
+        let Some(top) = frames.first() else {
+            return;
+        };
+        let Some(path) = top.source.as_ref().and_then(|s| s.path.as_deref()) else {
+            return;
+        };
+        let path = absolute(path);
+        let line = top.line.saturating_sub(1);
+        paused.at = Some((path.clone(), line));
+        // Something else has the keys; moving the buffer under it would
+        // surprise. The marker still shows once the file is looked at.
+        if self.modal_open() {
+            return;
+        }
+        self.open(&path);
+        // `open` says why in the status line when the file can't be read.
+        if self.tabs.find(&path) != Some(self.tabs.active().id) {
+            return;
+        }
+        let rope = &self.buffer().rope;
+        let line = line.min(rope.len_lines().saturating_sub(1));
+        let start = rope.line_to_char(line);
+        let len = line_len(rope.line(line));
+        let cursor = start + top.column.saturating_sub(1).min(len);
+        self.place_caret(cursor);
+    }
+
+    /// Adds the program's output to its run panel, a line at a time.
+    fn debug_output(&mut self, text: &str) {
+        let Some(debug) = &mut self.debug else {
+            return;
+        };
+        debug.partial.push_str(text);
+        while let Some(end) = debug.partial.find('\n') {
+            let line: String = debug.partial.drain(..=end).collect();
+            if let Some(view) = &mut self.run
+                && view.id == debug.run
+            {
+                view.push(line.trim_end_matches(['\r', '\n']));
+            }
+        }
+    }
+
+    /// The 0-based line the program is paused on in `buffer`, if it's there.
+    fn paused_line(&self, buffer: &Buffer) -> Option<usize> {
+        let (path, line) = self.debug.as_ref()?.paused.as_ref()?.at.as_ref()?;
+        (buffer.path.as_deref().map(absolute).as_ref() == Some(path)).then_some(*line)
+    }
+
+    /// The status bar's debug segment while there's a session.
+    fn debug_segment(&self) -> Option<(bool, String)> {
+        let debug = self.debug.as_ref()?;
+        Some(match &debug.paused {
+            Some(paused) => {
+                let at = paused
+                    .at
+                    .as_ref()
+                    .map(|(path, line)| format!("{}:{}", file_name(path), line + 1))
+                    .unwrap_or_default();
+                (true, at)
+            }
+            None => (false, String::new()),
+        })
     }
 
     /// Carries on with what a save from a question was for. A save that failed or
@@ -3082,6 +3550,7 @@ impl App {
                 let view = self.tabs.active_tab().view;
                 let line = view.scroll_row + usize::from(row.saturating_sub(area.y));
                 self.buffer_mut().toggle_breakpoint(line);
+                self.send_active_breakpoints();
             }
             (MouseEventKind::Down(MouseButton::Left), Some(split))
                 if !mouse.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -3660,6 +4129,7 @@ impl App {
                     highlights,
                     current,
                     diagnostics: &self.tabs.doc(tabs.active().doc).diagnostics,
+                    paused: self.paused_line(self.tabs.shown(split).buffer()),
                 },
                 split == focused,
                 area.editor,
@@ -3720,6 +4190,7 @@ impl App {
             .and_then(languages::for_path)
             .map_or("Plain text", |lang| lang.display_name());
         let server = self.lsp.server_state(self.tabs.active().id);
+        let debug = self.debug_segment();
         render_status(
             frame,
             theme,
@@ -3740,6 +4211,13 @@ impl App {
                 warnings: count(Severity::Warning),
                 errors: count(Severity::Error),
                 splash: self.splash.is_some(),
+                debug: debug.as_ref().map(|(paused, at)| {
+                    if *paused {
+                        Debugging::Paused(at)
+                    } else {
+                        Debugging::Running
+                    }
+                }),
             },
         );
         if let Some(text) = &self.hover
@@ -3974,7 +4452,8 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut app = App::default();
         let missing = dir.path().join("no-such-adapter");
-        app.debug = Some(Session::start(1, &missing, &[], dir.path(), tx));
+        let session = Session::start(1, &missing, &[], dir.path(), tx);
+        app.debug = Some(DebugSession::new(session, launch(dir.path()), 0));
         let event = tokio::time::timeout(Duration::from_secs(10), rx.recv())
             .await
             .unwrap()
@@ -3986,6 +4465,102 @@ mod tests {
         assert!(message.contains("no-such-adapter"), "{message}");
         app.handle_event(key("x"));
         assert_eq!(app.buffer().rope.to_string(), "x");
+    }
+
+    /// A launch of `dir/main.py`, as Python's default would be.
+    fn launch(dir: &Path) -> adapters::Launch {
+        adapters::Launch {
+            build: None,
+            program: dir.join("main.py"),
+            args: Vec::new(),
+            cwd: dir.to_path_buf(),
+            mode: None,
+        }
+    }
+
+    /// The scripted fake adapter, which Cargo builds beside this test binary's
+    /// `deps` folder when it builds the integration tests.
+    fn fake_dap() -> PathBuf {
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.parent().and_then(Path::parent).unwrap();
+        let path = dir.join(format!("fake_dap{}", std::env::consts::EXE_SUFFIX));
+        assert!(
+            path.exists(),
+            "no {}: run `cargo build --bins`",
+            path.display()
+        );
+        path
+    }
+
+    #[tokio::test]
+    async fn opening_another_folder_stops_the_debug_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log.jsonl");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut app = App::new(
+            Keymap::default(),
+            EditorConfig::default(),
+            Some(dir.path().to_path_buf()),
+            None,
+        );
+        let args = ["--log".to_string(), log.display().to_string()];
+        let mut session = Session::start(1, &fake_dap(), &args, dir.path(), tx);
+        session.initialize("fake");
+        app.debug = Some(DebugSession::new(session, launch(dir.path()), 0));
+
+        app.switch_project(other.path());
+        assert!(app.debug.is_none());
+        // The adapter was told to end the program, and did go.
+        let exited = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(event) = rx.recv().await {
+                if let AppEvent::Dap(DapEvent {
+                    event: crate::dap::AdapterEvent::Exited(_),
+                    ..
+                }) = event
+                {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        assert_eq!(exited, Ok(true));
+        let logged = std::fs::read_to_string(&log).unwrap();
+        let commands: Vec<String> = logged
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|entry| entry["message"]["command"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(commands, ["initialize", "disconnect"]);
+    }
+
+    #[tokio::test]
+    async fn the_paused_marker_stays_until_the_program_runs_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut app = App::default();
+        let missing = dir.path().join("no-such-adapter");
+        let session = Session::start(1, &missing, &[], dir.path(), tx);
+        let mut debug = DebugSession::new(session, launch(dir.path()), 0);
+        let main = absolute(&dir.path().join("main.py"));
+        debug.paused = Some(Paused {
+            thread: Some(1),
+            at: Some((main.clone(), 2)),
+        });
+        app.debug = Some(debug);
+        let mut buffer = Buffer::empty();
+        buffer.path = Some(main);
+        assert_eq!(app.paused_line(&buffer), Some(2));
+        assert_eq!(app.debug_segment(), Some((true, "main.py:3".to_string())));
+        // Another file isn't marked.
+        let mut other = Buffer::empty();
+        other.path = Some(dir.path().join("other.py"));
+        assert_eq!(app.paused_line(&other), None);
+
+        app.debug_news(DapNews::Resumed("continue".to_string()));
+        assert_eq!(app.paused_line(&buffer), None);
+        assert_eq!(app.debug_segment(), Some((false, String::new())));
     }
 
     #[test]

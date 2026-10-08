@@ -94,6 +94,10 @@ pub enum Action {
     ToggleBreakpoint,
     /// Takes away every breakpoint, in open and closed files alike.
     ClearBreakpoints,
+    /// Builds, then starts the active file's program under its debugger.
+    DebugStart,
+    /// Ends the debug session and the program with it.
+    DebugStop,
     /// Asks the language server where the symbol under the cursor is defined and
     /// goes there.
     GoToDefinition,
@@ -232,6 +236,8 @@ impl Action {
         Action::PrevDiagnostic,
         Action::ToggleBreakpoint,
         Action::ClearBreakpoints,
+        Action::DebugStart,
+        Action::DebugStop,
         Action::GoToDefinition,
         Action::JumpBack,
         Action::Hover,
@@ -364,6 +370,8 @@ impl Action {
             Action::PrevDiagnostic => "prev_diagnostic",
             Action::ToggleBreakpoint => "toggle_breakpoint",
             Action::ClearBreakpoints => "clear_breakpoints",
+            Action::DebugStart => "debug_start",
+            Action::DebugStop => "debug_stop",
             Action::GoToDefinition => "go_to_definition",
             Action::JumpBack => "jump_back",
             Action::Hover => "hover",
@@ -471,6 +479,8 @@ impl Action {
             Action::PrevDiagnostic => "Previous diagnostic",
             Action::ToggleBreakpoint => "Toggle breakpoint",
             Action::ClearBreakpoints => "Clear breakpoints",
+            Action::DebugStart => "Start debugging",
+            Action::DebugStop => "Stop debugging",
             Action::GoToDefinition => "Go to definition",
             Action::JumpBack => "Jump back",
             Action::Hover => "Show hover",
@@ -589,6 +599,10 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::NextDiagnostic, "f8"),
     (Action::PrevDiagnostic, "shift+f8"),
     (Action::ToggleBreakpoint, "f9"),
+    // F5 and its Shift and Ctrl forms are the run panel's (glyph-debugger spec).
+    (Action::DebugStart, "alt+f5"),
+    // F6 is CycleFocus.
+    (Action::DebugStop, "alt+f6"),
     (Action::GoToDefinition, "f12"),
     (Action::JumpBack, "alt+left"),
     (Action::Hover, "alt+k"),
@@ -1018,6 +1032,8 @@ mod tests {
             ("f8", ev(KeyCode::F(8), KeyModifiers::NONE)),
             ("shift+f8", ev(KeyCode::F(8), KeyModifiers::SHIFT)),
             ("f9", ev(KeyCode::F(9), KeyModifiers::NONE)),
+            ("alt+f5", ev(KeyCode::F(5), KeyModifiers::ALT)),
+            ("alt+f6", ev(KeyCode::F(6), KeyModifiers::ALT)),
             ("alt+/", alt('/')),
         ];
         const DIGITS: [(&str, char); 9] = [
@@ -1089,6 +1105,22 @@ mod tests {
         assert!(Action::commands().any(|a| a == Action::ClearBreakpoints));
         assert_eq!(Action::ToggleBreakpoint.title(), "Toggle breakpoint");
         assert_eq!(Action::ClearBreakpoints.title(), "Clear breakpoints");
+    }
+
+    #[test]
+    fn alt_f5_starts_debugging_and_alt_f6_stops_it_by_default() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(5), KeyModifiers::ALT)),
+            Input::Action(Action::DebugStart)
+        );
+        assert_eq!(
+            map.resolve(&ev(KeyCode::F(6), KeyModifiers::ALT)),
+            Input::Action(Action::DebugStop)
+        );
+        assert_eq!(Action::DebugStart.title(), "Start debugging");
+        assert_eq!(Action::DebugStop.title(), "Stop debugging");
+        assert!(Action::commands().any(|a| a == Action::DebugStop));
     }
 
     #[test]
