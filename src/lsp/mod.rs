@@ -46,6 +46,18 @@ pub enum ServerEvent {
     Exited(Option<i32>),
 }
 
+/// Where the server following a buffer is, as the status line shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerState {
+    /// Spawned; `initialize` isn't answered yet.
+    Starting,
+    Ready,
+    /// The command couldn't be started, so there is no server.
+    NotFound,
+    /// It ran and then died, or refused to initialize.
+    Crashed,
+}
+
 /// How bad a diagnostic is. A server that doesn't say is taken to mean an error,
 /// as the protocol suggests clients do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -442,6 +454,25 @@ pub fn language_for(path: &Path) -> Option<&'static str> {
     })
 }
 
+/// What the status line calls a server: its program's file name without
+/// directory or Windows executable extension, so `C:\bin\rust-analyzer.exe`
+/// reads `rust-analyzer`.
+fn server_name(command: &str) -> String {
+    // Either separator, since a config written on Windows may use backslashes
+    // that `Path` on Unix wouldn't split.
+    let file = command.rsplit(['/', '\\']).next().unwrap_or(command);
+    let executable = |ext: &str| {
+        ["exe", "cmd", "bat"]
+            .iter()
+            .any(|known| ext.eq_ignore_ascii_case(known))
+    };
+    match file.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && executable(ext) => stem,
+        _ => file,
+    }
+    .to_string()
+}
+
 /// The protocol's language identifier for a config key; React flavours have their
 /// own in the LSP spec.
 fn protocol_language_id(lang: &str) -> &str {
@@ -597,6 +628,22 @@ impl Lsp {
         {
             client.did_close(&doc.uri);
         }
+    }
+
+    /// The state and display name of the server following buffer `doc`. `None`
+    /// when no server is configured for its language, which the status line
+    /// leaves out rather than calling missing.
+    pub fn server_state(&self, doc: u64) -> Option<(ServerState, String)> {
+        let attached = self.docs.get(&doc)?;
+        let client = self.servers.get(&attached.server)?;
+        let state = match client.state {
+            client::State::Starting => ServerState::Starting,
+            client::State::Ready { .. } => ServerState::Ready,
+            client::State::Failed if client.spawned => ServerState::Crashed,
+            client::State::Failed => ServerState::NotFound,
+        };
+        let command = self.config.get(attached.lang)?.command.as_deref()?;
+        Some((state, server_name(command)))
     }
 
     /// The server for `lang` under `root`, starting it the first time. One that
@@ -935,6 +982,26 @@ mod tests {
         assert_eq!(lsp.servers.len(), 1);
         // Plain text has no server and isn't followed.
         assert!(!lsp.docs.contains_key(&2));
+        assert_eq!(
+            lsp.server_state(3),
+            Some((ServerState::NotFound, "glyph-no-such-server".to_string()))
+        );
+        assert_eq!(lsp.server_state(2), None);
+    }
+
+    #[test]
+    fn a_server_is_named_by_its_program_without_directory_or_exe() {
+        assert_eq!(server_name("rust-analyzer"), "rust-analyzer");
+        assert_eq!(server_name(r"C:\tools\rust-analyzer.EXE"), "rust-analyzer");
+        assert_eq!(server_name("/usr/bin/gopls"), "gopls");
+        assert_eq!(
+            server_name("bin/pyright-langserver.cmd"),
+            "pyright-langserver"
+        );
+        assert_eq!(
+            server_name("vscode-css-language-server"),
+            "vscode-css-language-server"
+        );
     }
 
     fn diag(range: Range<usize>, severity: Severity) -> Diagnostic {

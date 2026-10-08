@@ -1,55 +1,415 @@
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+//! The status bar on the last row (design README §2.5): the glyph block, the
+//! path slot at x = 20, and on the right the cursor position, the language, its
+//! server's state and the diagnostic counts.
 
-use crate::theme::Theme;
+use ratatui::Frame;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use unicode_width::UnicodeWidthStr;
+
+use crate::lsp::ServerState;
+use crate::theme::{Theme, grad, mix};
+
+/// Cells the glyph block covers: ten on the accent ramp, then eight fading into
+/// the bar.
+const BLOCK_WIDTH: u16 = 18;
+/// Where the path (or a message in its place) starts.
+const PATH_X: u16 = 20;
+/// Between the right-hand segments (README §2.5).
+const GAP: &str = "    ";
+
+/// How a status message went, which picks its glyph and colour.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    #[default]
+    Ok,
+    Warn,
+    Err,
+}
+
+impl Tone {
+    fn glyph(self) -> &'static str {
+        match self {
+            Tone::Ok => "✓",
+            Tone::Warn => "⚠",
+            Tone::Err => "✕",
+        }
+    }
+
+    fn color(self, theme: &Theme) -> Color {
+        match self {
+            Tone::Ok => theme.ok,
+            Tone::Warn => theme.warn,
+            Tone::Err => theme.err,
+        }
+    }
+}
 
 /// What the status line shows about the active buffer.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Status<'a> {
-    pub name: &'a str,
-    /// Unsaved changes, shown as `●` after the name.
+    /// The buffer's path as the user knows it (relative to the project), or
+    /// `untitled`.
+    pub path: &'a str,
+    /// Unsaved changes, shown as ` •` after the name.
     pub dirty: bool,
-    pub message: Option<&'a str>,
+    /// Takes the path's place while set.
+    pub message: Option<(Tone, &'a str)>,
     /// The cursor as 0-based (line, char column).
     pub position: (usize, usize),
+    /// The buffer's language as people write it (`Rust`, `Plain text`).
+    pub language: &'a str,
+    /// The state and name of the server following the buffer; `None` for a
+    /// language without one.
+    pub server: Option<(ServerState, &'a str)>,
     /// The language server's warnings and errors for the buffer.
     pub warnings: usize,
     pub errors: usize,
 }
 
-/// Draws the one-row status line at the bottom of the screen, in the spec's order:
-/// message, the buffer's name (with `●` while it has unsaved changes), the cursor
-/// shown 1-based, then the diagnostic counts while there are any (`⚠` in
-/// `warning`, `✕` in `err`). Chrome, so on `sidebar_bg`.
+/// A piece of text and how to draw it.
+type Run = (String, Style);
+
+/// Which optional pieces fit at a width. As the row narrows they go in this
+/// order: server, language, the path's directory (README §2.5, SPEC_V1_LAYOUT
+/// §11), because the file name and position matter most while editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Shown {
+    server: bool,
+    language: bool,
+    dir: bool,
+}
+
+/// The fullest `Shown` whose left and right sides fit side by side in `width`.
+/// When even the leanest doesn't fit, the left side is cut as drawn.
+fn layout(theme: &Theme, status: &Status, width: u16) -> Shown {
+    let steps = [
+        Shown {
+            server: true,
+            language: true,
+            dir: true,
+        },
+        Shown {
+            server: false,
+            language: true,
+            dir: true,
+        },
+        Shown {
+            server: false,
+            language: false,
+            dir: true,
+        },
+    ];
+    let leanest = Shown {
+        server: false,
+        language: false,
+        dir: false,
+    };
+    steps
+        .into_iter()
+        .find(|&shown| {
+            let left = runs_width(&left_runs(theme, status, shown.dir));
+            let right = runs_width(&right_runs(theme, status, shown));
+            // The left slot stops a cell short of the right side, which ends at W − 2.
+            u32::from(PATH_X) + u32::from(left) + 1 + u32::from(right) + 2 <= u32::from(width)
+        })
+        .unwrap_or(leanest)
+}
+
+/// Draws the one-row status bar.
 pub fn render_status(frame: &mut Frame, theme: &Theme, area: Rect, status: &Status) {
-    let (line, col) = status.position;
-    let position = format!("Ln {}, Col {}", line + 1, col + 1);
-    let name = if status.dirty {
-        format!("{} ●", status.name)
+    let buf = frame.buffer_mut();
+    let bar = Style::new().fg(theme.text).bg(theme.surface);
+    buf.set_style(area, bar);
+    let right_edge = area.x + area.width;
+
+    let block = BLOCK_WIDTH.min(area.width);
+    for i in 0..block {
+        buf[(area.x + i, area.y)].set_bg(block_bg(theme, i));
+    }
+    put(
+        buf,
+        area.x + 1,
+        area.y,
+        right_edge,
+        &[(
+            "✦ glyph".to_string(),
+            Style::new().fg(theme.acc_ink).add_modifier(Modifier::BOLD),
+        )],
+    );
+
+    let shown = layout(theme, status, area.width);
+    let right = right_runs(theme, status, shown);
+    // Right-aligned to W − 2 like the design's `putRight`, which ends just before it.
+    let right_x = right_edge
+        .saturating_sub(2)
+        .saturating_sub(runs_width(&right))
+        .max(area.x);
+    // The left slot stops a cell short of the right side so they never touch.
+    let left_end = right_x.saturating_sub(1);
+    let left = left_runs(theme, status, shown.dir);
+    put(buf, area.x + PATH_X, area.y, left_end, &left);
+    put(buf, right_x, area.y, right_edge, &right);
+}
+
+/// The block's bg at cell `i` (README §2.5). Themes without RGB colours (`mono`)
+/// can't ramp, so the block is flat `accent` there.
+fn block_bg(theme: &Theme, i: u16) -> Color {
+    let rgb = |c: Color| matches!(c, Color::Rgb(..));
+    if !(rgb(theme.accent) && rgb(theme.accent2) && rgb(theme.surface)) {
+        return theme.accent;
+    }
+    let i = f64::from(i);
+    if i < 10.0 {
+        grad(&[theme.accent, theme.accent2], i / 9.0)
     } else {
-        status.name.to_string()
-    };
-    let text = match status.message {
-        Some(message) => format!("glyph  {message}  {name}  {position}"),
-        None => format!("glyph  {name}  {position}"),
-    };
-    let mut spans = vec![Span::raw(text)];
+        mix(theme.accent2, theme.surface, (i - 9.0) / 9.0)
+    }
+}
+
+/// The path slot: a message with its glyph while there is one, else the path,
+/// with its directory only when `dir`.
+fn left_runs(theme: &Theme, status: &Status, dir: bool) -> Vec<Run> {
+    if let Some((tone, text)) = status.message {
+        let style = Style::new().fg(tone.color(theme));
+        return vec![
+            (format!("{} ", tone.glyph()), style),
+            (text.to_string(), Style::new().fg(theme.text)),
+        ];
+    }
+    // Either separator, so a Windows path splits the same as a Unix one.
+    let split = status.path.rfind(['/', '\\']).map_or(0, |i| i + 1);
+    let (directory, name) = status.path.split_at(split);
+    let mut runs = Vec::new();
+    if dir {
+        runs.push((directory.to_string(), Style::new().fg(theme.muted)));
+    }
+    runs.push((name.to_string(), Style::new().fg(theme.strong)));
+    if status.dirty {
+        runs.push((" •".to_string(), Style::new().fg(theme.warn)));
+    }
+    runs
+}
+
+/// The position, the language and its server as `shown` allows, then the counts
+/// while the server reports anything.
+fn right_runs(theme: &Theme, status: &Status, shown: Shown) -> Vec<Run> {
+    let text = Style::new().fg(theme.text);
+    let (line, col) = status.position;
+    let mut runs = vec![(format!("Ln {}, Col {}", line + 1, col + 1), text)];
+    let gap = || (GAP.to_string(), Style::new());
+    if shown.language {
+        runs.push(gap());
+        runs.push((status.language.to_string(), text));
+    }
+    if shown.server
+        && let Some((state, name)) = status.server
+    {
+        let (glyph, glyph_color, label, label_color) = match state {
+            ServerState::Ready => ("● ", theme.ok, name, theme.text),
+            ServerState::Starting => ("○ ", theme.warn, name, theme.text),
+            ServerState::NotFound => ("○ ", theme.muted, "no server", theme.muted),
+            ServerState::Crashed => ("✕ ", theme.err, name, theme.err),
+        };
+        runs.push(gap());
+        runs.push((glyph.to_string(), Style::new().fg(glyph_color)));
+        runs.push((label.to_string(), Style::new().fg(label_color)));
+    }
     if status.warnings + status.errors > 0 {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
+        runs.push(gap());
+        runs.push((format!("✕ {}", status.errors), Style::new().fg(theme.err)));
+        runs.push(("  ".to_string(), Style::new()));
+        runs.push((
             format!("⚠ {}", status.warnings),
-            Style::new().fg(theme.warning),
-        ));
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!("✕ {}", status.errors),
-            Style::new().fg(theme.err),
+            Style::new().fg(theme.warn),
         ));
     }
-    let status =
-        Paragraph::new(Line::from(spans)).style(Style::new().bg(theme.sidebar_bg).fg(theme.text));
-    frame.render_widget(status, area);
+    runs
+}
+
+/// Writes `runs` from `x`, cutting at `end`. Styles patch the bar's, so a run
+/// without a bg keeps the cell's.
+fn put(buf: &mut Buffer, mut x: u16, y: u16, end: u16, runs: &[Run]) {
+    for (text, style) in runs {
+        if x >= end {
+            return;
+        }
+        let (next, _) = buf.set_stringn(x, y, text, usize::from(end - x), *style);
+        x = next;
+    }
+}
+
+fn runs_width(runs: &[Run]) -> u16 {
+    runs.iter().map(|(s, _)| width(s)).sum()
+}
+
+fn width(s: &str) -> u16 {
+    u16::try_from(s.width()).unwrap_or(u16::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_block_ramps_from_accent_to_accent2_then_fades_into_the_bar() {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        assert_eq!(block_bg(&theme, 0), theme.accent);
+        assert_eq!(block_bg(&theme, 9), theme.accent2);
+        assert_eq!(
+            block_bg(&theme, 10),
+            mix(theme.accent2, theme.surface, 1.0 / 9.0)
+        );
+        assert_eq!(
+            block_bg(&theme, 17),
+            mix(theme.accent2, theme.surface, 8.0 / 9.0)
+        );
+    }
+
+    fn text(runs: &[Run]) -> String {
+        runs.iter().map(|(s, _)| s.as_str()).collect()
+    }
+
+    fn shown(server: bool, language: bool, dir: bool) -> Shown {
+        Shown {
+            server,
+            language,
+            dir,
+        }
+    }
+
+    #[test]
+    fn narrowing_drops_the_server_then_the_language_then_the_directory() {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let status = Status {
+            path: "src/ui/status.rs",
+            dirty: true,
+            position: (51, 21),
+            language: "Rust",
+            server: Some((ServerState::Ready, "rust-analyzer")),
+            ..Status::default()
+        };
+        assert_eq!(
+            text(&right_runs(&theme, &status, shown(true, true, true))),
+            "Ln 52, Col 22    Rust    ● rust-analyzer"
+        );
+        // Path 16 + dirty mark 2 = 18; right side 13, +8 for the language, +19
+        // for the server. Each width is 20 + left + 1 + right + 2.
+        let full = 20 + 18 + 1 + (13 + 8 + 19) + 2;
+        assert_eq!(layout(&theme, &status, full + 10), shown(true, true, true));
+        assert_eq!(layout(&theme, &status, full), shown(true, true, true));
+        assert_eq!(layout(&theme, &status, full - 1), shown(false, true, true));
+        assert_eq!(layout(&theme, &status, full - 19), shown(false, true, true));
+        assert_eq!(
+            layout(&theme, &status, full - 20),
+            shown(false, false, true)
+        );
+        assert_eq!(
+            layout(&theme, &status, full - 27),
+            shown(false, false, true)
+        );
+        assert_eq!(
+            layout(&theme, &status, full - 28),
+            shown(false, false, false)
+        );
+        assert_eq!(layout(&theme, &status, 10), shown(false, false, false));
+
+        let lean = left_runs(&theme, &status, false);
+        assert_eq!(text(&lean), "status.rs •");
+        assert_eq!(lean[0].1.fg, Some(theme.strong));
+        assert_eq!(
+            text(&left_runs(&theme, &status, true)),
+            "src/ui/status.rs •"
+        );
+    }
+
+    #[test]
+    fn each_server_state_has_its_glyph_and_colours() {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let server = |state| {
+            let status = Status {
+                language: "Rust",
+                server: Some((state, "rust-analyzer")),
+                ..Status::default()
+            };
+            let runs = right_runs(&theme, &status, shown(true, true, true));
+            let n = runs.len();
+            (text(&runs[n - 2..]), runs[n - 2].1.fg, runs[n - 1].1.fg)
+        };
+        assert_eq!(
+            server(ServerState::Ready),
+            (
+                "● rust-analyzer".to_string(),
+                Some(theme.ok),
+                Some(theme.text)
+            )
+        );
+        assert_eq!(
+            server(ServerState::Starting),
+            (
+                "○ rust-analyzer".to_string(),
+                Some(theme.warn),
+                Some(theme.text)
+            )
+        );
+        assert_eq!(
+            server(ServerState::NotFound),
+            (
+                "○ no server".to_string(),
+                Some(theme.muted),
+                Some(theme.muted)
+            )
+        );
+        assert_eq!(
+            server(ServerState::Crashed),
+            (
+                "✕ rust-analyzer".to_string(),
+                Some(theme.err),
+                Some(theme.err)
+            )
+        );
+
+        // No server configured: no segment at all.
+        let status = Status {
+            language: "Plain text",
+            ..Status::default()
+        };
+        assert_eq!(
+            text(&right_runs(&theme, &status, shown(true, true, true))),
+            "Ln 1, Col 1    Plain text"
+        );
+    }
+
+    #[test]
+    fn a_message_drops_the_server_and_language_before_it_is_cut() {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let status = Status {
+            message: Some((Tone::Warn, "rust: server not found (rust-analyzer)")),
+            language: "Rust",
+            server: Some((ServerState::NotFound, "rust-analyzer")),
+            ..Status::default()
+        };
+        // Message 40, position 11, language 8, server 15.
+        assert_eq!(
+            layout(&theme, &status, 20 + 40 + 1 + 34 + 2),
+            shown(true, true, true)
+        );
+        assert_eq!(
+            layout(&theme, &status, 20 + 40 + 1 + 19 + 2),
+            shown(false, true, true)
+        );
+        assert_eq!(
+            layout(&theme, &status, 20 + 40 + 1 + 18 + 2),
+            shown(false, false, true)
+        );
+    }
+
+    #[test]
+    fn mono_has_a_flat_accent_block() {
+        let theme = Theme::named("mono").expect("mono exists");
+        for i in 0..BLOCK_WIDTH {
+            assert_eq!(block_bg(&theme, i), theme.accent);
+        }
+    }
 }

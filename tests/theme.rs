@@ -16,10 +16,13 @@ const HYDRA_SIDEBAR: Color = Color::Rgb(0x0c, 0x13, 0x1b);
 /// nord's `bg`, the editor ground.
 const NORD_BG: Color = Color::Rgb(0x2e, 0x34, 0x40);
 
-/// Every cell of the status line has background `color`.
+/// The status bar's glyph block covers columns 0..18; the bar is past it.
+const BLOCK_END: u16 = 18;
+
+/// Every cell of the status line past the glyph block has background `color`.
 fn assert_status_bg(glyph: &Glyph, color: Color) {
-    glyph.wait_for_bg(0, STATUS_ROW, color, WAIT);
-    for col in 0..COLS {
+    glyph.wait_for_bg(BLOCK_END, STATUS_ROW, color, WAIT);
+    for col in BLOCK_END..COLS {
         assert_eq!(glyph.bg_at(col, STATUS_ROW), color, "status column {col}");
     }
 }
@@ -68,4 +71,19 @@ fn a_bad_override_falls_back_to_hydra_and_says_so() {
         1,
         "one message: {screen:#?}"
     );
+}
+
+#[test]
+fn mono_draws_the_glyph_block_on_flat_accent() {
+    let glyph = Glyph::spawn_with_config("theme = \"mono\"\n", &[]);
+    glyph.wait_for_text("Ln 1, Col 1", START);
+    // mono has no ramps: every block cell is its accent, the terminal's white.
+    let accent = glyph.bg_at(0, STATUS_ROW);
+    assert_ne!(accent, Color::Default);
+    for col in 0..BLOCK_END {
+        assert_eq!(glyph.bg_at(col, STATUS_ROW), accent, "block column {col}");
+    }
+    // Past the block the bar is on the terminal's own background.
+    assert_eq!(glyph.bg_at(BLOCK_END, STATUS_ROW), Color::Default);
+    assert_eq!(glyph.text_col(STATUS_ROW, "✦ glyph"), Some(1));
 }

@@ -764,6 +764,7 @@ dependencies = [
  "ansi-to-tui",
  "anyhow",
  "arboard",
+ "chrono",
  "clap",
  "crossterm",
  "directories",

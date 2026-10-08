@@ -17,9 +17,10 @@ fn screen_row(glyph: &Glyph, row: u16) -> String {
     glyph.screen()[usize::from(row)].clone()
 }
 
-/// Waits for the status line to end with `Ln <line>, Col <col>`.
+/// Waits for the status line to end with `Ln <line>, Col <col>` and the
+/// fixtures' language, `Plain text`.
 fn wait_for_position(glyph: &Glyph, line: usize, col: usize) {
-    let position = format!("Ln {line}, Col {col}");
+    let position = format!("Ln {line}, Col {col}    Plain text");
     glyph.wait_for_text(&position, WAIT);
     let status = screen_row(glyph, ROWS - 1);
     assert!(

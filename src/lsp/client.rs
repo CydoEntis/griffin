@@ -52,6 +52,9 @@ pub struct Client {
     pub triggers: Vec<String>,
     /// The server said it formats whole documents (`documentFormattingProvider`).
     pub formats: bool,
+    /// The process was spawned, so a failure later is a crash rather than a
+    /// server that was never found.
+    pub spawned: bool,
 }
 
 /// An lsp-types value as JSON. These types serialize infallibly; `Null` stands in
@@ -72,9 +75,10 @@ impl Client {
         outgoing: Option<UnboundedSender<Value>>,
         tasks: Vec<JoinHandle<()>>,
     ) -> Self {
+        let spawned = outgoing.is_some();
         Self {
             lang: lang.to_string(),
-            state: if outgoing.is_some() {
+            state: if spawned {
                 State::Starting
             } else {
                 State::Failed
@@ -86,6 +90,7 @@ impl Client {
             shutting_down: false,
             triggers: Vec::new(),
             formats: false,
+            spawned,
         }
     }
 

@@ -9,20 +9,23 @@ use std::path::Path;
 use std::time::Duration;
 
 use harness::{Glyph, ROWS};
+use vt100::Color;
 
 const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(5);
-const TREE: usize = 30;
+const TREE: usize = 28;
+/// The row of the first node, below the tree's brand row.
+const FIRST: usize = 3;
 /// The prompt bar's row: just above the status line.
 const BAR: usize = ROWS as usize - 2;
 const STATUS: usize = ROWS as usize - 1;
 
 const TOP: &[&str] = &[
-    "▸ docs",
-    "▸ src",
-    "  .gitignore",
-    "  notes.txt",
-    "  README.md",
+    "  ▸ docs",
+    "  ▸ src",
+    "    .gitignore",
+    "    notes.txt",
+    "    README.md",
 ];
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -49,12 +52,11 @@ fn open_copy() -> (tempfile::TempDir, Glyph) {
     (dir, glyph)
 }
 
-/// The tree pane's rows from row 1 (row 0 belongs to the tab bar) down to the first
-/// empty one.
+/// The tree pane's node rows from the first one down to the first empty one.
 fn tree_rows(screen: &[String]) -> Vec<String> {
     screen
         .iter()
-        .skip(1)
+        .skip(FIRST)
         .map(|line| {
             line.chars()
                 .take(TREE)
@@ -72,8 +74,16 @@ fn wait_for_tree(glyph: &Glyph, expected: &[&str]) {
     });
 }
 
+/// Waits for `row` to read `text` and glow across the pane, as the focused
+/// selection and the open file do: hydra's `mix(surface, accent, .26)` at column
+/// 0 fading to `surface` at 27.
 fn wait_for_selected(glyph: &Glyph, row: u16, text: &str) {
-    glyph.wait_for_reversed(row, &format!("{text:<TREE$}"), WAIT);
+    glyph.wait_for_screen(&format!("tree row {row} {text:?}"), WAIT, |screen| {
+        let line: String = screen[usize::from(row)].chars().take(TREE).collect();
+        line.trim_end() == text
+    });
+    glyph.wait_for_bg(0, row, Color::Rgb(0x3c, 0x4e, 0x24), WAIT);
+    glyph.wait_for_bg(27, row, Color::Rgb(0x0d, 0x14, 0x1b), WAIT);
 }
 
 fn wait_for_bar(glyph: &Glyph, text: &str) {
@@ -94,7 +104,7 @@ fn a_creates_a_file_beside_the_selected_file_and_opens_it() {
     for _ in 0..4 {
         glyph.send_keys("down");
     }
-    wait_for_selected(&glyph, 5, "  README.md");
+    wait_for_selected(&glyph, 7, "    README.md");
 
     glyph.send_keys("a");
     wait_for_bar(&glyph, "New file:");
@@ -106,20 +116,22 @@ fn a_creates_a_file_beside_the_selected_file_and_opens_it() {
     wait_for_tree(
         &glyph,
         &[
-            "▸ docs",
-            "▸ src",
-            "  .gitignore",
-            "  notes.md",
-            "  notes.txt",
-            "  README.md",
+            "  ▸ docs",
+            "  ▸ src",
+            "    .gitignore",
+            "    notes.md",
+            "    notes.txt",
+            "    README.md",
         ],
     );
-    wait_for_selected(&glyph, 4, "  notes.md");
+    wait_for_selected(&glyph, 6, "    notes.md");
     // The bar is gone and the editor shows the new, empty file.
     glyph.wait_for_screen("the bar closed", WAIT, |screen| {
         !screen[BAR].contains("New file")
     });
-    wait_for_status(&glyph, "notes.md  Ln 1, Col 1");
+    // The message holds the path slot until the next key.
+    wait_for_status(&glyph, "✓ created notes.md");
+    wait_for_status(&glyph, "Ln 1, Col 1");
     let screen = glyph.screen();
     let editor: String = screen[1].chars().skip(TREE + 1).collect();
     assert_eq!(editor.trim_end(), " 1 │", "{screen:#?}");
@@ -139,7 +151,7 @@ fn a_creates_a_file_beside_the_selected_file_and_opens_it() {
 #[test]
 fn a_and_shift_a_create_inside_the_selected_folder() {
     let (dir, mut glyph) = open_copy();
-    wait_for_selected(&glyph, 1, "▸ docs");
+    wait_for_selected(&glyph, 3, "  ▸ docs");
 
     glyph.send_keys("a");
     wait_for_bar(&glyph, "New file:");
@@ -149,16 +161,16 @@ fn a_and_shift_a_create_inside_the_selected_folder() {
     wait_for_tree(
         &glyph,
         &[
-            "▾ docs",
-            "    guide.md",
-            "    new.md",
-            "▸ src",
-            "  .gitignore",
-            "  notes.txt",
-            "  README.md",
+            "  ▾ docs",
+            "   │  guide.md",
+            "   │  new.md",
+            "  ▸ src",
+            "    .gitignore",
+            "    notes.txt",
+            "    README.md",
         ],
     );
-    wait_for_selected(&glyph, 3, "    new.md");
+    wait_for_selected(&glyph, 5, "   │  new.md");
     assert!(dir.path().join("docs").join("new.md").is_file());
 
     // Back in the tree, Shift+A makes a folder next to the selected file.
@@ -170,17 +182,17 @@ fn a_and_shift_a_create_inside_the_selected_folder() {
     wait_for_tree(
         &glyph,
         &[
-            "▾ docs",
-            "  ▸ drafts",
-            "    guide.md",
-            "    new.md",
-            "▸ src",
-            "  .gitignore",
-            "  notes.txt",
-            "  README.md",
+            "  ▾ docs",
+            "   │▸ drafts",
+            "   │  guide.md",
+            "   │  new.md",
+            "  ▸ src",
+            "    .gitignore",
+            "    notes.txt",
+            "    README.md",
         ],
     );
-    wait_for_selected(&glyph, 2, "  ▸ drafts");
+    wait_for_selected(&glyph, 4, "   │▸ drafts");
     assert!(dir.path().join("docs").join("drafts").is_dir());
 }
 
@@ -206,14 +218,14 @@ fn r_renames_and_the_open_buffer_follows() {
     wait_for_tree(
         &glyph,
         &[
-            "▸ docs",
-            "▸ src",
-            "  .gitignore",
-            "  notes.md",
-            "  README.md",
+            "  ▸ docs",
+            "  ▸ src",
+            "    .gitignore",
+            "    notes.md",
+            "    README.md",
         ],
     );
-    wait_for_selected(&glyph, 4, "  notes.md");
+    wait_for_selected(&glyph, 6, "    notes.md");
     wait_for_status(&glyph, "renamed to notes.md");
     assert!(!dir.path().join("notes.txt").exists());
 
@@ -235,7 +247,7 @@ fn an_existing_or_invalid_name_changes_nothing() {
     for _ in 0..4 {
         glyph.send_keys("down");
     }
-    wait_for_selected(&glyph, 5, "  README.md");
+    wait_for_selected(&glyph, 7, "    README.md");
 
     glyph.send_keys("a");
     wait_for_bar(&glyph, "New file:");
@@ -243,7 +255,7 @@ fn an_existing_or_invalid_name_changes_nothing() {
     glyph.send_keys("enter");
     wait_for_status(&glyph, "notes.txt already exists");
     wait_for_tree(&glyph, TOP);
-    wait_for_selected(&glyph, 5, "  README.md");
+    wait_for_selected(&glyph, 7, "    README.md");
     assert_eq!(
         fs::read(dir.path().join("notes.txt")).expect("read notes"),
         notes
