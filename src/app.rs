@@ -28,6 +28,7 @@ use crate::buffer::movement::Motion;
 use crate::buffer::{Buffer, Caret};
 use crate::clipboard::Clipboard;
 use crate::config::{self, EditorConfig, RunEntry};
+use crate::dap::{DapEvent, DapNews, Session};
 use crate::highlight::languages;
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
@@ -94,6 +95,8 @@ pub enum AppEvent {
     },
     /// A language server sent a message or exited.
     Lsp(LspEvent),
+    /// A debug adapter sent a message, exited, or couldn't be started.
+    Dap(DapEvent),
     /// Format on save number `format` has waited `FORMAT_TIMEOUT` for its server.
     FormatTimedOut {
         format: u64,
@@ -827,6 +830,8 @@ pub struct App {
     formatting: Option<PendingFormat>,
     /// Format requests made, for numbering the next.
     formats: u64,
+    /// The debug session, while there is one.
+    debug: Option<Session>,
     should_quit: bool,
 }
 
@@ -1119,6 +1124,21 @@ impl App {
                     && view.status == RunStatus::Running
                 {
                     view.status = RunStatus::Exited(code);
+                }
+            }
+            AppEvent::Dap(event) => {
+                let news = match &mut self.debug {
+                    Some(session) => session.handle(event),
+                    None => Vec::new(),
+                };
+                for news in news {
+                    // A missing or crashed adapter is said once and costs nothing
+                    // else: editing goes on. The rest of the news has no screen
+                    // to go to until the debugger's panels exist.
+                    if let DapNews::Failed(why) = news {
+                        self.debug = None;
+                        self.say(Tone::Err, why);
+                    }
                 }
             }
             AppEvent::FormatTimedOut { format } => {
@@ -3648,6 +3668,26 @@ mod tests {
         let mut app = App::default();
         app.handle_event(key("ctrl+q"));
         assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn a_missing_debug_adapter_is_one_status_message_and_editing_goes_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut app = App::default();
+        let missing = dir.path().join("no-such-adapter");
+        app.debug = Some(Session::start(1, &missing, &[], dir.path(), tx));
+        let event = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        app.handle_event(event);
+        assert!(app.debug.is_none());
+        assert_eq!(app.message_tone, Tone::Err);
+        let message = app.message.clone().unwrap_or_default();
+        assert!(message.contains("no-such-adapter"), "{message}");
+        app.handle_event(key("x"));
+        assert_eq!(app.buffer().rope.to_string(), "x");
     }
 
     #[test]
