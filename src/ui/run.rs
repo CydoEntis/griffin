@@ -33,6 +33,10 @@ pub enum RunStatus {
     Stopped,
     /// `None` when the process ended without a code, e.g. killed by a signal.
     Exited(Option<i32>),
+    /// A debugged program that ended without the adapter giving its exit code
+    /// (a lone DAP `terminated`). Nothing says it failed, so it isn't drawn
+    /// as a failure.
+    Ended,
 }
 
 /// One row of the panel's body.
@@ -103,6 +107,7 @@ impl RunView {
             RunStatus::Exited(Some(code)) => ("✕", format!("exited {code}"), theme.err),
             RunStatus::Exited(None) => ("✕", "exited".into(), theme.err),
             RunStatus::Stopped => ("■", "stopped".into(), theme.muted),
+            RunStatus::Ended => ("■", "ended".into(), theme.muted),
         }
     }
 }
@@ -373,6 +378,7 @@ mod tests {
                 " ■ dev  stopped   npm run dev",
                 theme.muted,
             ),
+            (RunStatus::Ended, " ■ dev  ended   npm run dev", theme.muted),
         ];
         for (status, title, color) in cases {
             run.status = status;

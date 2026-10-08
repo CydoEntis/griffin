@@ -2976,7 +2976,19 @@ impl App {
         if let Some(tree) = self.run_tree.take() {
             tree.kill();
         }
+        // The only run that can be going while a debug start waits is its own
+        // build, so restarting it keeps the wait: debugging starts once the new
+        // build succeeds, as it would have after the old one.
+        let pending = self.debug_build.take();
+        let before = self.runs;
         self.start_entry(entry, true);
+        if let Some(mut pending) = pending
+            && self.runs != before
+            && self.run.as_ref().is_some_and(|r| r.id == self.runs)
+        {
+            pending.run = self.runs;
+            self.debug_build = Some(pending);
+        }
     }
 
     /// F4: shows or hides the run panel.
@@ -3177,9 +3189,10 @@ impl App {
                 }
             }
             // Adapters usually say `exited` first, which already ended it.
+            // Some send `terminated` alone, with no exit code to show.
             DapNews::Terminated => {
-                self.end_debugging(RunStatus::Exited(None));
-                self.say(Tone::Ok, "debugging ended");
+                self.end_debugging(RunStatus::Ended);
+                self.say(Tone::Ok, "program ended");
             }
             // Without these two there is no program to debug.
             DapNews::Refused { command, message }
@@ -4533,6 +4546,49 @@ mod tests {
             .filter_map(|entry| entry["message"]["command"].as_str().map(str::to_string))
             .collect();
         assert_eq!(commands, ["initialize", "disconnect"]);
+    }
+
+    #[tokio::test]
+    async fn restarting_the_build_a_debug_start_waits_on_keeps_the_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut app = App::new(
+            Keymap::default(),
+            EditorConfig::default(),
+            Some(dir.path().to_path_buf()),
+            None,
+        );
+        app.events = Some(tx);
+        app.run_entry(RunEntry {
+            name: "build".to_string(),
+            command: "echo built".to_string(),
+            cwd: None,
+        });
+        let first = app.runs;
+        app.debug_build = Some(PendingDebug {
+            run: first,
+            adapter: Adapter {
+                command: dir.path().join("no-such-adapter").display().to_string(),
+                args: Vec::new(),
+            },
+            launch: launch(dir.path()),
+        });
+
+        app.restart_run();
+        assert!(app.runs > first);
+        assert_eq!(app.debug_build.as_ref().map(|p| p.run), Some(app.runs));
+        // The new build's success starts the session; the old one's exit doesn't.
+        let started = tokio::time::timeout(Duration::from_secs(20), async {
+            while let Some(event) = rx.recv().await {
+                app.handle_event(event);
+                if app.debug.is_some() {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        assert_eq!(started, Ok(true));
     }
 
     #[tokio::test]

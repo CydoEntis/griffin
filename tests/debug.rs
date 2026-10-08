@@ -273,6 +273,23 @@ fn the_program_exiting_ends_the_session_with_its_code() {
 }
 
 #[test]
+fn a_lone_terminated_ends_the_session_without_calling_it_a_failure() {
+    // Some adapters end with `terminated` and never send an exit code.
+    let script = json!({"events": {"configurationDone": [
+        {"event": "terminated"}
+    ]}});
+    let project = Project::new(script, "");
+    let mut glyph = project.open("main.py");
+    glyph.send_keys("alt+f5");
+    wait_for_status(&glyph, "program ended");
+    glyph.wait_for_text("debug main.py  ended", WAIT);
+    let screen = glyph.screen();
+    assert!(!status_line(&screen).contains("debugging"));
+    assert!(!screen.iter().any(|line| line.contains('✕')), "{screen:#?}");
+    project.wait_for(&glyph, "disconnect", 1);
+}
+
+#[test]
 fn breakpoints_toggled_during_a_session_are_sent() {
     let project = Project::new(json!({}), "");
     let mut glyph = project.open("main.py");

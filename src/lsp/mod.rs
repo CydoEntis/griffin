@@ -1919,6 +1919,12 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert!(messages[0].starts_with("rust: server not found"));
 
+        // On Linux a copy is a file open for writing, and a child another test
+        // thread forks meanwhile inherits that descriptor until it execs; running
+        // the copy then fails with ETXTBSY. A symlink is never open for writing.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(fake_lsp(), &installed).unwrap();
+        #[cfg(not(unix))]
         std::fs::copy(fake_lsp(), &installed).unwrap();
         // Still remembered as missing until it's forgotten.
         assert!(fake.lsp.sync(root.path(), &[(1, &a)]).is_empty());
