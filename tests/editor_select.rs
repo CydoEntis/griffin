@@ -134,3 +134,23 @@ fn selection_keeps_the_syntax_colours_on_sel() {
     let past_end = TEXT_X + 12;
     assert_eq!(glyph.fg_at(past_end, 3), SEL);
 }
+
+#[test]
+fn an_opening_bracket_wraps_the_selection() {
+    let (_dir, mut glyph) = open("call foo now");
+    wait_for_lines(&glyph, &["call foo now"]);
+
+    for _ in 0..5 {
+        glyph.send_keys("right");
+    }
+    for _ in 0..3 {
+        glyph.send_keys("shift+right");
+    }
+    glyph.wait_for_reversed(3, "foo", WAIT);
+
+    glyph.type_text("(");
+    wait_for_lines(&glyph, &["call (foo) now"]);
+    // The wrapped text stays selected.
+    glyph.wait_for_reversed(3, "foo", WAIT);
+    wait_for_position(&glyph, 1, 10);
+}
