@@ -39,6 +39,7 @@ use crate::lsp::{
 };
 use crate::search::{self, Hit, Query};
 use crate::theme::Theme;
+use crate::ui::catalog::{self, Catalog};
 use crate::ui::completion::{self, Completion};
 use crate::ui::confirm::{Answer, Choice, Confirm, Reply};
 use crate::ui::dirpicker::{Browsed, DirPicker};
@@ -816,6 +817,8 @@ pub struct App {
     picker_for: PickerFor,
     /// The folder browser, while it's open; it takes every key.
     folders: Option<DirPicker>,
+    /// The language server catalog, while it's open; it takes every key.
+    catalog: Option<Catalog>,
     /// The latest run, whose output the run panel shows.
     run: Option<RunView>,
     /// The latest run's entry, for Ctrl+F5 to start again.
@@ -1057,6 +1060,10 @@ impl App {
                     }
                     return;
                 }
+                // Nothing is typed into the catalog.
+                if self.catalog.is_some() {
+                    return;
+                }
                 if let Some(picker) = &mut self.picker {
                     if let Some(picked) = picker.paste(&text) {
                         self.finish_picker(picked);
@@ -1119,6 +1126,17 @@ impl App {
                 });
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left) && outside {
                     self.folders = None;
+                }
+            }
+            // The catalog closes on a click outside it, as the cast does.
+            AppEvent::Input(Event::Mouse(mouse)) if self.catalog.is_some() => {
+                let outside = self.catalog.as_ref().is_some_and(|catalog| {
+                    !catalog
+                        .card(self.screen)
+                        .contains(Position::new(mouse.column, mouse.row))
+                });
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) && outside {
+                    self.catalog = None;
                 }
             }
             // The cast palette closes on a click outside it, as a dialog does.
@@ -1247,6 +1265,8 @@ impl App {
         // Tree letters are only actions when nothing else is reading keys as text.
         let scope = if self.folders.is_some() && self.prompt.is_none() {
             Scope::Folders
+        } else if self.catalog.is_some() && self.prompt.is_none() {
+            Scope::Catalog
         } else if self.project_search.is_some() && self.prompt.is_none() {
             Scope::Search
         } else if self.find.is_some() && self.prompt.is_none() {
@@ -1286,6 +1306,12 @@ impl App {
         if let Some(browser) = &mut self.folders {
             if let Some(step) = browser.handle(input) {
                 self.folders_step(step);
+            }
+            return;
+        }
+        if let Some(catalog) = &mut self.catalog {
+            if let Some(step) = catalog.handle(input) {
+                self.catalog_step(step);
             }
             return;
         }
@@ -1495,7 +1521,8 @@ impl App {
             | Action::ToggleRunPanel
             | Action::StopRun
             | Action::RestartRun
-            | Action::OpenDirectory => {
+            | Action::OpenDirectory
+            | Action::LanguageServers => {
                 self.handle_action(action);
             }
             _ => {}
@@ -1732,6 +1759,7 @@ impl App {
                 // key list), runs, opening another folder.
                 Action::Quit
                 | Action::OpenDirectory
+                | Action::LanguageServers
                 | Action::ToggleTree
                 | Action::FocusTree
                 | Action::CycleFocus
@@ -1839,8 +1867,9 @@ impl App {
             Action::Hover => self.request_hover(),
             Action::Complete => self.request_completion(),
             Action::OpenDirectory => self.open_folders(),
-            // Bound only in tree, find bar, folder browser or splash scope, so they never
-            // reach the editor.
+            Action::LanguageServers => self.open_catalog(),
+            // Bound only in tree, find bar, folder browser, catalog or splash scope,
+            // so they never reach the editor.
             Action::TreeNewFile
             | Action::TreeNewFolder
             | Action::TreeRename
@@ -1852,6 +1881,7 @@ impl App {
             | Action::ReplaceAll
             | Action::ProjectReplace
             | Action::OpenFolderHere
+            | Action::CatalogCopy
             | Action::SplashUp
             | Action::SplashDown
             | Action::SplashRun
@@ -2258,6 +2288,34 @@ impl App {
         match DirPicker::new(self.tree.root()) {
             Ok(browser) => self.folders = Some(browser),
             Err(why) => self.say(Tone::Err, why),
+        }
+    }
+
+    /// `>language servers`: the catalog, with what's on PATH as of now, so a
+    /// server installed outside Glyph shows once the catalog is opened again.
+    fn open_catalog(&mut self) {
+        let path = std::env::var_os("PATH");
+        let pathext = std::env::var_os("PATHEXT");
+        let lsp = &self.lsp;
+        self.catalog = Some(Catalog::new(
+            lsp.config(),
+            |lang| lsp.is_running(lang),
+            path.as_deref(),
+            pathext.as_deref(),
+        ));
+    }
+
+    /// Follows what a key did in the catalog. It stays open under a message.
+    fn catalog_step(&mut self, step: catalog::Step) {
+        match step {
+            catalog::Step::Close => self.catalog = None,
+            catalog::Step::Copy(command) => match self.clipboard.set(&command) {
+                Ok(()) => self.say(Tone::Ok, format!("copied: {command}")),
+                Err(err) => self.say(Tone::Err, format!("cannot copy: {err}")),
+            },
+            catalog::Step::NoInstall(name) => {
+                self.say(Tone::Warn, format!("no install command for {name}"));
+            }
         }
     }
 
@@ -3351,6 +3409,7 @@ impl App {
             || self.name_prompt.is_some()
             || self.picker.is_some()
             || self.folders.is_some()
+            || self.catalog.is_some()
             || self.project_search.is_some()
             || self.find.is_some()
     }
@@ -3644,6 +3703,10 @@ impl App {
         if let Some(browser) = &self.folders {
             let at = browser.render(theme, frame, frame.area());
             frame.set_cursor_position(at);
+        }
+        // Nothing is typed into the catalog, so it shows no cursor.
+        if let Some(catalog) = &self.catalog {
+            catalog.render(theme, frame, frame.area());
         }
         if let Some(panel) = &self.project_search {
             let at = panel.render(theme, frame, frame.area());
@@ -4078,6 +4141,31 @@ mod tests {
         assert_eq!(app.buffer().rope.to_string(), "a\nb\n");
         press(&mut app, &["ctrl+z"]);
         assert_eq!(app.buffer().rope.to_string(), "xy");
+    }
+
+    #[test]
+    fn c_in_the_catalog_copies_the_selected_install_command() {
+        let clipboard = FakeClipboard::default();
+        *clipboard.text.borrow_mut() = "old".into();
+        let mut app = App {
+            lsp: Lsp::new(crate::lsp::servers::with_defaults(Default::default())),
+            ..app_with("text", &clipboard)
+        };
+        app.handle_action(Action::LanguageServers);
+        assert!(app.catalog.is_some());
+        press(&mut app, &["down", "c"]);
+        let go = "go install golang.org/x/tools/gopls@latest";
+        assert_eq!(*clipboard.text.borrow(), go);
+        assert_eq!(
+            app.message.as_deref(),
+            Some(format!("copied: {go}").as_str())
+        );
+        assert_eq!(app.message_tone, Tone::Ok);
+        // The keys went to the catalog, not the buffer, and it stays open.
+        assert_eq!(app.buffer().rope.to_string(), "text");
+        assert!(app.catalog.is_some());
+        press(&mut app, &["esc"]);
+        assert!(app.catalog.is_none());
     }
 
     #[test]

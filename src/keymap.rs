@@ -109,6 +109,10 @@ pub enum Action {
     OpenDirectory,
     /// Folder browser only: opens the folder it shows, whatever is selected.
     OpenFolderHere,
+    /// Opens the language server catalog: each server and whether it's installed.
+    LanguageServers,
+    /// Catalog only: copies the selected server's install command.
+    CatalogCopy,
     /// Splash only: moves the selection up a row, wrapping.
     SplashUp,
     /// Splash only: moves the selection down a row, wrapping.
@@ -141,6 +145,9 @@ pub enum Scope {
     Search,
     /// While the folder browser is open: its keys win over the global ones.
     Folders,
+    /// While the language server catalog is open: its letters are its own, as
+    /// nothing is typed into it.
+    Catalog,
     /// While the splash has focus: its letters and arrows are its own.
     Splash,
 }
@@ -231,6 +238,8 @@ impl Action {
         Action::Complete,
         Action::OpenDirectory,
         Action::OpenFolderHere,
+        Action::LanguageServers,
+        Action::CatalogCopy,
         Action::SplashUp,
         Action::SplashDown,
         Action::SplashRun,
@@ -254,6 +263,7 @@ impl Action {
             | Action::ReplaceAll => Scope::Find,
             Action::ProjectReplace => Scope::Search,
             Action::OpenFolderHere => Scope::Folders,
+            Action::CatalogCopy => Scope::Catalog,
             Action::SplashUp
             | Action::SplashDown
             | Action::SplashRun
@@ -360,6 +370,8 @@ impl Action {
             Action::Complete => "complete",
             Action::OpenDirectory => "open_directory",
             Action::OpenFolderHere => "open_folder_here",
+            Action::LanguageServers => "language_servers",
+            Action::CatalogCopy => "catalog_copy",
             Action::SplashUp => "splash_up",
             Action::SplashDown => "splash_down",
             Action::SplashRun => "splash_run",
@@ -465,6 +477,8 @@ impl Action {
             Action::Complete => "Complete",
             Action::OpenDirectory => "Open directory",
             Action::OpenFolderHere => "Open this folder",
+            Action::LanguageServers => "Language servers",
+            Action::CatalogCopy => "Catalog: copy command",
             Action::SplashUp => "Splash: up",
             Action::SplashDown => "Splash: down",
             Action::SplashRun => "Splash: run selected",
@@ -582,6 +596,9 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     // Many Unix terminals send Ctrl+Enter as plain Enter, so the browser's first
     // row does the same and this is only a shortcut for it.
     (Action::OpenFolderHere, "ctrl+enter"),
+    // Nothing is typed into the catalog, so a plain letter is free there
+    // (glyph-catalog spec C2).
+    (Action::CatalogCopy, "c"),
     // The splash's own keys (glyph-splash spec S3): letters are free there, as
     // nothing is typed into the splash.
     (Action::SplashUp, "up"),
@@ -598,7 +615,11 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
 /// `[keys]`: the spec gives them none. Only the check that every action is
 /// accounted for reads it.
 #[cfg(test)]
-const UNBOUND: &[Action] = &[Action::OpenDirectory, Action::ClearBreakpoints];
+const UNBOUND: &[Action] = &[
+    Action::OpenDirectory,
+    Action::ClearBreakpoints,
+    Action::LanguageServers,
+];
 
 /// What a key event means to the editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -639,6 +660,8 @@ pub struct Keymap {
     search: HashMap<Key, Action>,
     /// Checked before `bindings` while the folder browser is open.
     folders: HashMap<Key, Action>,
+    /// Checked before `bindings` while the language server catalog is open.
+    catalog: HashMap<Key, Action>,
     /// Checked before `bindings` while the splash has focus.
     splash: HashMap<Key, Action>,
 }
@@ -673,6 +696,7 @@ impl Keymap {
             find: HashMap::new(),
             search: HashMap::new(),
             folders: HashMap::new(),
+            catalog: HashMap::new(),
             splash: HashMap::new(),
         };
         for &(action, notation) in DEFAULT_BINDINGS {
@@ -699,6 +723,7 @@ impl Keymap {
             Scope::Find => &mut self.find,
             Scope::Search => &mut self.search,
             Scope::Folders => &mut self.folders,
+            Scope::Catalog => &mut self.catalog,
             Scope::Splash => &mut self.splash,
         }
     }
@@ -735,6 +760,7 @@ impl Keymap {
             Scope::Find => self.find.get(&key),
             Scope::Search => self.search.get(&key).or_else(|| self.find.get(&key)),
             Scope::Folders => self.folders.get(&key),
+            Scope::Catalog => self.catalog.get(&key),
             Scope::Splash => self.splash.get(&key),
         };
         if let Some(&action) = scoped {
@@ -1105,6 +1131,7 @@ mod tests {
                 + map.find.len()
                 + map.search.len()
                 + map.folders.len()
+                + map.catalog.len()
                 + map.splash.len(),
             DEFAULT_BINDINGS.len()
         );
@@ -1732,6 +1759,41 @@ mod tests {
         assert_eq!(
             map.resolve(&ev(KeyCode::Char('o'), KeyModifiers::ALT)),
             Input::Action(Action::OpenDirectory)
+        );
+    }
+
+    #[test]
+    fn language_servers_is_a_command_with_no_key_until_one_is_bound() {
+        let map = Keymap::default();
+        assert!(Action::commands().any(|a| a == Action::LanguageServers));
+        assert_eq!(Action::LanguageServers.title(), "Language servers");
+        assert_eq!(Action::LanguageServers.scope(), Scope::Global);
+        assert_eq!(map.key_label(Action::LanguageServers), None);
+        let map = Keymap::new(&keys(&[("language_servers", one("alt+l"))])).unwrap();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('l'), KeyModifiers::ALT)),
+            Input::Action(Action::LanguageServers)
+        );
+    }
+
+    #[test]
+    fn c_copies_only_in_the_catalog() {
+        let map = Keymap::default();
+        let c = ev(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(
+            map.resolve_in(&c, Scope::Catalog),
+            Input::Action(Action::CatalogCopy)
+        );
+        assert_eq!(map.resolve(&c), Input::Text('c'));
+        assert!(!Action::commands().any(|a| a == Action::CatalogCopy));
+        // The arrows and Esc still mean what they do globally.
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Down, KeyModifiers::NONE), Scope::Catalog),
+            Input::Action(Action::Move(Motion::Down))
+        );
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Esc, KeyModifiers::NONE), Scope::Catalog),
+            Input::Action(Action::Cancel)
         );
     }
 

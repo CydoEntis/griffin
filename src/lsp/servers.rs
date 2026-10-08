@@ -114,15 +114,12 @@ pub fn health(
 
 /// Whether `install` has to be run by the user rather than by Glyph: the run
 /// panel has no stdin, so a `sudo` password prompt would hang it.
-// The catalog is the first caller outside tests.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the catalog"))]
 pub fn copy_only(install: &str) -> bool {
     install.split_whitespace().next() == Some("sudo")
 }
 
 /// The program an install command runs, which is what has to be on PATH for it
 /// to work: its first word, after a leading `sudo`.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the catalog"))]
 pub fn install_tool(install: &str) -> Option<&str> {
     let mut words = install.split_whitespace();
     let first = words.next()?;
@@ -135,7 +132,6 @@ pub fn install_tool(install: &str) -> Option<&str> {
 
 /// What the catalog knows about one server: whether it can start now, and what
 /// would install it.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the catalog"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstallState {
     /// The server's command is on PATH (or exists where its path points).
@@ -152,7 +148,6 @@ pub struct InstallState {
 
 /// The install state of `server`, looking programs up in `path` and `pathext`
 /// as `find` does.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the catalog"))]
 pub fn install_state(
     server: &LspServer,
     path: Option<&OsStr>,

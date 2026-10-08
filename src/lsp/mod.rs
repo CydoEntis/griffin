@@ -743,6 +743,22 @@ impl Lsp {
         Some((state, server_name(command)))
     }
 
+    /// The server table for every language, as configured.
+    pub fn config(&self) -> &BTreeMap<String, LspServer> {
+        &self.config
+    }
+
+    /// Whether a server for `lang` is up (starting or ready) under any root.
+    pub fn is_running(&self, lang: &str) -> bool {
+        self.by_root.iter().any(|((l, _), id)| {
+            *l == lang
+                && self
+                    .servers
+                    .get(id)
+                    .is_some_and(|c| c.state != client::State::Failed)
+        })
+    }
+
     /// The server for `lang` under `root`, starting it the first time. One that
     /// failed to start is remembered as failed, so it's reported once.
     fn server_for(
@@ -1866,6 +1882,26 @@ mod tests {
         assert!(fake.lsp.docs[&1].opened && fake.lsp.docs[&1].server == server);
         assert!(fake.lsp.servers[&server].is_ready());
         reaped(fake.lsp.stop_root(root.path())).await;
+    }
+
+    #[tokio::test]
+    async fn only_a_server_that_is_up_counts_as_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut missing = Lsp::new(config("glyph-no-such-server"));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        missing.connect(tx);
+        assert!(!missing.is_running("rust"));
+        let a = rust_buffer(dir.path(), "a.rs");
+        missing.sync(dir.path(), &[(1, &a)]);
+        // It was tried and failed: not running.
+        assert!(!missing.is_running("rust"));
+
+        let mut fake = Fake::new(None);
+        fake.run_until(dir.path(), &[(1, &a)], opened(1)).await;
+        assert!(fake.lsp.is_running("rust"));
+        assert!(!fake.lsp.is_running("python"));
+        reaped(fake.lsp.stop_root(dir.path())).await;
+        assert!(!fake.lsp.is_running("rust"));
     }
 
     #[tokio::test]
