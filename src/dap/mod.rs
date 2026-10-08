@@ -3,11 +3,14 @@
 //! `AppEvent::Dap` (ADR-0001) and are turned into `DapNews` by `Session::handle`,
 //! which matches each response to its request by `request_seq`. A missing or
 //! crashed adapter is one `DapNews::Failed`, and nothing here ever waits on it.
+//! `adapters` says which adapter debugs each language and how the program is
+//! launched.
 
 // Nothing starts a session yet: the keys and screens that do come with the
 // debugger tickets that follow this one.
 #![allow(dead_code)]
 
+pub mod adapters;
 mod transport;
 
 use std::collections::HashMap;
