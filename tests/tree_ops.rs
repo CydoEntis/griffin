@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use harness::{Glyph, ROWS};
+use harness::{COLS, Glyph, ROWS};
 use vt100::Color;
 
 const START: Duration = Duration::from_secs(10);
@@ -19,6 +19,12 @@ const FIRST: usize = 3;
 /// The prompt bar's row: just above the status line.
 const BAR: usize = ROWS as usize - 2;
 const STATUS: usize = ROWS as usize - 1;
+/// hydra's `raised`, the prompt bar's ground.
+const RAISED: Color = Color::Rgb(0x0f, 0x18, 0x21);
+/// hydra's `text`, the prompt bar's label.
+const BAR_TEXT: Color = Color::Rgb(0xa7, 0xb4, 0xc2);
+/// hydra's `muted`, the prompt bar's hint.
+const MUTED: Color = Color::Rgb(0x71, 0x80, 0x8f);
 
 const TOP: &[&str] = &[
     "  ▸ docs",
@@ -86,10 +92,29 @@ fn wait_for_selected(glyph: &Glyph, row: u16, text: &str) {
     glyph.wait_for_bg(27, row, Color::Rgb(0x0d, 0x14, 0x1b), WAIT);
 }
 
-fn wait_for_bar(glyph: &Glyph, text: &str) {
-    glyph.wait_for_screen(&format!("prompt bar {text:?}"), WAIT, |screen| {
-        screen[BAR].trim_end() == text
+/// Waits for the prompt bar to read ` Label  value` with what Enter and Esc do
+/// right-aligned so it ends at W-2, then checks its colours: all on `raised`,
+/// the label in `text`, the hint in `muted`.
+fn wait_for_bar(glyph: &Glyph, label: &str, value: &str) {
+    let hint = if label == "Rename" {
+        "⏎ rename   esc cancel"
+    } else {
+        "⏎ create   esc cancel"
+    };
+    let hint_x = COLS - u16::try_from(hint.chars().count()).expect("short hint") - 1;
+    let field = format!(" {label}  {value}");
+    let expected = format!("{field:<width$}{hint}", width = usize::from(hint_x));
+    glyph.wait_for_screen(&format!("prompt bar {expected:?}"), WAIT, |screen| {
+        screen[BAR] == expected
     });
+    let row = BAR as u16;
+    assert_eq!(
+        glyph.bg_text(row, RAISED).chars().count(),
+        usize::from(COLS)
+    );
+    assert_eq!(glyph.fg_at(1, row), BAR_TEXT);
+    assert_eq!(glyph.fg_at(hint_x, row), MUTED);
+    assert_eq!(glyph.fg_at(COLS - 2, row), MUTED);
 }
 
 fn wait_for_status(glyph: &Glyph, text: &str) {
@@ -107,10 +132,10 @@ fn a_creates_a_file_beside_the_selected_file_and_opens_it() {
     wait_for_selected(&glyph, 7, "    README.md");
 
     glyph.send_keys("a");
-    wait_for_bar(&glyph, "New file:");
-    glyph.wait_for_cursor(10, BAR as u16, WAIT);
+    wait_for_bar(&glyph, "New file", "");
+    glyph.wait_for_cursor(11, BAR as u16, WAIT);
     glyph.type_text("notes.md");
-    wait_for_bar(&glyph, "New file: notes.md");
+    wait_for_bar(&glyph, "New file", "notes.md");
     glyph.send_keys("enter");
 
     wait_for_tree(
@@ -154,7 +179,7 @@ fn a_and_shift_a_create_inside_the_selected_folder() {
     wait_for_selected(&glyph, 3, "  ▸ docs");
 
     glyph.send_keys("a");
-    wait_for_bar(&glyph, "New file:");
+    wait_for_bar(&glyph, "New file", "");
     glyph.type_text("new.md");
     glyph.send_keys("enter");
     // The folder opens to show the new file, which is selected.
@@ -176,7 +201,7 @@ fn a_and_shift_a_create_inside_the_selected_folder() {
     // Back in the tree, Shift+A makes a folder next to the selected file.
     glyph.send_keys("ctrl+e");
     glyph.send_keys("shift+a");
-    wait_for_bar(&glyph, "New folder:");
+    wait_for_bar(&glyph, "New folder", "");
     glyph.type_text("drafts");
     glyph.send_keys("enter");
     wait_for_tree(
@@ -207,12 +232,12 @@ fn r_renames_and_the_open_buffer_follows() {
 
     glyph.send_keys("ctrl+e");
     glyph.send_keys("r");
-    wait_for_bar(&glyph, "Rename: notes.txt");
+    wait_for_bar(&glyph, "Rename", "notes.txt");
     for _ in 0..3 {
         glyph.send_keys("backspace");
     }
     glyph.type_text("md");
-    wait_for_bar(&glyph, "Rename: notes.md");
+    wait_for_bar(&glyph, "Rename", "notes.md");
     glyph.send_keys("enter");
 
     wait_for_tree(
@@ -250,7 +275,7 @@ fn an_existing_or_invalid_name_changes_nothing() {
     wait_for_selected(&glyph, 7, "    README.md");
 
     glyph.send_keys("a");
-    wait_for_bar(&glyph, "New file:");
+    wait_for_bar(&glyph, "New file", "");
     glyph.type_text("notes.txt");
     glyph.send_keys("enter");
     wait_for_status(&glyph, "notes.txt already exists");
@@ -262,7 +287,7 @@ fn an_existing_or_invalid_name_changes_nothing() {
     );
 
     glyph.send_keys("a");
-    wait_for_bar(&glyph, "New file:");
+    wait_for_bar(&glyph, "New file", "");
     glyph.type_text("bad/name");
     glyph.send_keys("enter");
     wait_for_status(&glyph, "invalid name");
@@ -270,7 +295,7 @@ fn an_existing_or_invalid_name_changes_nothing() {
 
     // Renaming onto another entry is refused too.
     glyph.send_keys("r");
-    wait_for_bar(&glyph, "Rename: README.md");
+    wait_for_bar(&glyph, "Rename", "README.md");
     for _ in 0.."README.md".len() {
         glyph.send_keys("backspace");
     }
@@ -286,7 +311,7 @@ fn an_existing_or_invalid_name_changes_nothing() {
 
     // Esc closes the bar without doing anything.
     glyph.send_keys("a");
-    wait_for_bar(&glyph, "New file:");
+    wait_for_bar(&glyph, "New file", "");
     glyph.type_text("never.md");
     glyph.send_keys("esc");
     glyph.wait_for_screen("the bar closed", WAIT, |screen| {
