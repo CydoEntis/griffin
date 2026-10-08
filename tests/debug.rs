@@ -1,6 +1,6 @@
 //! Starting and stopping a debug session against `fake_dap`, the scripted
 //! adapter in `src/bin/fake_dap.rs`, driven through the real binary
-//! (glyph-debugger spec D4, D5).
+//! (glyph-debugger spec D4, D5, D7).
 
 mod harness;
 
@@ -346,4 +346,122 @@ fn a_crashed_adapter_is_one_message_and_editing_carries_on() {
     assert!(!status_line(&glyph.screen()).contains("debugging"));
     glyph.type_text("z");
     glyph.wait_for_text("1  za = 1", WAIT);
+}
+
+/// A project paused in `inner` (main.py:3), called from `caller` in other.py:1.
+/// `inner` has `n` and `items` in its locals, `items` holding one value; the
+/// caller has `x` in its globals.
+fn paused_project() -> Project {
+    let project = Project::new(json!({}), "");
+    let script = json!({
+        "events": {"configurationDone": [
+            {"event": "stopped", "body": {"reason": "breakpoint", "threadId": 1}}
+        ]},
+        "responses": {"stackTrace": {"stackFrames": [
+            {"id": 1, "name": "inner", "source": {"path": project.path("main.py")}, "line": 3, "column": 1},
+            {"id": 2, "name": "caller", "source": {"path": project.path("other.py")}, "line": 1, "column": 1}
+        ]}},
+        "scopes": {
+            "1": [{"name": "Locals", "variablesReference": 10}],
+            "2": [{"name": "Globals", "variablesReference": 20}]
+        },
+        "variables": {
+            "10": [
+                {"name": "n", "value": "3", "type": "int", "variablesReference": 0},
+                {"name": "items", "value": "[7]", "type": "list", "variablesReference": 11}
+            ],
+            "11": [{"name": "0", "value": "7", "type": "int", "variablesReference": 0}],
+            "20": [{"name": "x", "value": "0", "type": "int", "variablesReference": 0}]
+        }
+    });
+    fs::write(project.files.path().join("script.json"), script.to_string()).expect("write script");
+    project
+}
+
+/// Requests named `command` whose `key` argument is `value`.
+fn asked(project: &Project, command: &str, key: &str, value: i64) -> usize {
+    project
+        .requests()
+        .iter()
+        .filter(|r| r["command"] == command && r["arguments"][key] == value)
+        .count()
+}
+
+#[test]
+fn the_debug_panel_takes_the_run_panels_slot_while_debugging() {
+    let project = paused_project();
+    let mut glyph = project.open("main.py");
+    glyph.send_keys("alt+f5");
+    wait_for_status(&glyph, "‖ paused main.py:3");
+    glyph.wait_for_text("call stack", WAIT);
+    glyph.wait_for_text("debug main.py  paused", WAIT);
+    glyph.wait_for_text("▶ inner  main.py:3", WAIT);
+    glyph.wait_for_text("caller  other.py:1", WAIT);
+    glyph.wait_for_text("▾ Locals", WAIT);
+    glyph.wait_for_text("n = 3  int", WAIT);
+    glyph.wait_for_text("▸ items = [7]  list", WAIT);
+
+    // F4 hides it and shows it again.
+    glyph.send_keys("f4");
+    glyph.wait_for_text_gone("call stack", WAIT);
+    glyph.send_keys("f4");
+    glyph.wait_for_text("call stack", WAIT);
+
+    // The session over, the run panel is back with the program's output.
+    glyph.send_keys("alt+f6");
+    glyph.wait_for_text("debug main.py  stopped", WAIT);
+    glyph.wait_for_text_gone("call stack", WAIT);
+}
+
+#[test]
+fn f6_enters_the_panel_where_the_arrows_expand_and_collapse_values() {
+    let project = paused_project();
+    let mut glyph = project.open("main.py");
+    glyph.send_keys("alt+f5");
+    glyph.wait_for_text("▸ items = [7]  list", WAIT);
+
+    // Tree, editor, then the panel.
+    glyph.send_keys("f6");
+    glyph.send_keys("tab");
+    glyph.send_keys("down");
+    glyph.send_keys("down");
+    glyph.send_keys("right");
+    glyph.wait_for_text("▾ items = [7]  list", WAIT);
+    glyph.wait_for_text("0 = 7  int", WAIT);
+    assert_eq!(asked(&project, "variables", "variablesReference", 11), 1);
+
+    glyph.send_keys("left");
+    glyph.wait_for_text("▸ items = [7]  list", WAIT);
+    glyph.wait_for_text_gone("0 = 7  int", WAIT);
+    // Enter expands too; what was loaded isn't asked for again.
+    glyph.send_keys("enter");
+    glyph.wait_for_text("0 = 7  int", WAIT);
+    assert_eq!(asked(&project, "variables", "variablesReference", 11), 1);
+
+    // Nothing typed reaches the buffer while the panel has the keys; F6 goes
+    // on round to the editor, the tree being hidden.
+    glyph.type_text("q");
+    glyph.send_keys("f6");
+    glyph.type_text("z");
+    glyph.wait_for_text("3  zc = 3", WAIT);
+}
+
+#[test]
+fn enter_on_a_frame_opens_its_file_at_its_line_and_shows_its_variables() {
+    let project = paused_project();
+    let mut glyph = project.open("main.py");
+    glyph.send_keys("alt+f5");
+    glyph.wait_for_text("n = 3  int", WAIT);
+
+    glyph.send_keys("f6");
+    glyph.send_keys("down");
+    glyph.send_keys("enter");
+    glyph.wait_for_text("▾ Globals", WAIT);
+    glyph.wait_for_text("x = 0  int", WAIT);
+    glyph.wait_for_text_gone("n = 3  int", WAIT);
+    glyph.wait_for_text("1  x = 0", WAIT);
+    wait_for_status(&glyph, "Ln 1, Col 1");
+    assert_eq!(asked(&project, "scopes", "frameId", 2), 1);
+    // The frame shown is the one marked.
+    glyph.wait_for_text("▶ caller  other.py:1", WAIT);
 }

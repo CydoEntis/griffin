@@ -1,6 +1,7 @@
 pub mod catalog;
 pub mod completion;
 pub mod confirm;
+pub mod debug;
 pub mod dirpicker;
 pub mod find;
 pub mod hover;

@@ -6,7 +6,8 @@
 //! - answers requests from the JSON file named by `FAKE_DAP_SCRIPT`, shaped like
 //!   `{"responses": {"<command>": <body>}, "events": {"<command>": [<message>]},
 //!   "errors": {"<command>": "<text>"}, "exit_on": "<command>", "hold":
-//!   ["<command>"]}`. Every key is optional:
+//!   ["<command>"], "scopes": {"<frameId>": [<scope>]}, "variables":
+//!   {"<variablesReference>": [<variable>]}}`. Every key is optional:
 //!   - `responses`: the body answering each command. Unscripted, `initialize`
 //!     says it supports `configurationDone`, `setBreakpoints` verifies every line
 //!     it was given, `threads` lists one thread `1` named `main`, `continue` says
@@ -19,6 +20,10 @@
 //!   - `exit_on`: a command that makes it exit with code 3 at once, as a crash.
 //!   - `hold`: commands whose answers wait until the next request is answered,
 //!     so responses arrive out of order.
+//!   - `scopes` and `variables`: when `responses` doesn't script the command,
+//!     the scopes of each frame and the variables of each reference, so a
+//!     test can tell one frame or one expanded value from another. Unlisted
+//!     ids get none.
 //!
 //! `--log <path>` and `--script <path>` arguments stand in for the two variables.
 //!
@@ -77,7 +82,7 @@ fn main() -> ExitCode {
         } else {
             response["body"] = match script["responses"].get(command) {
                 Some(body) => body.clone(),
-                None => default_body(command, &message["arguments"]),
+                None => default_body(command, &message["arguments"], &script),
             };
         }
         let holds = script["hold"]
@@ -116,8 +121,19 @@ fn arg(flag: &str) -> Option<std::ffi::OsString> {
     args.next()
 }
 
-fn default_body(command: &str, arguments: &Value) -> Value {
+fn default_body(command: &str, arguments: &Value, script: &Value) -> Value {
+    // Ids are JSON numbers, but object keys are strings.
+    let by_id = |table: &str, id: &Value| -> Value {
+        script[table]
+            .get(id.to_string())
+            .cloned()
+            .unwrap_or_else(|| json!([]))
+    };
     match command {
+        "scopes" => json!({"scopes": by_id("scopes", &arguments["frameId"])}),
+        "variables" => {
+            json!({"variables": by_id("variables", &arguments["variablesReference"])})
+        }
         "initialize" => json!({"supportsConfigurationDoneRequest": true}),
         "setBreakpoints" => {
             let breakpoints: Vec<Value> = arguments["breakpoints"]
