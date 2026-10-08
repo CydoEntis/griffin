@@ -1995,7 +1995,11 @@ impl App {
                 self.buffer_mut().move_cursor(motion, page, tab_width);
                 self.follow_cursor();
             }
-            Action::Newline => self.edit(Buffer::newline),
+            Action::Newline => {
+                let e = &self.editor;
+                let (pairs, width, spaces) = (e.auto_pairs, e.tab_width, e.insert_spaces);
+                self.edit(|buffer| buffer.newline_pair(pairs, width, spaces));
+            }
             Action::Backspace => {
                 let auto_pairs = self.editor.auto_pairs;
                 self.edit(|buffer| buffer.backspace_pair(auto_pairs));
@@ -4993,6 +4997,8 @@ mod tests {
             screen: Rect::new(0, 0, 100, 30),
             ..App::default()
         };
+        // The keys themselves, with no closer for the `{` to bring along.
+        app.editor.auto_pairs = false;
         for k in [
             "f",
             "n",

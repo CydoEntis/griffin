@@ -148,6 +148,23 @@ fn backspace_in_an_empty_pair_deletes_both() {
 }
 
 #[test]
+fn enter_in_a_pair_opens_an_indented_line() {
+    let (mut glyph, x) = start_empty("");
+
+    glyph.type_text("if x {");
+    wait_for_row(&glyph, 0, 1, "if x {}");
+    glyph.send_keys("enter");
+    wait_for_position(&glyph, 2, 5);
+    glyph.type_text("y");
+    wait_for_row(&glyph, 1, 2, "    y");
+    wait_for_row(&glyph, 0, 1, "if x {");
+    wait_for_row(&glyph, 2, 3, "}");
+    glyph.wait_for_cursor(x + 5, TOP + 1, WAIT);
+
+    quit(&mut glyph);
+}
+
+#[test]
 fn auto_pairs_off_types_brackets_alone() {
     let (mut glyph, _) = start_empty("[editor]\nauto_pairs = false\n");
 
