@@ -28,8 +28,8 @@ fn wait_for_lines(glyph: &Glyph, lines: &[&str]) {
     let screen = glyph.screen();
     for (row, text) in lines.iter().enumerate() {
         let expected = format!("{} │ {text}", row + 1);
-        // Row 0 is the tab bar.
-        assert_eq!(screen[row + 1].trim(), expected.trim_end(), "{screen:#?}");
+        // Rows 0-2 are the tab header.
+        assert_eq!(screen[row + 3].trim(), expected.trim_end(), "{screen:#?}");
     }
 }
 

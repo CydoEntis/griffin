@@ -6,8 +6,8 @@ use harness::{Glyph, ROWS};
 
 const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(5);
-/// The editor's first row, below the tab bar.
-const TOP: u16 = 1;
+/// The editor's first row, below the tab header.
+const TOP: u16 = 3;
 
 /// Waits for the status line to show `Ln <line>, Col <col>` (see `shows_position`).
 fn wait_for_position(glyph: &Glyph, line: usize, col: usize) {

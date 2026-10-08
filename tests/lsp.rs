@@ -212,7 +212,7 @@ fn missing_server_keeps_editing() {
     glyph.wait_for_text(message, WAIT);
 
     glyph.type_text("abc");
-    glyph.wait_for_text("a.rs ●", WAIT);
+    glyph.wait_for_text("a.rs •", WAIT);
     glyph.send_keys("ctrl+s");
     glyph.wait_for_text("saved a.rs", WAIT);
     assert_eq!(project.read("a.rs"), "abcfn a() {}\n");
@@ -231,7 +231,7 @@ fn missing_server_keeps_editing() {
     let status = status_line(&glyph);
     assert!(!status.contains("server not found"), "{status:?}");
     glyph.type_text("z");
-    glyph.wait_for_text("b.rs ●", WAIT);
+    glyph.wait_for_text("b.rs •", WAIT);
 }
 
 /// npm installs servers as `.cmd` shims; Glyph has to find one through
@@ -448,10 +448,10 @@ fn diag_project(script: &str) -> (Project, Glyph) {
     (project, glyph)
 }
 
-// Screen rows: the tab bar is row 0, so buffer line n is row n. The gutter
-// " 1 │ " is 5 cells, so char column c is screen column 5 + c.
-const X_ROW: u16 = 2;
-const Y_ROW: u16 = 3;
+// Screen rows: the tab header takes rows 0-2, so buffer line n is row n + 2. The
+// gutter " 1 │ " is 5 cells, so char column c is screen column 5 + c.
+const X_ROW: u16 = 4;
+const Y_ROW: u16 = 5;
 const VAR_COL: u16 = 13;
 
 #[test]
@@ -465,8 +465,8 @@ fn diagnostics_are_underlined_marked_and_counted() {
     glyph.wait_for_underlined(X_ROW, "x", WAIT);
     assert_eq!(glyph.fg_at(VAR_COL, X_ROW), WORKING);
     // Nothing else is underlined.
-    assert_eq!(glyph.underlined_text(1), "");
-    assert_eq!(glyph.underlined_text(4), "");
+    assert_eq!(glyph.underlined_text(3), "");
+    assert_eq!(glyph.underlined_text(6), "");
 
     // The gutter marks both lines in their colour, and only them.
     let screen = glyph.screen();
@@ -478,7 +478,7 @@ fn diagnostics_are_underlined_marked_and_counted() {
         screen[usize::from(Y_ROW)].starts_with("●3 │ "),
         "{screen:#?}"
     );
-    assert!(screen[1].starts_with(" 1 │ "), "{screen:#?}");
+    assert!(screen[3].starts_with(" 1 │ "), "{screen:#?}");
     assert_eq!(glyph.fg_at(0, X_ROW), WORKING);
     assert_eq!(glyph.fg_at(0, Y_ROW), ERR);
 
@@ -590,9 +590,9 @@ fn definition_project(script: &str) -> (Project, Glyph) {
 }
 
 // `greet` in `    util::greet();` starts at char 10 of line 4, which is screen
-// column 5 + 10 past the gutter, on row 4 below the tab bar.
+// column 5 + 10 past the gutter, on row 6 below the tab header.
 const GREET_COL: u16 = 15;
-const GREET_ROW: u16 = 4;
+const GREET_ROW: u16 = 6;
 
 /// The position of the last `textDocument/definition` the fake received, as
 /// (line, character).
@@ -630,12 +630,12 @@ fn f12_opens_the_definition_in_another_file_and_alt_left_comes_back() {
     assert_eq!(definition_position(&project), (3, 10));
     // util.rs opens in a tab of its own, cursor on `greet`.
     glyph.wait_for_text("Ln 3, Col 8", WAIT);
-    let tabs = glyph.screen()[0].clone();
+    let tabs = glyph.screen()[1].clone();
     assert!(
         tabs.contains("main.rs") && tabs.contains("util.rs"),
         "{tabs:?}"
     );
-    glyph.wait_for_cursor(5 + 7, 3, WAIT);
+    glyph.wait_for_cursor(5 + 7, 5, WAIT);
     assert!(status_line(&glyph).contains("util.rs"));
 
     glyph.send_keys("alt+left");
@@ -679,7 +679,7 @@ fn no_definition_says_so() {
         Some(20)
     );
     assert!(status_line(&glyph).contains("Ln 1, Col 1"));
-    assert!(!glyph.screen()[0].contains("util.rs"));
+    assert!(!glyph.screen()[1].contains("util.rs"));
 }
 
 /// The fake's answer to every `textDocument/definition`: the start of `main.rs`.
@@ -699,12 +699,12 @@ fn the_jump_list_keeps_the_last_50_places() {
     let mut glyph = project.open(&rust_server(fake()), "main.rs");
     project.wait_for(&glyph, "textDocument/didOpen", "main.rs");
 
-    let text = glyph.text_col(1, "abcdefghij").expect("line 1 on screen");
+    let text = glyph.text_col(3, "abcdefghij").expect("line 1 on screen");
     // 55 different places, each left by F12: lines 2 to 26 at columns 2, 4 and 6.
     let places: Vec<(u16, u16)> = (0..55u16).map(|i| (2 + i % 25, 2 + 2 * (i / 25))).collect();
     for &(line, col) in &places {
-        // Line n is on screen row n, below the tab bar.
-        glyph.click(text + col - 1, line);
+        // Line n is on screen row n + 2, below the tab header.
+        glyph.click(text + col - 1, line + 2);
         glyph.wait_for_text(&format!("Ln {line}, Col {col}"), WAIT);
         glyph.send_keys("f12");
         glyph.wait_for_text("Ln 1, Col 1", WAIT);
@@ -762,10 +762,10 @@ fn hover_project(script: &str) -> (Project, Glyph) {
     (project, glyph)
 }
 
-// Below the cursor on `greet` (15, 4): the border on row 5, then the text one
-// cell in from the border, on rows 6 to 9.
+// Below the cursor on `greet` (15, 6): the border on row 7, then the text one
+// cell in from the border, on rows 8 to 11.
 const HOVER_TEXT_COL: u16 = 17;
-const HOVER_FIRST_ROW: u16 = 6;
+const HOVER_FIRST_ROW: u16 = 8;
 
 #[test]
 fn alt_k_shows_the_hover_below_the_cursor() {
@@ -851,10 +851,11 @@ fn an_empty_hover_shows_nothing() {
     // No card anywhere: the text area is as it was, but for the gutter mark
     // the publish put on line 1.
     let after = glyph.screen();
-    assert_eq!(after[1].replacen('●', " ", 1), before[1], "{after:#?}");
+    assert_eq!(after[3].replacen('●', " ", 1), before[3], "{after:#?}");
+    assert_eq!(&after[..3], &before[..3]);
     assert_eq!(
-        &after[2..usize::from(ROWS - 1)],
-        &before[2..usize::from(ROWS - 1)]
+        &after[4..usize::from(ROWS - 1)],
+        &before[4..usize::from(ROWS - 1)]
     );
     let status = status_line(&glyph);
     assert!(
@@ -997,10 +998,10 @@ fn open_completion(project: &Project, glyph: &mut Glyph, line: u16) {
 }
 
 // The gutter " 1 │ " is 5 cells, so after `    s.` on line 2 the cursor is at
-// (11, 2). The card's border is on row 3; its rows start on row 4, the kind one
+// (11, 4). The card's border is on row 5; its rows start on row 6, the kind one
 // cell in from the border at column 13 and, after the 6-wide `method` and a
 // space, the label at column 20.
-const ITEM_ROW: u16 = 4;
+const ITEM_ROW: u16 = 6;
 const KIND_COL: u16 = 13;
 const LABEL_COL: u16 = 20;
 
@@ -1026,7 +1027,7 @@ fn a_trigger_character_or_alt_slash_shows_up_to_ten_items_with_kinds() {
         .expect("a change before the request");
     assert_eq!(last_change["params"]["contentChanges"][0]["text"], ".");
 
-    glyph.wait_for_cursor(11, 2, WAIT);
+    glyph.wait_for_cursor(11, 4, WAIT);
     let screen = glyph.screen();
     let expected = [
         ("field ", "as_str"),
@@ -1128,7 +1129,7 @@ fn enter_and_tab_insert_the_item_as_one_undo_step() {
     glyph.wait_for_text_gone("s.len()", WAIT);
     glyph.wait_for_text("Ln 2, Col 9", WAIT);
     let screen = glyph.screen();
-    assert!(screen[2].ends_with("s.le"), "{screen:#?}");
+    assert!(screen[4].ends_with("s.le"), "{screen:#?}");
     glyph.send_keys("ctrl+y");
     glyph.wait_for_text("s.len()", WAIT);
 
@@ -1141,15 +1142,15 @@ fn enter_and_tab_insert_the_item_as_one_undo_step() {
     glyph.send_keys("tab");
     glyph.wait_for_text("s.push(ch)", WAIT);
 
-    // `push_str`'s insert text, picked with Down. The cursor is on row 4, so the
-    // card's rows start on row 6.
+    // `push_str`'s insert text, picked with Down. The cursor is on row 6, so the
+    // card's rows start on row 8.
     glyph.send_keys("enter");
     glyph.wait_for_text("Ln 4, Col 5", WAIT);
     open_completion(&project, &mut glyph, 4);
     glyph.type_text("p");
     glyph.wait_for_text_gone("capacity", WAIT);
     glyph.send_keys("down");
-    glyph.wait_for_fg_at(LABEL_COL + 1, 7, HOV, WAIT);
+    glyph.wait_for_fg_at(LABEL_COL + 1, 9, HOV, WAIT);
     glyph.send_keys("enter");
     glyph.wait_for_text("s.push_str", WAIT);
 
@@ -1176,12 +1177,12 @@ fn enter_and_tab_insert_the_item_as_one_undo_step() {
 fn esc_dismisses_the_popup_without_changing_the_buffer() {
     let (project, mut glyph) = completion_project(&completion_script(""));
     open_completion(&project, &mut glyph, 2);
-    let before = glyph.screen()[2].clone();
+    let before = glyph.screen()[4].clone();
     glyph.send_keys("esc");
     glyph.wait_for_text_gone("capacity", WAIT);
     let screen = glyph.screen();
-    assert_eq!(screen[2], before);
-    assert!(screen[2].ends_with("    s."), "{screen:#?}");
+    assert_eq!(screen[4], before);
+    assert!(screen[4].ends_with("    s."), "{screen:#?}");
     assert!(status_line(&glyph).contains("Ln 2, Col 7"));
     // Enter is the editor's again.
     glyph.send_keys("enter");
@@ -1289,7 +1290,7 @@ fn ctrl_s_formats_through_the_server_then_saves() {
     // Both edits undo as one step.
     glyph.send_keys("ctrl+z");
     glyph.wait_for_text("fn  a(){}", WAIT);
-    glyph.wait_for_text("a.rs ●", WAIT);
+    glyph.wait_for_text("a.rs •", WAIT);
 }
 
 #[test]
@@ -1298,13 +1299,13 @@ fn a_server_that_never_answers_saves_unformatted_after_two_seconds() {
     let mut glyph = project.open(&format_config(true), "a.rs");
     project.wait_for(&glyph, "textDocument/didOpen", "a.rs");
     glyph.type_text("x");
-    glyph.wait_for_text("a.rs ●", WAIT);
+    glyph.wait_for_text("a.rs •", WAIT);
 
     glyph.send_keys("ctrl+s");
     project.wait_for(&glyph, "textDocument/formatting", "a.rs");
     glyph.wait_for_text("saved a.rs unformatted (no answer in 2 s)", WAIT);
     assert_eq!(project.read("a.rs"), "xfn a() {}\n");
-    glyph.wait_for_text_gone("a.rs ●", WAIT);
+    glyph.wait_for_text_gone("a.rs •", WAIT);
 }
 
 #[test]
@@ -1314,7 +1315,7 @@ fn a_formatting_error_saves_unformatted_and_says_so() {
     let mut glyph = project.open(&format_config(true), "a.rs");
     project.wait_for(&glyph, "textDocument/didOpen", "a.rs");
     glyph.type_text("y");
-    glyph.wait_for_text("a.rs ●", WAIT);
+    glyph.wait_for_text("a.rs •", WAIT);
 
     glyph.send_keys("ctrl+s");
     glyph.wait_for_text("saved a.rs unformatted (server error: boom)", WAIT);
@@ -1332,7 +1333,7 @@ fn without_format_on_save_saving_sends_no_formatting_request() {
     let mut glyph = project.open(&rust_server(fake()), "a.rs");
     project.wait_for(&glyph, "textDocument/didOpen", "a.rs");
     glyph.type_text("z");
-    glyph.wait_for_text("a.rs ●", WAIT);
+    glyph.wait_for_text("a.rs •", WAIT);
 
     glyph.send_keys("ctrl+s");
     project.wait_for(&glyph, "textDocument/didSave", "a.rs");

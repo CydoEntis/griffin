@@ -335,14 +335,20 @@ fn sql_roles() {
     assert_eq!(at(15, 46), Some(Role::Number));
 }
 
+/// The screen row of buffer line `n` (1-based) with the view at the top: the
+/// editor starts below the three rows of the tab header.
+fn line(n: u16) -> u16 {
+    n + 2
+}
+
 #[test]
 fn go_shows_keyword_colour_on_screen() {
     let glyph = Glyph::spawn(&[SAMPLE_GO]);
     glyph.wait_for_text("func distance", START);
-    let row = 11;
+    let row = line(11);
     let col = glyph
         .text_col(row, "func distance")
-        .expect("line 11 is on row 11");
+        .expect("line 11 is on screen");
     glyph.wait_for_fg_at(col, row, KEYWORD, WAIT);
     assert_eq!(glyph.fg_at(col + 3, row), KEYWORD);
     // `distance` isn't a keyword.
@@ -353,10 +359,10 @@ fn go_shows_keyword_colour_on_screen() {
 fn sql_shows_keyword_colour_on_screen() {
     let glyph = Glyph::spawn(&[SAMPLE_SQL]);
     glyph.wait_for_text("SELECT label", START);
-    let row = 8;
+    let row = line(8);
     let col = glyph
         .text_col(row, "SELECT label")
-        .expect("line 8 is on row 8");
+        .expect("line 8 is on screen");
     glyph.wait_for_fg_at(col, row, KEYWORD, WAIT);
     assert_eq!(glyph.fg_at(col + 5, row), KEYWORD);
     // `label` is a column, not a keyword.
@@ -369,26 +375,28 @@ fn sql_shows_keyword_colour_on_screen() {
 fn html_injections_show_on_screen() {
     let glyph = Glyph::spawn(&[SAMPLE_HTML]);
     glyph.wait_for_text("const greeting", START);
-    let property = glyph.text_col(5, "color: red").expect("line 5 on row 5");
-    glyph.wait_for_fg_at(property, 5, PROPERTY, WAIT);
-    assert_eq!(glyph.fg_at(property + 4, 5), PROPERTY);
+    let property = glyph
+        .text_col(line(5), "color: red")
+        .expect("line 5 on screen");
+    glyph.wait_for_fg_at(property, line(5), PROPERTY, WAIT);
+    assert_eq!(glyph.fg_at(property + 4, line(5)), PROPERTY);
     let keyword = glyph
-        .text_col(11, "const greeting")
-        .expect("line 11 on row 11");
-    glyph.wait_for_fg_at(keyword, 11, KEYWORD, WAIT);
-    assert_eq!(glyph.fg_at(keyword + 4, 11), KEYWORD);
+        .text_col(line(11), "const greeting")
+        .expect("line 11 on screen");
+    glyph.wait_for_fg_at(keyword, line(11), KEYWORD, WAIT);
+    assert_eq!(glyph.fg_at(keyword + 4, line(11)), KEYWORD);
     // `greeting` is a plain name, not a keyword.
-    assert_ne!(glyph.fg_at(keyword + 6, 11), KEYWORD);
+    assert_ne!(glyph.fg_at(keyword + 6, line(11)), KEYWORD);
 }
 
 #[test]
 fn tsx_shows_tag_colour_on_screen() {
     let glyph = Glyph::spawn(&[SAMPLE_TSX]);
     glyph.wait_for_text("<Button onClick", START);
-    let row = 8;
+    let row = line(8);
     let tag = glyph
         .text_col(row, "Button onClick")
-        .expect("line 8 on row 8");
+        .expect("line 8 on screen");
     glyph.wait_for_fg_at(tag, row, TAG, WAIT);
     assert_eq!(glyph.fg_at(tag + 5, row), TAG);
     // `onClick` is an attribute, not a tag.
@@ -399,19 +407,23 @@ fn tsx_shows_tag_colour_on_screen() {
 fn rust_shows_theme_colours_on_screen() {
     let glyph = Glyph::spawn(&[SAMPLE]);
     glyph.wait_for_text("fn distance", START);
-    let row = 10;
+    let row = line(10);
     let col = glyph
         .text_col(row, "fn distance")
-        .expect("line 10 is on row 10");
+        .expect("line 10 is on screen");
     glyph.wait_for_fg_at(col, row, KEYWORD, WAIT);
     assert_eq!(glyph.fg_at(col + 1, row), KEYWORD);
     // `distance` itself isn't a keyword.
     assert_ne!(glyph.fg_at(col + 3, row), KEYWORD);
-    let comment = glyph.text_col(1, "// A sample").expect("comment on row 1");
-    assert_eq!(glyph.fg_at(comment, 1), COMMENT);
-    assert_eq!(glyph.fg_at(comment + 5, 1), COMMENT);
-    let string = glyph.text_col(18, "\"origin\"").expect("string on row 18");
-    assert_eq!(glyph.fg_at(string, 18), STRING);
+    let comment = glyph
+        .text_col(line(1), "// A sample")
+        .expect("comment on screen");
+    assert_eq!(glyph.fg_at(comment, line(1)), COMMENT);
+    assert_eq!(glyph.fg_at(comment + 5, line(1)), COMMENT);
+    let string = glyph
+        .text_col(line(18), "\"origin\"")
+        .expect("string on screen");
+    assert_eq!(glyph.fg_at(string, line(18)), STRING);
 }
 
 #[test]
@@ -420,8 +432,8 @@ fn files_without_a_grammar_are_uncoloured() {
     glyph.wait_for_text("fn plain text", START);
     glyph.wait_for_text("// slashes", WAIT);
     for (row, text) in [
-        (1, "fn plain text is never coloured"),
-        (2, "\"even with quotes\" and // slashes"),
+        (line(1), "fn plain text is never coloured"),
+        (line(2), "\"even with quotes\" and // slashes"),
     ] {
         let start = glyph.text_col(row, text).expect("line on its row");
         let end = start + u16::try_from(text.len()).expect("short line");
@@ -439,11 +451,11 @@ fn rust_retypes_on_edit() {
     let mut glyph = Glyph::spawn_in(dir.path(), &["edit.rs"]);
     glyph.wait_for_text("let a = b + c;", START);
 
-    let row = 2;
-    let b = glyph.text_col(row, "b + c").expect("line 2 on row 2");
+    let row = line(2);
+    let b = glyph.text_col(row, "b + c").expect("line 2 on screen");
     let c = b + 4;
     let semicolon = b + 5;
-    let keyword = glyph.text_col(row, "let").expect("`let` on row 2");
+    let keyword = glyph.text_col(row, "let").expect("`let` on screen");
     glyph.wait_for_fg_at(keyword, row, KEYWORD, WAIT);
     assert_eq!(glyph.fg_at(c, row), FG);
 

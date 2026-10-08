@@ -61,10 +61,10 @@ fn ctrl_f_highlights_every_match_as_you_type_and_jumps_to_the_first() {
     // The bar sits above the status line, which stays on the last row.
     assert!(row(&glyph, ROWS - 1).starts_with(" ✦ glyph"));
     // All three matches have the selection colours, and nothing else does.
-    glyph.wait_for_reversed(1, "foo", WAIT);
-    glyph.wait_for_reversed(2, "foo", WAIT);
     glyph.wait_for_reversed(3, "foo", WAIT);
-    assert_eq!(glyph.text_col(1, "foo"), Some(TEXT_X + 4));
+    glyph.wait_for_reversed(4, "foo", WAIT);
+    glyph.wait_for_reversed(5, "foo", WAIT);
+    assert_eq!(glyph.text_col(3, "foo"), Some(TEXT_X + 4));
     wait_for_position(&glyph, 1, 5);
     // The terminal cursor is in the bar, after the text.
     glyph.wait_for_cursor(9, BAR_ROW, WAIT);
@@ -72,9 +72,9 @@ fn ctrl_f_highlights_every_match_as_you_type_and_jumps_to_the_first() {
     // Matches update while typing: only line 2 has `foo` before a space.
     glyph.type_text(" ");
     wait_for_count(&glyph, "1/1");
-    glyph.wait_for_reversed(1, "", WAIT);
     glyph.wait_for_reversed(3, "", WAIT);
-    glyph.wait_for_reversed(2, "foo ", WAIT);
+    glyph.wait_for_reversed(5, "", WAIT);
+    glyph.wait_for_reversed(4, "foo ", WAIT);
     wait_for_position(&glyph, 2, 5);
     glyph.send_keys("backspace");
     wait_for_count(&glyph, "1/3");
@@ -88,11 +88,11 @@ fn ctrl_f_starts_from_the_selection() {
     for _ in 0..3 {
         glyph.send_keys("shift+right");
     }
-    glyph.wait_for_reversed(2, "two", WAIT);
+    glyph.wait_for_reversed(4, "two", WAIT);
     glyph.send_keys("ctrl+f");
     wait_for_count(&glyph, "1/1");
     assert!(row(&glyph, BAR_ROW).starts_with("Find: two"));
-    glyph.wait_for_reversed(2, "two", WAIT);
+    glyph.wait_for_reversed(4, "two", WAIT);
     wait_for_position(&glyph, 2, 1);
 }
 
@@ -131,14 +131,14 @@ fn alt_c_toggles_case_and_alt_r_toggles_regex_and_a_bad_regex_says_so() {
     glyph.wait_for_text("2 │ foooo", WAIT);
     find(&mut glyph, "foo");
     wait_for_count(&glyph, "1/4");
-    glyph.wait_for_reversed(1, "fooFooFOO", WAIT);
+    glyph.wait_for_reversed(3, "fooFooFOO", WAIT);
     glyph.wait_for_fg(BAR_ROW, ACCENT, "", WAIT);
 
     glyph.send_keys("alt+c");
     wait_for_count(&glyph, "1/2");
     glyph.wait_for_fg(BAR_ROW, ACCENT, "Aa", WAIT);
-    glyph.wait_for_reversed(1, "foo", WAIT);
-    glyph.wait_for_reversed(2, "foo", WAIT);
+    glyph.wait_for_reversed(3, "foo", WAIT);
+    glyph.wait_for_reversed(4, "foo", WAIT);
     glyph.send_keys("alt+c");
     wait_for_count(&glyph, "1/4");
     glyph.wait_for_fg(BAR_ROW, ACCENT, "", WAIT);
@@ -149,17 +149,17 @@ fn alt_c_toggles_case_and_alt_r_toggles_regex_and_a_bad_regex_says_so() {
     }
     glyph.type_text("fo+");
     wait_for_count(&glyph, "0/0");
-    glyph.wait_for_reversed(1, "", WAIT);
+    glyph.wait_for_reversed(3, "", WAIT);
     glyph.send_keys("alt+r");
     wait_for_count(&glyph, "1/4");
     glyph.wait_for_fg(BAR_ROW, ACCENT, ".*", WAIT);
-    glyph.wait_for_reversed(2, "foooo", WAIT);
+    glyph.wait_for_reversed(4, "foooo", WAIT);
 
     // An unclosed group is an error, with nothing highlighted.
     glyph.type_text("(");
     wait_for_count(&glyph, "invalid regex");
-    glyph.wait_for_reversed(1, "", WAIT);
-    glyph.wait_for_reversed(2, "", WAIT);
+    glyph.wait_for_reversed(3, "", WAIT);
+    glyph.wait_for_reversed(4, "", WAIT);
     glyph.send_keys("backspace");
     wait_for_count(&glyph, "1/4");
 }
@@ -174,10 +174,10 @@ fn esc_closes_the_bar_and_keeps_the_cursor_on_the_current_match() {
 
     glyph.send_keys("esc");
     glyph.wait_for_text_gone("Find:", WAIT);
-    glyph.wait_for_reversed(1, "", WAIT);
-    glyph.wait_for_reversed(2, "", WAIT);
+    glyph.wait_for_reversed(3, "", WAIT);
+    glyph.wait_for_reversed(4, "", WAIT);
     wait_for_position(&glyph, 2, 5);
-    glyph.wait_for_cursor(TEXT_X + 4, 2, WAIT);
+    glyph.wait_for_cursor(TEXT_X + 4, 4, WAIT);
     // Typing goes into the buffer again, at the match.
     glyph.type_text("x");
     glyph.wait_for_text("2 │ two xfoo three", WAIT);

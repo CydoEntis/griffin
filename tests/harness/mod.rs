@@ -31,6 +31,27 @@ pub fn shows_position(status: &str, position: &str) -> bool {
         .any(|(at, _)| !status[at + position.len()..].starts_with(|c: char| c.is_ascii_digit()))
 }
 
+/// What a split's pill row reads from the cell its first pill starts in, trailing
+/// blanks cut: each label (` name `, or ` name • ` for a dirty tab named
+/// `name •`) between caps, `▐ ▌` round the active one and blanks round the
+/// rest, one blank apart (design README §2.2).
+pub fn pill_text(names: &[&str], active: usize) -> String {
+    names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            if index == active {
+                format!("▐ {name} ▌")
+            } else {
+                format!("  {name}  ")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end()
+        .to_string()
+}
+
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 /// Device status report "where is the cursor?".
@@ -388,13 +409,34 @@ impl Glyph {
 
     /// The text of the bold cells on `row`, in order.
     pub fn bold_text(&self, row: u16) -> String {
-        let parser = self.parser();
-        let screen = parser.screen();
-        (0..COLS)
-            .filter_map(|col| screen.cell(row, col))
-            .filter(|cell| cell.bold() && !cell.is_wide_continuation())
-            .map(|cell| cell.contents().to_string())
-            .collect()
+        bold_cells(&self.parser(), row)
+    }
+
+    /// Waits until the bold cells on `row` read exactly `text`. Panics with the
+    /// screen on timeout.
+    pub fn wait_for_bold(&self, row: u16, text: &str, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut parser = self.parser();
+        loop {
+            let bold = bold_cells(&parser, row);
+            if bold == text {
+                return;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                panic!(
+                    "timed out after {timeout:?} waiting for row {row} to show {text:?} \
+                     bold; it shows {bold:?}\n{}",
+                    dump(&screen_lines(&parser))
+                );
+            }
+            parser = self
+                .shared
+                .changed
+                .wait_timeout(parser, deadline - now)
+                .expect("screen lock poisoned")
+                .0;
+        }
     }
 
     /// The foreground colour of the cell at (`col`, `row`).
@@ -878,6 +920,15 @@ fn reversed_cells(parser: &vt100::Parser, row: u16) -> String {
             "" => " ".to_string(),
             text => text.to_string(),
         })
+        .collect()
+}
+
+fn bold_cells(parser: &vt100::Parser, row: u16) -> String {
+    let screen = parser.screen();
+    (0..COLS)
+        .filter_map(|col| screen.cell(row, col))
+        .filter(|cell| cell.bold() && !cell.is_wide_continuation())
+        .map(|cell| cell.contents().to_string())
         .collect()
 }
 

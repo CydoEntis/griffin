@@ -29,8 +29,8 @@ fn wait_for_lines(glyph: &Glyph, lines: &[&str]) {
     let screen = glyph.screen();
     for (row, text) in lines.iter().enumerate() {
         let expected = format!("{} │ {text}", row + 1);
-        // Row 0 is the tab bar.
-        assert_eq!(screen[row + 1].trim(), expected.trim_end(), "{screen:#?}");
+        // Rows 0-2 are the tab header.
+        assert_eq!(screen[row + 3].trim(), expected.trim_end(), "{screen:#?}");
     }
 }
 
@@ -49,33 +49,33 @@ fn open(text: &str) -> (tempfile::TempDir, Glyph) {
 fn shift_right_selects() {
     let (_dir, mut glyph) = open("hello world");
     wait_for_lines(&glyph, &["hello world"]);
-    assert_eq!(glyph.reversed_text(1), "");
+    assert_eq!(glyph.reversed_text(3), "");
 
     for _ in 0..5 {
         glyph.send_keys("shift+right");
     }
     wait_for_position(&glyph, 1, 6);
-    glyph.wait_for_reversed(1, "hello", WAIT);
+    glyph.wait_for_reversed(3, "hello", WAIT);
 
     // A plain movement drops the selection.
     glyph.send_keys("right");
     wait_for_position(&glyph, 1, 7);
-    glyph.wait_for_reversed(1, "", WAIT);
+    glyph.wait_for_reversed(3, "", WAIT);
 
     // Select it again and type over it.
     glyph.send_keys("home");
     for _ in 0..5 {
         glyph.send_keys("shift+right");
     }
-    glyph.wait_for_reversed(1, "hello", WAIT);
+    glyph.wait_for_reversed(3, "hello", WAIT);
     glyph.type_text("bye");
     wait_for_lines(&glyph, &["bye world"]);
-    glyph.wait_for_reversed(1, "", WAIT);
+    glyph.wait_for_reversed(3, "", WAIT);
     wait_for_position(&glyph, 1, 4);
 
     // Select all covers every line.
     glyph.send_keys("ctrl+a");
-    glyph.wait_for_reversed(1, "bye world", WAIT);
+    glyph.wait_for_reversed(3, "bye world", WAIT);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn paste_is_one_undo_step() {
 
     // A paste replaces the selection, still as one step.
     glyph.send_keys("ctrl+a");
-    glyph.wait_for_reversed(1, "ab", WAIT);
+    glyph.wait_for_reversed(3, "ab", WAIT);
     glyph.write(b"\x1b[200~xyz\x1b[201~");
     wait_for_lines(&glyph, &["xyz"]);
     glyph.send_keys("ctrl+z");

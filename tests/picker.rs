@@ -116,7 +116,7 @@ fn arrows_move_the_selection_and_enter_opens_it_in_a_tab() {
     glyph.send_keys("enter");
     glyph.wait_for_text("1 │ pub fn help() {}", WAIT);
     glyph.wait_for_screen("both files in the tab bar", WAIT, |screen| {
-        screen[0].contains("README.md") && screen[0].contains("helpers.rs")
+        screen[1].contains("README.md") && screen[1].contains("helpers.rs")
     });
 }
 

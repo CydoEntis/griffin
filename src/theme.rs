@@ -644,8 +644,8 @@ impl Theme {
     /// A hand-tuned Aurora theme, in README §4.1's row order: bg deep surface
     /// raised raised2 line2 guide muted text fg strong accent accent2 acc_ink err
     /// warn ok info err_soft warn_soft info_soft sel cur_line gutter scrim. Each
-    /// v1 role takes the Aurora role README §6 maps it to; the active tab stays
-    /// accent-filled like the pack themes' until the tab bar is restyled.
+    /// v1 role takes the Aurora role README §6 maps it to; `tab_active_*` keep the
+    /// v1 accent fill, which only `mono`'s reversed pill still reads.
     fn signature(c: [&str; 25], syntax: Syntax) -> Theme {
         let h = |i: usize| hex(c[i]);
         Theme {

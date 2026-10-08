@@ -85,7 +85,7 @@ fn f5_runs_the_only_entry_and_streams_its_output_in_colour() {
     assert_eq!(glyph.bg_at(1, OUTPUT_ROW), BG);
     assert_eq!(glyph.text_col(OUTPUT_ROW, "red line"), Some(1));
     // The editor above stays in view.
-    assert!(row(&glyph, 2).contains("the editor stays visible"));
+    assert!(row(&glyph, 4).contains("the editor stays visible"));
 
     // stderr comes in too, then the title shows the exit code.
     glyph.wait_for_screen("the stderr line", WAIT, |screen| {

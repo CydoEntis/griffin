@@ -137,15 +137,15 @@ fn folder_opens_with_a_28_column_tree_on_surface_under_the_brand() {
     // Names are `text`, markers `muted`.
     assert_eq!(glyph.fg_at(2, FIRST + 1), MUTED);
     assert_eq!(glyph.fg_at(4, FIRST + 1), TEXT);
-    // The empty editor starts one column right of the tree.
+    // The empty editor starts one column right of the tree, below the tab header.
     assert!(
-        screen[1]
+        screen[3]
             .chars()
             .skip(TREE + 1)
             .collect::<String>()
             .starts_with(" 1 │"),
         "{:?}",
-        screen[1]
+        screen[3]
     );
 }
 
@@ -341,9 +341,9 @@ fn clicking_selects_rows_and_opens_files() {
 
     // Clicking the editor gives it focus back: typing edits the file.
     let x = glyph
-        .text_col(1, "fn main")
-        .expect("main.rs is showing on row 0");
-    glyph.click(x, 1);
+        .text_col(3, "fn main")
+        .expect("main.rs is showing on line 1");
+    glyph.click(x, 3);
     glyph.type_text("x");
     glyph.wait_for_text("xfn main", WAIT);
 }
@@ -362,7 +362,7 @@ fn opening_another_file_keeps_unsaved_changes_in_their_tab() {
     // The other file opens in a tab of its own, without asking.
     glyph.click(5, FIRST + 4);
     glyph.wait_for_text("# Project fixture", WAIT);
-    glyph.wait_for_text(" notes.txt ●  README.md ", WAIT);
+    glyph.wait_for_text(" notes.txt •   ▐ README.md ▌", WAIT);
     assert!(
         !glyph
             .screen()
@@ -385,14 +385,14 @@ fn ctrl_b_toggles_the_tree_and_ctrl_e_switches_focus() {
     glyph.click(5, FIRST + 4);
     glyph.wait_for_text("# Project fixture", WAIT);
     let editor_x = glyph
-        .text_col(1, "# Project")
-        .expect("README.md is showing on row 0");
+        .text_col(3, "# Project")
+        .expect("README.md is showing on line 1");
     assert!(usize::from(editor_x) > TREE, "editor at column {editor_x}");
 
     // Ctrl+B hides the tree: the editor starts at column 0.
     glyph.send_keys("ctrl+b");
     glyph.wait_for_screen("the editor at column 0", WAIT, |screen| {
-        screen[1].starts_with(" 1 │ # Project fixture")
+        screen[3].starts_with(" 1 │ # Project fixture")
     });
     glyph.send_keys("ctrl+b");
     wait_for_tree(&glyph, TOP);
@@ -411,7 +411,7 @@ fn ctrl_b_toggles_the_tree_and_ctrl_e_switches_focus() {
     // With the tree hidden, Ctrl+E brings it back focused.
     glyph.send_keys("ctrl+b");
     glyph.wait_for_screen("the editor at column 0", WAIT, |screen| {
-        screen[1].starts_with(" 1 │ y# Project fixture")
+        screen[3].starts_with(" 1 │ y# Project fixture")
     });
     glyph.send_keys("ctrl+e");
     // README.md now has unsaved changes, so its row carries the dirty mark.
