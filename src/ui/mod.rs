@@ -6,6 +6,7 @@ pub mod picker;
 pub mod prompt;
 pub mod run;
 pub mod search;
+pub mod splash;
 pub mod status;
 pub mod tabs;
 pub mod tree;

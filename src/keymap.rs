@@ -101,6 +101,20 @@ pub enum Action {
     /// Asks the language server for completions at the cursor and shows them in
     /// a popup.
     Complete,
+    /// Splash only: moves the selection up a row, wrapping.
+    SplashUp,
+    /// Splash only: moves the selection down a row, wrapping.
+    SplashDown,
+    /// Splash only: runs the selected row.
+    SplashRun,
+    /// Splash only: runs *New file*.
+    SplashNewFile,
+    /// Splash only: runs *New directory*.
+    SplashNewDirectory,
+    /// Splash only: runs *Open directory*.
+    SplashOpenDirectory,
+    /// Splash only: leaves the splash for the empty untitled buffer.
+    SplashDismiss,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -115,6 +129,8 @@ pub enum Scope {
     /// first, so Alt+A can replace across the project here and in the find bar
     /// replace only in the file.
     Search,
+    /// While the splash has focus: its letters and arrows are its own.
+    Splash,
 }
 
 impl Action {
@@ -199,6 +215,13 @@ impl Action {
         Action::JumpBack,
         Action::Hover,
         Action::Complete,
+        Action::SplashUp,
+        Action::SplashDown,
+        Action::SplashRun,
+        Action::SplashNewFile,
+        Action::SplashNewDirectory,
+        Action::SplashOpenDirectory,
+        Action::SplashDismiss,
     ];
 
     pub fn scope(self) -> Scope {
@@ -213,6 +236,13 @@ impl Action {
             | Action::FindRegex
             | Action::ReplaceAll => Scope::Find,
             Action::ProjectReplace => Scope::Search,
+            Action::SplashUp
+            | Action::SplashDown
+            | Action::SplashRun
+            | Action::SplashNewFile
+            | Action::SplashNewDirectory
+            | Action::SplashOpenDirectory
+            | Action::SplashDismiss => Scope::Splash,
             _ => Scope::Global,
         }
     }
@@ -307,6 +337,13 @@ impl Action {
             Action::JumpBack => "jump_back",
             Action::Hover => "hover",
             Action::Complete => "complete",
+            Action::SplashUp => "splash_up",
+            Action::SplashDown => "splash_down",
+            Action::SplashRun => "splash_run",
+            Action::SplashNewFile => "splash_new_file",
+            Action::SplashNewDirectory => "splash_new_directory",
+            Action::SplashOpenDirectory => "splash_open_directory",
+            Action::SplashDismiss => "splash_dismiss",
         }
     }
 
@@ -400,6 +437,13 @@ impl Action {
             Action::JumpBack => "Jump back",
             Action::Hover => "Show hover",
             Action::Complete => "Complete",
+            Action::SplashUp => "Splash: up",
+            Action::SplashDown => "Splash: down",
+            Action::SplashRun => "Splash: run selected",
+            Action::SplashNewFile => "Splash: new file",
+            Action::SplashNewDirectory => "Splash: new directory",
+            Action::SplashOpenDirectory => "Splash: open directory",
+            Action::SplashDismiss => "Splash: close",
         }
     }
 
@@ -505,6 +549,15 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::JumpBack, "alt+left"),
     (Action::Hover, "alt+k"),
     (Action::Complete, "alt+/"),
+    // The splash's own keys (glyph-splash spec S3): letters are free there, as
+    // nothing is typed into the splash.
+    (Action::SplashUp, "up"),
+    (Action::SplashDown, "down"),
+    (Action::SplashRun, "enter"),
+    (Action::SplashNewFile, "n"),
+    (Action::SplashNewDirectory, "d"),
+    (Action::SplashOpenDirectory, "o"),
+    (Action::SplashDismiss, "esc"),
 ];
 
 /// What a key event means to the editor.
@@ -544,6 +597,8 @@ pub struct Keymap {
     find: HashMap<Key, Action>,
     /// Checked before `find` while project search is open.
     search: HashMap<Key, Action>,
+    /// Checked before `bindings` while the splash has focus.
+    splash: HashMap<Key, Action>,
 }
 
 impl Default for Keymap {
@@ -575,6 +630,7 @@ impl Keymap {
             tree: HashMap::new(),
             find: HashMap::new(),
             search: HashMap::new(),
+            splash: HashMap::new(),
         };
         for &(action, notation) in DEFAULT_BINDINGS {
             if overrides.contains_key(&action) {
@@ -599,6 +655,7 @@ impl Keymap {
             Scope::Tree => &mut self.tree,
             Scope::Find => &mut self.find,
             Scope::Search => &mut self.search,
+            Scope::Splash => &mut self.splash,
         }
     }
 
@@ -620,8 +677,9 @@ impl Keymap {
     }
 
     /// What `event` means in `scope`: tree bindings win while the tree has focus,
-    /// find bar bindings while the find bar is open, and project search's own
-    /// bindings, then the find bar's, while project search is open.
+    /// find bar bindings while the find bar is open, project search's own
+    /// bindings, then the find bar's, while project search is open, and the
+    /// splash's while it has focus.
     pub fn resolve_in(&self, event: &KeyEvent, scope: Scope) -> Input {
         if event.kind == KeyEventKind::Release {
             return Input::Ignored;
@@ -632,6 +690,7 @@ impl Keymap {
             Scope::Tree => self.tree.get(&key),
             Scope::Find => self.find.get(&key),
             Scope::Search => self.search.get(&key).or_else(|| self.find.get(&key)),
+            Scope::Splash => self.splash.get(&key),
         };
         if let Some(&action) = scoped {
             return Input::Action(action);
@@ -983,7 +1042,11 @@ mod tests {
     fn defaults_build() {
         let map = Keymap::default();
         assert_eq!(
-            map.bindings.len() + map.tree.len() + map.find.len() + map.search.len(),
+            map.bindings.len()
+                + map.tree.len()
+                + map.find.len()
+                + map.search.len()
+                + map.splash.len(),
             DEFAULT_BINDINGS.len()
         );
     }
@@ -1373,6 +1436,52 @@ mod tests {
         assert_eq!(
             map.resolve_in(&ev(KeyCode::Char('d'), none), Scope::Tree),
             Input::Text('d')
+        );
+    }
+
+    #[test]
+    fn splash_keys_are_actions_only_in_splash_scope() {
+        let map = Keymap::default();
+        let none = KeyModifiers::NONE;
+        for (event, action) in [
+            (ev(KeyCode::Up, none), Action::SplashUp),
+            (ev(KeyCode::Down, none), Action::SplashDown),
+            (ev(KeyCode::Enter, none), Action::SplashRun),
+            (ev(KeyCode::Char('n'), none), Action::SplashNewFile),
+            (ev(KeyCode::Char('d'), none), Action::SplashNewDirectory),
+            (ev(KeyCode::Char('o'), none), Action::SplashOpenDirectory),
+            (ev(KeyCode::Esc, none), Action::SplashDismiss),
+        ] {
+            assert_eq!(map.resolve_in(&event, Scope::Splash), Input::Action(action));
+            assert_ne!(map.resolve(&event), Input::Action(action), "{event:?}");
+        }
+        // Global keys still reach the app from the splash: Ctrl+N leaves it,
+        // Ctrl+P and Ctrl+E work as anywhere.
+        assert_eq!(
+            map.resolve_in(
+                &ev(KeyCode::Char('n'), KeyModifiers::CONTROL),
+                Scope::Splash
+            ),
+            Input::Action(Action::NewFile)
+        );
+        assert_eq!(
+            map.resolve_in(
+                &ev(KeyCode::Char('e'), KeyModifiers::CONTROL),
+                Scope::Splash
+            ),
+            Input::Action(Action::FocusTree)
+        );
+        // The splash's actions aren't commands in the cast palette.
+        assert!(!Action::commands().any(|a| a.scope() == Scope::Splash));
+
+        let map = Keymap::new(&keys(&[("splash_new_file", one("f"))])).unwrap();
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Char('f'), none), Scope::Splash),
+            Input::Action(Action::SplashNewFile)
+        );
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Char('n'), none), Scope::Splash),
+            Input::Text('n')
         );
     }
 

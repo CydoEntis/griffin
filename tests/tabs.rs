@@ -107,9 +107,11 @@ fn read(dir: &Path, name: &str) -> String {
 #[test]
 fn pills_show_each_buffer_with_the_active_one_and_dirty_marks() {
     let (_dir, mut glyph) = open_project();
-    // An untitled tab before anything is opened.
-    wait_for_tabs(&glyph, &["untitled"], 0);
-    // Opening a file replaces that untouched untitled tab; a second gets its own.
+    // No pills while the splash stands in for the untitled tab.
+    glyph.wait_for_text("New file", WAIT);
+    assert_eq!(glyph.text_col(PILL_ROW, "untitled"), None);
+    // Opening a file replaces the splash and its untitled tab; a second gets
+    // its own.
     open_both(&mut glyph);
     wait_for_active(&glyph, "b.txt");
 
@@ -266,8 +268,12 @@ fn ctrl_n_then_alt_s_saves_relative_to_the_project_root() {
     let mut glyph = Glyph::spawn_in(parent.path(), &["proj"]);
     glyph.wait_for_text("a.txt", START);
 
+    // The first Ctrl+N leaves the splash for its untitled tab, the second opens
+    // another.
     glyph.send_keys("ctrl+n");
     wait_for_active(&glyph, "untitled");
+    glyph.send_keys("ctrl+n");
+    wait_for_tabs(&glyph, &["untitled", "untitled"], 1);
     glyph.type_text("hello");
     glyph.wait_for_text("1  hello", WAIT);
     wait_for_tabs(&glyph, &["untitled", "untitled •"], 1);

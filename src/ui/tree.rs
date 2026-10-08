@@ -200,7 +200,7 @@ pub(crate) fn cut(text: &str, room: usize) -> String {
 
 /// `text` in at most `room` columns, its start replaced by `…` when it doesn't
 /// fit: the end of a path says most about it.
-fn cut_front(text: &str, room: usize) -> String {
+pub(crate) fn cut_front(text: &str, room: usize) -> String {
     if text.width() <= room {
         return text.to_string();
     }

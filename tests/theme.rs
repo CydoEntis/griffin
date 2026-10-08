@@ -29,21 +29,24 @@ fn assert_status_bg(glyph: &Glyph, color: Color) {
 
 #[test]
 fn nord_paints_the_status_line_with_its_sidebar_colour() {
-    let glyph = Glyph::spawn_with_config("theme = \"nord\"\n", &[]);
+    let mut glyph = Glyph::spawn_with_config("theme = \"nord\"\n", &[]);
     glyph.wait_for_text("Ln 1, Col 1", START);
     assert_status_bg(&glyph, NORD_SIDEBAR);
+    // Leave the splash, whose card covers the middle of the editor area.
+    glyph.send_keys("ctrl+n");
     // The editor ground below the first line is nord's background.
     glyph.wait_for_bg(50, 10, NORD_BG, WAIT);
 }
 
 #[test]
 fn an_override_changes_the_colour() {
-    let glyph = Glyph::spawn_with_config(
+    let mut glyph = Glyph::spawn_with_config(
         "theme = \"nord\"\n[theme_overrides]\nsidebar_bg = \"#123456\"\n",
         &[],
     );
     glyph.wait_for_text("Ln 1, Col 1", START);
     assert_status_bg(&glyph, Color::Rgb(0x12, 0x34, 0x56));
+    glyph.send_keys("ctrl+n");
     glyph.wait_for_bg(50, 10, NORD_BG, WAIT);
 }
 

@@ -38,6 +38,8 @@ fn wait_for_lines(glyph: &Glyph, lines: &[&str]) {
 fn undo_redo_typing() {
     let mut glyph = Glyph::spawn_with_config("", &[]);
     glyph.wait_for_text("Ln 1, Col 1", START);
+    // Leave the splash for the untitled buffer under it.
+    glyph.send_keys("ctrl+n");
 
     // Each step waits for the screen: on Windows, keys that arrive in one burst with
     // a line break are taken for a paste, which undoes as a single step.
