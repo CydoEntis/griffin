@@ -557,6 +557,15 @@ fn debuggers_are_listed_under_their_heading_and_copy_their_install() {
     let (mut glyph, _llvm) =
         with_adapters_path(project.path(), OsString::from(path.path()), &clipboard);
     open_catalog(&mut glyph);
+    // The header can arrive before the rest of the card (ConPTY streams the
+    // redraw in pieces), so wait for every adapter's state and the footer.
+    glyph.wait_for_screen("the debuggers' states", WAIT, |screen| {
+        let at = |y: u16| &screen[usize::from(y)];
+        at(DEBUGGERS_ROW + 1).contains("missing")
+            && at(DEBUGGERS_ROW + 2).contains("missing")
+            && at(LAST_ROW).contains("needs go")
+            && at(FOOTER_ROW).contains(FOOTER)
+    });
 
     assert_eq!(row(&glyph, DEBUGGERS_ROW - 1).trim(), "");
     assert_eq!(glyph.text_col(DEBUGGERS_ROW, "debuggers"), Some(TEXT_X));
