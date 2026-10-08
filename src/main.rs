@@ -16,6 +16,7 @@ mod ui;
 mod view;
 mod workspace;
 
+use std::collections::BTreeMap;
 use std::io::{self, Stdout};
 use std::panic;
 use std::path::PathBuf;
@@ -33,7 +34,7 @@ use ratatui::Terminal;
 
 use crate::app::App;
 use crate::backup::Backups;
-use crate::config::EditorConfig;
+use crate::config::{DebugAdapter, EditorConfig};
 use crate::keymap::Keymap;
 use crate::lsp::Lsp;
 use crate::theme::Theme;
@@ -62,7 +63,7 @@ async fn main() -> Result<()> {
     let path = cli.path;
 
     // Loaded before the terminal switches screens; a bad config never stops startup.
-    let (keymap, editor, theme, lsp, config_error) = load_config();
+    let (keymap, editor, theme, lsp, debug, config_error) = load_config();
 
     install_panic_hook(|| {
         // Best effort: the process is already panicking, so a failed restore can
@@ -82,6 +83,7 @@ async fn main() -> Result<()> {
     let result = App::new(keymap, editor, path, config_error)
         .with_theme(theme)
         .with_lsp(lsp)
+        .with_debug_adapters(debug)
         .with_backups(backups)
         .with_clipboard(clipboard::from_env(std::env::var_os(
             "GLYPH_CLIPBOARD_FILE",
@@ -93,10 +95,18 @@ async fn main() -> Result<()> {
     restored
 }
 
-/// Reads `config.toml` and builds the keymap, theme and language servers from it, falling back to the
+/// Reads `config.toml` and builds the keymap, theme, language servers and debug
+/// adapters from it, falling back to the
 /// defaults (and saying why in the status line) when the file is malformed or names
 /// a bad key, theme or colour.
-fn load_config() -> (Keymap, EditorConfig, Theme, Lsp, Option<String>) {
+fn load_config() -> (
+    Keymap,
+    EditorConfig,
+    Theme,
+    Lsp,
+    BTreeMap<String, DebugAdapter>,
+    Option<String>,
+) {
     let loaded = config::load();
     if let Some(err) = loaded.error {
         return (
@@ -104,6 +114,7 @@ fn load_config() -> (Keymap, EditorConfig, Theme, Lsp, Option<String>) {
             EditorConfig::default(),
             Theme::default(),
             Lsp::new(lsp::servers::with_defaults(Default::default())),
+            BTreeMap::new(),
             Some(format!("config error: {err}")),
         );
     }
@@ -120,6 +131,7 @@ fn load_config() -> (Keymap, EditorConfig, Theme, Lsp, Option<String>) {
         config.editor,
         theme,
         Lsp::new(lsp::servers::with_defaults(config.lsp)),
+        config.debug,
         message,
     )
 }

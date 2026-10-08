@@ -2,10 +2,6 @@
 //! spec's defaults, with `config.toml` `[debug.<lang>]` laid over the adapter and
 //! `.glyph.toml` `[debug]` laid over the launch.
 
-// Nothing starts a session yet; the start-debugging ticket is the first caller.
-// Tests exercise everything here, so only the non-test build sees it unused.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
