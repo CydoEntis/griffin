@@ -21,7 +21,7 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-06
 ## Requirements
 
 Phase 1, Edit
-- **R1.** `glyph <file>` opens the file; `glyph` alone opens an empty untitled buffer; Ctrl+Q quits and restores the terminal, also after a panic — checked by PTY harness tests.
+- **R1.** `glyph <file>` opens the file; `glyph` alone opens an empty untitled buffer; Ctrl+Q quits and restores the terminal, also after a panic — checked by PTY harness tests. Since Phase 8, `glyph` alone (or with a folder) opens on the splash screen, and Esc or Ctrl+N gives the empty untitled buffer ([Splash S1, S3](../glyph-splash/spec.md)).
 - **R2.** The PTY harness launches the real `glyph` binary in a pseudo-terminal, sends keys and mouse input, and asserts on the parsed screen — checked by `cargo test --test harness_smoke`.
 - **R3.** The buffer shows line numbers, wraps nothing (horizontal scroll instead), renders tabs at `tab_width` and wide characters at width 2 — checked by PTY test against a fixture with tabs, CJK and emoji.
 - **R4.** Arrows, Home/End, PageUp/PageDown, Ctrl+Left/Right (word), Ctrl+Home/End move the cursor; the viewport follows it — checked by PTY tests.

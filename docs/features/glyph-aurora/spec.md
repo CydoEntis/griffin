@@ -5,7 +5,7 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-07
 Design source: [design/README.md](design/README.md) (main frame, cast palette, themes,
 restyle rules) wins over [design/SPEC_V1_LAYOUT.md](design/SPEC_V1_LAYOUT.md), which gives
 geometry and copy for the other screens. Behaviour SPEC_V1_LAYOUT adds beyond what README
-needs is Phase 8, not this spec.
+needs is Phase 9, not this spec.
 
 ## Concerns
 

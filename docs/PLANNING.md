@@ -7,9 +7,10 @@ Verify: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo
 
 ## Now
 
-Active phase: **7 — Glyph wears the Aurora look.** Phase 6's person check is still open.
-Next unblocked: #80 — feat(theme): Aurora roles and the aurora and moonlit themes;
-#81 — feat(search): project replace all on Alt+A.
+Active phase: **8 — Glyph opens on a splash and can switch projects.** The person checks
+for Phases 6 and 7 are still open.
+Next unblocked: #113 — feat(lsp): stop one project's language servers;
+#115 — feat(splash): splash screen when Glyph starts with nothing to edit.
 
 ## Phases
 
@@ -37,7 +38,7 @@ Next unblocked: #80 — feat(theme): Aurora roles and the aurora and moonlit the
 
 #30, #31, #32, #33, #34, #35, #36, #75, #76
 
-### 7 — Glyph wears the Aurora look · active
+### 7 — Glyph wears the Aurora look · complete except the person check, at `db1a00f`
 
 Exit when:
 - every ticket below is closed and its change is on `main`;
@@ -63,12 +64,28 @@ Exit when:
 15. #94 — feat(lsp): rounded hover and completion popups · after 8
 16. #95 — feat(run): Aurora run panel and run picker · after 10
 
-### 8 — The v1 layout behaviours from the Aurora handoff
+### 8 — Glyph opens on a splash and can switch projects · active
+
+Exit when:
+- every ticket below is closed and its change is on `main`;
+- `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` passes on `main`;
+- the spec's person check passes (splash, New file / New directory / Open directory, and a
+  project switch with an unsaved tab, at 160×45 in `aurora` and `mono`).
+
+[Splash and opening projects](features/glyph-splash/intent.md) · [spec](features/glyph-splash/spec.md)
+
+1. #113 — feat(lsp): stop one project's language servers
+2. #114 — feat(project): open another folder as the project from Ctrl+P · after 1
+3. #115 — feat(splash): splash screen when Glyph starts with nothing to edit · can run alongside 1
+4. #116 — feat(splash): New directory and Open directory on the splash · after 2, 3
+5. #117 — feat(project): unsaved files card before switching projects · after 2
+
+### 9 — The v1 layout behaviours from the Aurora handoff
 
 Work: [SPEC_V1_LAYOUT.md](features/glyph-aurora/design/SPEC_V1_LAYOUT.md) §1–§11 and §14
 items not in Phase 7: minimum-size message, tree width and hiding while split, tab overflow
 `‹N` and duplicate names, completion anchor shift, run panel scrollback, `‹ ›` scroll
-markers, empty-editor key list, rename preselects the stem, an unmodified run-stop key.
+markers, rename preselects the stem, an unmodified run-stop key.
 Open decisions:
 - Does the tree scale with width (SPEC_V1_LAYOUT §1) or stay 28 (design README §2.1)?
 - Which of §14's items are in, and which go to Later?
@@ -77,8 +94,11 @@ Open decisions:
 
 - Glyph v1 — shipped — [intent](features/glyph-v1/intent.md) ·
   [spec](features/glyph-v1/spec.md)
-- Glyph Aurora — active — [intent](features/glyph-aurora/intent.md) ·
+- Glyph Aurora — shipped — [intent](features/glyph-aurora/intent.md) ·
   [spec](features/glyph-aurora/spec.md)
+- Splash and opening projects — active — [intent](features/glyph-splash/intent.md) ·
+  [spec](features/glyph-splash/spec.md). Replaces the layout handoff's empty-editor key
+  list (SPEC_V1_LAYOUT 9a, "No launch splash"; decided 2026-10-08).
 
 ## Out
 
