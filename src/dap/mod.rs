@@ -6,8 +6,8 @@
 //! `adapters` says which adapter debugs each language and how the program is
 //! launched.
 
-// The call stack and the variables have no screen yet: they come with the
-// debug panel.
+// A few helpers (`is_over`, `adapters::LANGUAGES`) wait on later debugger
+// tickets.
 #![allow(dead_code)]
 
 pub mod adapters;

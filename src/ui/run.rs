@@ -203,9 +203,13 @@ pub fn render_run_panel(theme: &Theme, run: Option<&RunView>, area: Rect, frame:
         return;
     };
     render_title(theme, run, title_row, frame);
+    render_output(theme, run, body, frame);
+}
 
+/// Draws as many of `run`'s latest output lines as fit in `body`, one cell in.
+pub fn render_output(theme: &Theme, run: &RunView, body: Rect, frame: &mut Frame) {
     let out = frame.buffer_mut();
-    let room = area.width.saturating_sub(1);
+    let room = body.width.saturating_sub(1);
     let rows = usize::from(body.height);
     let first = run.lines.len().saturating_sub(rows);
     for (offset, row) in run.lines.iter().skip(first).enumerate() {

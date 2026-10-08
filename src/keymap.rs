@@ -139,6 +139,19 @@ pub enum Action {
     SplashDismiss,
     /// Splash only: quits as Ctrl+Q does.
     SplashQuit,
+    /// Debug panel only: moves the selection up a row.
+    DebugUp,
+    /// Debug panel only: moves the selection down a row.
+    DebugDown,
+    /// Debug panel only: on a frame, shows its variables and opens its file at
+    /// its line; on a variable, expands or collapses it.
+    DebugActivate,
+    /// Debug panel only: expands the selected variable.
+    DebugExpand,
+    /// Debug panel only: collapses the selected variable, or goes to its parent.
+    DebugCollapse,
+    /// Debug panel only: moves between the call stack and the variables.
+    DebugSwitchPane,
 }
 
 /// Where a binding applies. Tree bindings are plain letters, so they only count
@@ -160,6 +173,8 @@ pub enum Scope {
     Catalog,
     /// While the splash has focus: its letters and arrows are its own.
     Splash,
+    /// While the debug panel has focus: its arrows, Enter and Tab are its own.
+    Debug,
 }
 
 impl Action {
@@ -263,6 +278,12 @@ impl Action {
         Action::SplashOpenDirectory,
         Action::SplashDismiss,
         Action::SplashQuit,
+        Action::DebugUp,
+        Action::DebugDown,
+        Action::DebugActivate,
+        Action::DebugExpand,
+        Action::DebugCollapse,
+        Action::DebugSwitchPane,
     ];
 
     pub fn scope(self) -> Scope {
@@ -287,6 +308,12 @@ impl Action {
             | Action::SplashOpenDirectory
             | Action::SplashDismiss
             | Action::SplashQuit => Scope::Splash,
+            Action::DebugUp
+            | Action::DebugDown
+            | Action::DebugActivate
+            | Action::DebugExpand
+            | Action::DebugCollapse
+            | Action::DebugSwitchPane => Scope::Debug,
             _ => Scope::Global,
         }
     }
@@ -400,6 +427,12 @@ impl Action {
             Action::SplashOpenDirectory => "splash_open_directory",
             Action::SplashDismiss => "splash_dismiss",
             Action::SplashQuit => "splash_quit",
+            Action::DebugUp => "debug_up",
+            Action::DebugDown => "debug_down",
+            Action::DebugActivate => "debug_activate",
+            Action::DebugExpand => "debug_expand",
+            Action::DebugCollapse => "debug_collapse",
+            Action::DebugSwitchPane => "debug_switch_pane",
         }
     }
 
@@ -512,6 +545,12 @@ impl Action {
             Action::SplashOpenDirectory => "Splash: open directory",
             Action::SplashDismiss => "Splash: close",
             Action::SplashQuit => "Splash: quit",
+            Action::DebugUp => "Debug panel: up",
+            Action::DebugDown => "Debug panel: down",
+            Action::DebugActivate => "Debug panel: open frame or expand",
+            Action::DebugExpand => "Debug panel: expand",
+            Action::DebugCollapse => "Debug panel: collapse",
+            Action::DebugSwitchPane => "Debug panel: stack or variables",
         }
     }
 
@@ -643,6 +682,14 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::SplashOpenDirectory, "o"),
     (Action::SplashDismiss, "esc"),
     (Action::SplashQuit, "q"),
+    // The debug panel's own keys (glyph-debugger spec D7): nothing is typed
+    // into it, so the arrows, Enter and Tab are free there.
+    (Action::DebugUp, "up"),
+    (Action::DebugDown, "down"),
+    (Action::DebugActivate, "enter"),
+    (Action::DebugExpand, "right"),
+    (Action::DebugCollapse, "left"),
+    (Action::DebugSwitchPane, "tab"),
 ];
 
 /// Actions with no default key, reached from the cast palette or bound in
@@ -698,6 +745,8 @@ pub struct Keymap {
     catalog: HashMap<Key, Action>,
     /// Checked before `bindings` while the splash has focus.
     splash: HashMap<Key, Action>,
+    /// Checked before `bindings` while the debug panel has focus.
+    debug: HashMap<Key, Action>,
 }
 
 impl Default for Keymap {
@@ -732,6 +781,7 @@ impl Keymap {
             folders: HashMap::new(),
             catalog: HashMap::new(),
             splash: HashMap::new(),
+            debug: HashMap::new(),
         };
         for &(action, notation) in DEFAULT_BINDINGS {
             if overrides.contains_key(&action) {
@@ -759,6 +809,7 @@ impl Keymap {
             Scope::Folders => &mut self.folders,
             Scope::Catalog => &mut self.catalog,
             Scope::Splash => &mut self.splash,
+            Scope::Debug => &mut self.debug,
         }
     }
 
@@ -796,6 +847,7 @@ impl Keymap {
             Scope::Folders => self.folders.get(&key),
             Scope::Catalog => self.catalog.get(&key),
             Scope::Splash => self.splash.get(&key),
+            Scope::Debug => self.debug.get(&key),
         };
         if let Some(&action) = scoped {
             return Input::Action(action);
@@ -1205,7 +1257,8 @@ mod tests {
                 + map.search.len()
                 + map.folders.len()
                 + map.catalog.len()
-                + map.splash.len(),
+                + map.splash.len()
+                + map.debug.len(),
             DEFAULT_BINDINGS.len()
         );
     }
@@ -1643,6 +1696,39 @@ mod tests {
         assert_eq!(
             map.resolve_in(&ev(KeyCode::Char('n'), none), Scope::Splash),
             Input::Text('n')
+        );
+    }
+
+    #[test]
+    fn debug_panel_keys_are_actions_only_in_debug_scope() {
+        let map = Keymap::default();
+        let none = KeyModifiers::NONE;
+        for (event, action) in [
+            (ev(KeyCode::Up, none), Action::DebugUp),
+            (ev(KeyCode::Down, none), Action::DebugDown),
+            (ev(KeyCode::Enter, none), Action::DebugActivate),
+            (ev(KeyCode::Right, none), Action::DebugExpand),
+            (ev(KeyCode::Left, none), Action::DebugCollapse),
+            (ev(KeyCode::Tab, none), Action::DebugSwitchPane),
+        ] {
+            assert_eq!(map.resolve_in(&event, Scope::Debug), Input::Action(action));
+            assert_ne!(map.resolve(&event), Input::Action(action), "{event:?}");
+        }
+        // F6 and Esc still leave the panel; Alt+F6 still stops debugging.
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::F(6), none), Scope::Debug),
+            Input::Action(Action::CycleFocus)
+        );
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Esc, none), Scope::Debug),
+            Input::Action(Action::Cancel)
+        );
+        assert!(!Action::commands().any(|a| a.scope() == Scope::Debug));
+
+        let map = Keymap::new(&keys(&[("debug_expand", one("l"))])).unwrap();
+        assert_eq!(
+            map.resolve_in(&ev(KeyCode::Char('l'), none), Scope::Debug),
+            Input::Action(Action::DebugExpand)
         );
     }
 

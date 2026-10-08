@@ -43,6 +43,7 @@ use crate::theme::Theme;
 use crate::ui::catalog::{self, Catalog};
 use crate::ui::completion::{self, Completion};
 use crate::ui::confirm::{Answer, Choice, Confirm, Reply};
+use crate::ui::debug::{self as debug_panel, DebugPanel, DebugView, render_debug_panel};
 use crate::ui::dirpicker::{Browsed, DirPicker};
 use crate::ui::find::{FindBar, Step};
 use crate::ui::hover::render_hover;
@@ -200,6 +201,16 @@ enum Focus {
     #[default]
     Editor,
     Tree,
+    /// The debug panel, while a session shows it.
+    Debug,
+}
+
+/// Where F6 can put focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusStop {
+    Tree,
+    Split(usize),
+    Debug,
 }
 
 const UNSAVED: &[Choice] = &[
@@ -807,6 +818,8 @@ struct DebugSession {
     /// Output since its last newline: adapters send output in pieces that
     /// don't follow lines.
     partial: String,
+    /// The call stack and variables of the stop, shown in the debug panel.
+    panel: DebugPanel,
 }
 
 impl DebugSession {
@@ -819,6 +832,7 @@ impl DebugSession {
             paused: None,
             stepping: None,
             partial: String::new(),
+            panel: DebugPanel::default(),
         }
     }
 }
@@ -1365,6 +1379,12 @@ impl App {
             && self.picker.is_none()
         {
             Scope::Tree
+        } else if self.focus == Focus::Debug
+            && self.prompt.is_none()
+            && self.name_prompt.is_none()
+            && self.picker.is_none()
+        {
+            Scope::Debug
         } else if self.splash_has_keys() {
             Scope::Splash
         } else {
@@ -1433,10 +1453,14 @@ impl App {
         }
         match input {
             Input::Action(action) if self.focus == Focus::Tree => self.handle_tree_action(action),
+            Input::Action(action) if self.focus == Focus::Debug => {
+                self.handle_debug_action(action);
+            }
             Input::Action(action) if self.splash_has_keys() => self.handle_splash_action(action),
             Input::Action(action) => self.handle_action(action),
-            // Typing in the tree does nothing until type-to-find exists.
-            Input::Text(_) if self.focus == Focus::Tree => {}
+            // Typing in the tree does nothing until type-to-find exists, and
+            // nothing is typed into the debug panel.
+            Input::Text(_) if matches!(self.focus, Focus::Tree | Focus::Debug) => {}
             // There's nothing under the splash or the key list to type into.
             Input::Text(_) if self.splash_has_keys() || self.no_file => {}
             Input::Text(ch) => {
@@ -1774,7 +1798,7 @@ impl App {
     fn switch_focus(&mut self) {
         match self.focus {
             Focus::Tree => self.focus = Focus::Editor,
-            Focus::Editor => {
+            Focus::Editor | Focus::Debug => {
                 if !self.tree_visible {
                     self.toggle_tree();
                 }
@@ -1783,27 +1807,107 @@ impl App {
         }
     }
 
-    /// F6: focus moves tree, left split, right split and round again, skipping
-    /// the tree while it's hidden.
+    /// F6: focus moves tree, left split, right split, the debug panel and
+    /// round again, skipping the tree while it's hidden and the panel while
+    /// there's none.
     fn cycle_focus(&mut self) {
-        let mut stops: Vec<Option<usize>> = Vec::new();
+        let mut stops: Vec<FocusStop> = Vec::new();
         if self.tree_visible {
-            stops.push(None);
+            stops.push(FocusStop::Tree);
         }
-        stops.extend((0..self.tabs.splits.len()).map(Some));
+        stops.extend((0..self.tabs.splits.len()).map(FocusStop::Split));
+        if self.debug_panel_has_keys() {
+            stops.push(FocusStop::Debug);
+        }
         let here = match self.focus {
-            Focus::Tree => None,
-            Focus::Editor => Some(self.tabs.focused),
+            Focus::Tree => FocusStop::Tree,
+            Focus::Editor => FocusStop::Split(self.tabs.focused),
+            Focus::Debug => FocusStop::Debug,
         };
         let at = stops.iter().position(|&stop| stop == here).unwrap_or(0);
         match stops[(at + 1) % stops.len()] {
-            None => self.focus = Focus::Tree,
-            Some(split) => {
+            FocusStop::Tree => self.focus = Focus::Tree,
+            FocusStop::Debug => self.focus = Focus::Debug,
+            FocusStop::Split(split) => {
                 self.focus = Focus::Editor;
                 if split != self.tabs.focused {
                     self.switch_to(split, self.tabs.splits[split].active);
                 }
             }
+        }
+    }
+
+    /// Whether the bottom panel is the debug panel: a session is on and F4
+    /// hasn't hidden it.
+    fn debug_panel_shown(&self) -> bool {
+        self.debug.is_some() && self.run_panel_visible
+    }
+
+    /// Whether the debug panel has anything for keys to move through: only
+    /// a pause with a stack. While the program runs the panel shows its
+    /// output, with nothing to select and nothing lit to say it has focus.
+    fn debug_panel_has_keys(&self) -> bool {
+        self.debug_panel_shown()
+            && self
+                .debug
+                .as_ref()
+                .is_some_and(|debug| debug.paused.is_some() && debug.panel.has_frames())
+    }
+
+    /// Keys while the debug panel has focus: its own move through it; the
+    /// actions that make sense anywhere go to `handle_action`, the editing
+    /// ones are dropped.
+    fn handle_debug_action(&mut self, action: Action) {
+        match action {
+            Action::DebugUp
+            | Action::DebugDown
+            | Action::DebugActivate
+            | Action::DebugExpand
+            | Action::DebugCollapse
+            | Action::DebugSwitchPane => {
+                let Some(debug) = &mut self.debug else {
+                    return;
+                };
+                match debug.panel.handle(action) {
+                    Some(debug_panel::Step::Fetch(reference)) => {
+                        debug.session.variables(reference);
+                    }
+                    Some(debug_panel::Step::Frame(frame)) => {
+                        debug.session.scopes(frame.id);
+                        self.open_frame(&frame);
+                    }
+                    None => {}
+                }
+            }
+            Action::Cancel => self.focus = Focus::Editor,
+            Action::Quit
+            | Action::Save
+            | Action::ToggleTree
+            | Action::FocusTree
+            | Action::PrevTab
+            | Action::NextTab
+            | Action::GoToTab(_)
+            | Action::CloseTab
+            | Action::NewFile
+            | Action::SaveAs
+            | Action::ToggleSplit
+            | Action::CycleFocus
+            | Action::GoToFile
+            | Action::GoToLine
+            | Action::Find
+            | Action::Replace
+            | Action::ProjectSearch
+            | Action::Run
+            | Action::ToggleRunPanel
+            | Action::StopRun
+            | Action::RestartRun
+            | Action::ToggleBreakpoint
+            | Action::ClearBreakpoints
+            | Action::DebugStart
+            | Action::DebugStop
+            | Action::OpenDirectory
+            | Action::LanguageServers => self.handle_action(action),
+            _ => {}
         }
     }
 
@@ -2000,7 +2104,13 @@ impl App {
             | Action::SplashNewDirectory
             | Action::SplashOpenDirectory
             | Action::SplashDismiss
-            | Action::SplashQuit => {}
+            | Action::SplashQuit
+            | Action::DebugUp
+            | Action::DebugDown
+            | Action::DebugActivate
+            | Action::DebugExpand
+            | Action::DebugCollapse
+            | Action::DebugSwitchPane => {}
         }
     }
 
@@ -2993,9 +3103,12 @@ impl App {
         }
     }
 
-    /// F4: shows or hides the run panel.
+    /// F4: shows or hides the run panel, or the debug panel in its place.
     fn toggle_run_panel(&mut self) {
         self.run_panel_visible = !self.run_panel_visible;
+        if !self.run_panel_visible && self.focus == Focus::Debug {
+            self.focus = Focus::Editor;
+        }
         // The editor pane just changed height.
         self.follow_cursor();
         self.follow_tree();
@@ -3153,6 +3266,10 @@ impl App {
         let Some(mut debug) = self.debug.take() else {
             return;
         };
+        // The debug panel goes with the session.
+        if self.focus == Focus::Debug {
+            self.focus = Focus::Editor;
+        }
         if let Some(view) = &mut self.run
             && view.id == debug.run
         {
@@ -3184,6 +3301,7 @@ impl App {
             DapNews::Stopped { thread, .. } => {
                 debug.stepping = None;
                 debug.paused = Some(Paused { thread, at: None });
+                debug.panel.clear();
                 // Without a thread there's no stack to ask for yet.
                 match thread {
                     Some(thread) => debug.session.stack_trace(thread),
@@ -3191,11 +3309,26 @@ impl App {
                 };
             }
             DapNews::Threads(threads) => self.stack_of_first(&threads),
-            DapNews::StackTrace { frames, .. } => self.show_paused(&frames),
+            DapNews::StackTrace { frames, .. } => self.show_paused(frames),
             DapNews::Resumed(_) => {
                 debug.paused = None;
                 debug.stepping = None;
+                debug.panel.clear();
+                // The panel has nothing to select until the next stop, so
+                // keys typed now belong to the editor.
+                if self.focus == Focus::Debug {
+                    self.focus = Focus::Editor;
+                }
             }
+            DapNews::Scopes { frame, scopes } => {
+                for reference in debug.panel.set_scopes(frame, scopes) {
+                    debug.session.variables(reference);
+                }
+            }
+            DapNews::Variables {
+                reference,
+                variables,
+            } => debug.panel.set_variables(reference, variables),
             DapNews::Output { category, text } => {
                 // Telemetry is the adapter talking to its makers, not output.
                 if category != "telemetry" {
@@ -3243,8 +3376,6 @@ impl App {
             DapNews::Launched
             | DapNews::Breakpoints { .. }
             | DapNews::ConfigurationDone
-            | DapNews::Scopes { .. }
-            | DapNews::Variables { .. }
             | DapNews::Ended => {}
         }
     }
@@ -3335,20 +3466,34 @@ impl App {
     }
 
     /// Opens the top frame's file at its line and marks it as where the program
-    /// is paused. A stack for a program that has run on since is stale.
-    fn show_paused(&mut self, frames: &[StackFrame]) {
-        let Some(paused) = self.debug.as_mut().and_then(|d| d.paused.as_mut()) else {
+    /// is paused, and gives the debug panel the stack. A stack for a program
+    /// that has run on since is stale.
+    fn show_paused(&mut self, frames: Vec<StackFrame>) {
+        let Some(debug) = self.debug.as_mut() else {
             return;
         };
-        let Some(top) = frames.first() else {
+        let Some(paused) = debug.paused.as_mut() else {
             return;
         };
-        let Some(path) = top.source.as_ref().and_then(|s| s.path.as_deref()) else {
+        let Some(top) = frames.first().cloned() else {
+            return;
+        };
+        if let Some(path) = top.source.as_ref().and_then(|s| s.path.as_deref()) {
+            paused.at = Some((absolute(path), top.line.saturating_sub(1)));
+        }
+        if let Some(frame) = debug.panel.set_frames(frames) {
+            debug.session.scopes(frame);
+        }
+        self.open_frame(&top);
+    }
+
+    /// Opens `frame`'s file with the cursor at its line and column.
+    fn open_frame(&mut self, frame: &StackFrame) {
+        let Some(path) = frame.source.as_ref().and_then(|s| s.path.as_deref()) else {
             return;
         };
         let path = absolute(path);
-        let line = top.line.saturating_sub(1);
-        paused.at = Some((path.clone(), line));
+        let line = frame.line.saturating_sub(1);
         // Something else has the keys; moving the buffer under it would
         // surprise. The marker still shows once the file is looked at.
         if self.modal_open() {
@@ -3363,7 +3508,7 @@ impl App {
         let line = line.min(rope.len_lines().saturating_sub(1));
         let start = rope.line_to_char(line);
         let len = line_len(rope.line(line));
-        let cursor = start + top.column.saturating_sub(1).min(len);
+        let cursor = start + frame.column.saturating_sub(1).min(len);
         self.place_caret(cursor);
     }
 
@@ -4204,7 +4349,22 @@ impl App {
             }
         }
         if let Some(area) = panes.run {
-            render_run_panel(theme, self.run.as_ref(), area, frame);
+            match &self.debug {
+                Some(debug) => {
+                    let view = DebugView {
+                        panel: &debug.panel,
+                        run: self.run.as_ref().filter(|run| run.id == debug.run),
+                        paused: debug.paused.is_some(),
+                        focused: self.focus == Focus::Debug,
+                    };
+                    let at = render_debug_panel(theme, &view, area, frame);
+                    // The cursor marks the focused pane, as in the tree.
+                    if let Some((x, y)) = at {
+                        frame.set_cursor_position((x, y));
+                    }
+                }
+                None => render_run_panel(theme, self.run.as_ref(), area, frame),
+            }
         }
         let buffer = self.buffer();
         let diagnostics = &self.tabs.active().diagnostics;
@@ -4662,6 +4822,43 @@ mod tests {
         app.debug_news(DapNews::Resumed("continue".to_string()));
         assert_eq!(app.paused_line(&buffer), None);
         assert_eq!(app.debug_segment(), Some((false, String::new())));
+    }
+
+    #[tokio::test]
+    async fn the_debug_panel_takes_focus_only_while_paused_with_a_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut app = app_with("x", &FakeClipboard::default());
+        let missing = dir.path().join("no-such-adapter");
+        let session = Session::start(1, &missing, &[], dir.path(), tx);
+        app.debug = Some(DebugSession::new(session, launch(dir.path()), 0));
+        app.run_panel_visible = true;
+
+        // Running: the panel shows output only, so F6 stays in the editor.
+        press(&mut app, &["f6"]);
+        assert_eq!(app.focus, Focus::Editor);
+
+        let debug = app.debug.as_mut().unwrap();
+        debug.paused = Some(Paused {
+            thread: Some(1),
+            at: None,
+        });
+        debug.panel.set_frames(vec![StackFrame {
+            id: 1,
+            name: "inner".to_string(),
+            source: None,
+            line: 1,
+            column: 1,
+        }]);
+        press(&mut app, &["f6"]);
+        assert_eq!(app.focus, Focus::Debug);
+
+        // Running again: the keys go back to the editor rather than to a
+        // panel with nothing to select.
+        app.debug_news(DapNews::Resumed("continue".to_string()));
+        assert_eq!(app.focus, Focus::Editor);
+        press(&mut app, &["f6"]);
+        assert_eq!(app.focus, Focus::Editor);
     }
 
     #[test]
@@ -5982,6 +6179,7 @@ world",
             Focus::Tree => "tree",
             Focus::Editor if app.tabs.focused == 0 => "left",
             Focus::Editor => "right",
+            Focus::Debug => "debug",
         };
         assert_eq!(at(&app), "tree");
         press(&mut app, &["f6"]);
