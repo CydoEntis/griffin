@@ -3,6 +3,7 @@ pub mod confirm;
 pub mod dirpicker;
 pub mod find;
 pub mod hover;
+pub mod nofile;
 pub mod picker;
 pub mod prompt;
 pub mod run;

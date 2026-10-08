@@ -437,14 +437,14 @@ fn new_directory_creates_the_folder_and_opens_it_as_the_project() {
     glyph.wait_for_files("fresh-dir in the project", WAIT, || fresh.is_dir());
     assert!(!parent.path().join("fresh-dir").exists());
 
-    // The tree and brand show the new, empty folder beside an empty untitled
-    // pane; the splash is gone.
+    // The tree and brand show the new, empty folder beside the no file open
+    // key list; the splash is gone.
     wait_for_brand(&glyph, &fresh);
     glyph.wait_for_screen("the old folder's files gone", WAIT, |screen| {
         !screen.iter().any(|line| line.contains("a.txt"))
     });
     glyph.wait_for_text_gone("Open directory", WAIT);
-    glyph.wait_for_text(&pill_text(&["untitled"], 0), WAIT);
+    glyph.wait_for_text("no file open", WAIT);
 
     // The tree has the keys: its `a` makes a file in the new folder.
     glyph.type_text("a");
@@ -480,12 +480,12 @@ fn open_directory_switches_and_lands_on_the_tree_and_an_empty_pane() {
     glyph.send_keys("enter");
     glyph.wait_for_text_gone(BROWSER, WAIT);
 
-    // The tree and brand show `other` beside an empty untitled pane, and the
-    // tree takes the keys: Enter opens the file it selects.
+    // The tree and brand show `other` beside the no file open key list, and
+    // the tree takes the keys: Enter opens the file it selects.
     glyph.wait_for_text("inside.txt", WAIT);
     wait_for_brand(&glyph, &other);
     glyph.wait_for_text_gone("Open directory", WAIT);
-    glyph.wait_for_text(&pill_text(&["untitled"], 0), WAIT);
+    glyph.wait_for_text("no file open", WAIT);
     glyph.send_keys("enter");
     glyph.wait_for_text(&pill_text(&["inside.txt"], 0), WAIT);
 }

@@ -44,6 +44,7 @@ use crate::ui::confirm::{Answer, Choice, Confirm, Reply};
 use crate::ui::dirpicker::{Browsed, DirPicker};
 use crate::ui::find::{FindBar, Step};
 use crate::ui::hover::render_hover;
+use crate::ui::nofile;
 use crate::ui::picker::{self, Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
 use crate::ui::run::{RunStatus, RunView, render_run_panel};
@@ -606,6 +607,13 @@ impl Tabs {
         }
     }
 
+    /// Whether nothing is open: one split, showing only an untitled buffer
+    /// nobody has typed in, which is what `fill_empty` leaves once every tab
+    /// has closed.
+    fn nothing_open(&self) -> bool {
+        self.splits.len() == 1 && matches!(self.docs.as_slice(), [doc] if doc.is_pristine())
+    }
+
     /// Gives every split left without tabs a fresh untitled one.
     fn fill_empty(&mut self) {
         for index in 0..self.splits.len() {
@@ -797,6 +805,10 @@ pub struct App {
     /// (glyph-splash spec S1). It's drawn over the editor area in place of the
     /// untouched untitled tab underneath, which is what leaving it shows.
     splash: Option<Splash>,
+    /// No file is open since the last tab closed or another folder was opened
+    /// (glyph-splash spec S11): the editor area shows the key list in place of
+    /// the untouched untitled tab underneath, which Ctrl+N shows.
+    no_file: bool,
     /// The prompt bar, while it's asking for a name; it takes every key.
     name_prompt: Option<NamePrompt>,
     /// The picker, while it's open; it takes every key.
@@ -1068,9 +1080,9 @@ impl App {
                     self.find_step(step);
                     return;
                 }
-                // The splash hides the untitled buffer; text pasted there would
-                // land out of sight.
-                if self.splash.is_some() {
+                // The splash and the key list hide the untitled buffer; text
+                // pasted there would land out of sight.
+                if self.nothing_shown() {
                     return;
                 }
                 // Bracketed paste bypasses the keymap: it is text, not a key.
@@ -1311,8 +1323,8 @@ impl App {
             Input::Action(action) => self.handle_action(action),
             // Typing in the tree does nothing until type-to-find exists.
             Input::Text(_) if self.focus == Focus::Tree => {}
-            // There's nothing under the splash to type into.
-            Input::Text(_) if self.splash_has_keys() => {}
+            // There's nothing under the splash or the key list to type into.
+            Input::Text(_) if self.splash_has_keys() || self.no_file => {}
             Input::Text(ch) => {
                 self.edit(|buffer| buffer.type_text(ch.encode_utf8(&mut [0; 4])));
                 if self.lsp.is_trigger(self.tabs.active().id, ch) {
@@ -1511,9 +1523,10 @@ impl App {
     /// Both happen in the focused split; a file open only in the other split gets
     /// a tab here too, on the same buffer.
     fn open(&mut self, path: &Path) {
-        // Whatever is opened replaces the splash, which only stood in for the
-        // untouched untitled tab.
+        // Whatever is opened replaces the splash or the key list, which only
+        // stood in for the untouched untitled tab.
         self.end_splash();
+        self.no_file = false;
         if let Some(doc) = self.tabs.find(path) {
             self.tabs.show(doc);
             self.reset_mouse();
@@ -1592,8 +1605,24 @@ impl App {
         if let Some(doc) = self.tabs.close_active() {
             let _ = self.backups.delete(doc.buffer.path.as_deref(), doc.id);
         }
+        self.note_nothing_open();
         self.reset_mouse();
         self.follow_cursor();
+    }
+
+    /// After tabs close: with no file left open, the key list takes the editor
+    /// area (glyph-splash spec S11). The splash, if it's still up, already
+    /// stands for there being nothing.
+    fn note_nothing_open(&mut self) {
+        if self.splash.is_none() && self.tabs.nothing_open() {
+            self.no_file = true;
+        }
+    }
+
+    /// Whether the editor area stands for there being nothing to edit, with the
+    /// splash or the key list in place of the untitled buffer.
+    fn nothing_shown(&self) -> bool {
+        self.splash.is_some() || self.no_file
     }
 
     /// Ctrl+Q, and each answer to the quit prompt: asks about the next tab with
@@ -1690,16 +1719,17 @@ impl App {
     }
 
     fn handle_action(&mut self, action: Action) {
-        if self.splash.is_some() {
+        if self.nothing_shown() {
             match action {
-                // Ctrl+N's new untitled buffer is the one under the splash.
+                // Ctrl+N's new untitled buffer is the one under the splash or
+                // the key list.
                 Action::NewFile => {
                     self.leave_splash();
                     return;
                 }
                 // What makes sense with nothing open: quitting, the tree, going
-                // to a file or a search hit (which replaces the splash), runs,
-                // opening another folder.
+                // to a file or a search hit (which replaces the splash or the
+                // key list), runs, opening another folder.
                 Action::Quit
                 | Action::OpenDirectory
                 | Action::ToggleTree
@@ -1712,8 +1742,8 @@ impl App {
                 | Action::StopRun
                 | Action::RestartRun
                 | Action::ClearBreakpoints => {}
-                // The rest act on a buffer, and the splash stands for there
-                // being none yet.
+                // The rest act on a buffer, and the splash and the key list
+                // stand for there being none.
                 _ => return,
             }
         }
@@ -1878,10 +1908,11 @@ impl App {
         }
     }
 
-    /// Esc or Ctrl+N on the splash: the empty untitled buffer underneath takes
-    /// its place.
+    /// Esc or Ctrl+N on the splash, Ctrl+N on the key list: the empty untitled
+    /// buffer underneath takes its place.
     fn leave_splash(&mut self) {
         self.end_splash();
+        self.no_file = false;
         self.focus = Focus::Editor;
         self.reset_mouse();
         self.follow_cursor();
@@ -2285,7 +2316,7 @@ impl App {
     }
 
     /// Opens `dir` as the project, whatever the tabs hold, landing on its tree
-    /// beside an empty untitled pane.
+    /// beside the no file open key list.
     fn switch_project(&mut self, dir: &Path) {
         // The run's command was started in the old folder and belongs to it.
         if let Some(view) = &mut self.run
@@ -2321,9 +2352,10 @@ impl App {
         self.tree = Tree::new(dir);
         self.project = project_label(dir, std::env::home_dir().as_deref());
         // Someone who just picked a folder wants to look through it, so land
-        // on its tree beside the empty untitled pane rather than the splash a
-        // bare start shows.
+        // on its tree beside the key list rather than the splash a bare start
+        // shows.
         self.splash = None;
+        self.note_nothing_open();
         self.tree_visible = true;
         self.focus = Focus::Tree;
         self.reset_mouse();
@@ -2824,6 +2856,7 @@ impl App {
         for doc in closed {
             let _ = self.backups.delete(doc.buffer.path.as_deref(), doc.id);
         }
+        self.note_nothing_open();
         self.reset_mouse();
         self.follow_cursor();
         self.say(Tone::Ok, format!("moved {name} to trash"));
@@ -2855,6 +2888,19 @@ impl App {
                     splash.select(item);
                 }
                 self.run_splash_item(item);
+            }
+            return;
+        }
+        // The key list has no buffer or tab to click; a click on it only
+        // takes the keys from the tree.
+        if self.no_file {
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                && panes
+                    .splits
+                    .iter()
+                    .any(|s| s.editor.contains(at) || s.header.contains(at))
+            {
+                self.focus = Focus::Editor;
             }
             return;
         }
@@ -3435,6 +3481,15 @@ impl App {
                 splash.render(theme, &self.project, frame, area.editor);
                 continue;
             }
+            // The key list keeps the tab bar, with no tab on it, and has the
+            // editor area to itself.
+            if self.no_file {
+                render_tabs(theme, &[], 0, split == focused, area.header, frame);
+                let rows = nofile::rows(&self.keymap);
+                let folder = file_name(&absolute(self.tree.root()));
+                nofile::render(theme, &folder, &rows, frame, area.editor);
+                continue;
+            }
             render_tabs(
                 theme,
                 &self.tabs.labels(split),
@@ -3522,9 +3577,9 @@ impl App {
             theme,
             panes.status,
             &Status {
-                // The splash stands for the project, not the untitled buffer
-                // under it.
-                path: &if self.splash.is_some() {
+                // The splash and the key list stand for the project, not the
+                // untitled buffer under them.
+                path: &if self.nothing_shown() {
                     self.project.clone()
                 } else {
                     self.shown_path(buffer)

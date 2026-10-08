@@ -255,8 +255,10 @@ fn alt_keys_move_between_tabs_and_ctrl_w_closes_with_the_guard() {
     // Clean tabs close straight away.
     glyph.send_keys("ctrl+w");
     wait_for_tabs(&glyph, &["a.txt"], 0);
+    // The last one leaves no tab, and the no file open key list.
     glyph.send_keys("ctrl+w");
-    wait_for_tabs(&glyph, &["untitled"], 0);
+    glyph.wait_for_text("no file open", WAIT);
+    wait_for_tabs(&glyph, &[], 0);
     glyph.send_keys("ctrl+q");
     assert!(glyph.wait_exit(WAIT).success());
 }
@@ -360,7 +362,8 @@ fn click_selects_a_pill_and_middle_click_closes_it() {
     glyph.middle_click(a, PILL_ROW);
     glyph.wait_for_text(PROMPT, WAIT);
     glyph.type_text("d");
-    wait_for_tabs(&glyph, &["untitled"], 0);
+    glyph.wait_for_text("no file open", WAIT);
+    wait_for_tabs(&glyph, &[], 0);
 }
 
 #[test]

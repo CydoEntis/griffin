@@ -110,8 +110,7 @@ fn breakpoints_survive_closing_the_tab_and_move_with_lines_above() {
     });
 
     glyph.send_keys("ctrl+w");
-    glyph.wait_for_text("untitled", WAIT);
-    wait_for_breakpoints(&glyph, &[], 4);
+    glyph.wait_for_text("no file open", WAIT);
 
     glyph.send_keys("ctrl+p");
     glyph.wait_for_text("cast", WAIT);

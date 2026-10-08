@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use harness::{Glyph, ROWS, pill_text};
+use harness::{Glyph, ROWS};
 use tempfile::TempDir;
 use vt100::Color;
 
@@ -274,8 +274,8 @@ fn opening_a_folder_makes_it_the_project() {
     glyph.send_keys("enter");
     glyph.wait_for_text_gone(SCOPE, WAIT);
 
-    // The tree and brand show the new folder beside an empty untitled pane,
-    // not the splash, and the tree has the keys; the run was stopped.
+    // The tree and brand show the new folder beside the no file open key
+    // list, not the splash, and the tree has the keys; the run was stopped.
     glyph.wait_for_text("new-file.txt", WAIT);
     assert!(
         !glyph
@@ -289,7 +289,7 @@ fn opening_a_folder_makes_it_the_project() {
         brand.contains(&new_name[new_name.len().saturating_sub(6)..]),
         "{brand:?}"
     );
-    glyph.wait_for_text(&pill_text(&["untitled"], 0), WAIT);
+    glyph.wait_for_text("no file open", WAIT);
     assert!(
         !glyph
             .screen()
