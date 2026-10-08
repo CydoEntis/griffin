@@ -45,7 +45,7 @@ use crate::ui::picker::{Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
 use crate::ui::run::{RunStatus, RunView, render_run_panel};
 use crate::ui::search::{ProjectSearch, Searched};
-use crate::ui::status::{Status, render_status};
+use crate::ui::status::{Status, Tone, render_status};
 use crate::ui::tabs::{TabLabel, render_tabs, tab_at};
 use crate::ui::tree::{TREE_WIDTH, render_divider, render_tree};
 use crate::view::{Marks, View, cursor_cell, render_buffer};
@@ -683,6 +683,8 @@ pub struct App {
     screen: Rect,
     /// Shown in the status line, e.g. why the config fell back to defaults.
     message: Option<String>,
+    /// How `message` went; picks its glyph and colour.
+    message_tone: Tone,
     /// While set, every key goes to the prompt instead of the editor.
     prompt: Option<Prompt>,
     /// The project's file tree, read from disk as folders expand.
@@ -788,6 +790,8 @@ impl App {
             editor,
             tabs: Tabs::new(buffer),
             message,
+            // Startup only has something to say when a config or file failed.
+            message_tone: Tone::Err,
             tree: Tree::new(&launch.root),
             tree_visible: launch.show_tree,
             // With only a folder open there's nothing to edit yet.
@@ -895,7 +899,7 @@ impl App {
             .map(|doc| (doc.id, &doc.buffer))
             .collect();
         if let Some(message) = self.lsp.sync(&root, &docs).pop() {
-            self.message = Some(message);
+            self.say(Tone::Warn, message);
         }
     }
 
@@ -1012,7 +1016,7 @@ impl App {
             AppEvent::Lsp(event) => {
                 for news in self.lsp.handle(event) {
                     match news {
-                        LspNews::Message(message) => self.message = Some(message),
+                        LspNews::Message(message) => self.say(Tone::Warn, message),
                         // A publish is the whole set for the file, so it replaces.
                         LspNews::Diagnostics { doc, diagnostics } => {
                             if let Some(open) = self.tabs.docs.iter_mut().find(|d| d.id == doc) {
@@ -1024,7 +1028,7 @@ impl App {
                         LspNews::Definition(_) if self.modal_open() => {}
                         LspNews::Definition(Some(location)) => self.go_to(&location),
                         LspNews::Definition(None) => {
-                            self.message = Some("No definition found".into());
+                            self.say(Tone::Warn, "No definition found");
                         }
                         LspNews::Hover(text) => {
                             let asked = self.hover_for.take();
@@ -1063,6 +1067,9 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        // A message is transient: it holds the path's place until the next key,
+        // and whatever that key does may say something new.
+        self.message = None;
         // Any key closes the hover popup; Esc does nothing else, the rest still
         // do what they do.
         if self.hover.take().is_some() && input == Input::Action(Action::Cancel) {
@@ -1328,7 +1335,7 @@ impl App {
                 }
                 self.follow_cursor();
             }
-            Err(err) => self.message = Some(format!("cannot open {}: {err}", path.display())),
+            Err(err) => self.say(Tone::Err, format!("cannot open {}: {err}", path.display())),
         }
     }
 
@@ -1526,7 +1533,7 @@ impl App {
             }
             Action::Paste => match self.clipboard.get() {
                 Ok(text) => self.edit(|buffer| buffer.paste(&text)),
-                Err(err) => self.message = Some(format!("cannot paste: {err}")),
+                Err(err) => self.say(Tone::Err, format!("cannot paste: {err}")),
             },
             Action::ToggleTree => self.toggle_tree(),
             Action::FocusTree => self.switch_focus(),
@@ -1701,7 +1708,7 @@ impl App {
         let path = match result {
             Ok(path) => path,
             Err(err) => {
-                self.message = Some(err.to_string());
+                self.say(Tone::Err, err.to_string());
                 return;
             }
         };
@@ -1709,12 +1716,12 @@ impl App {
         self.follow_tree();
         match op {
             BarOp::NewFile(_) => {
-                self.message = Some(format!("created {name}"));
+                self.say(Tone::Ok, format!("created {name}"));
                 self.open(&path);
             }
-            BarOp::NewFolder(_) => self.message = Some(format!("created {name}")),
+            BarOp::NewFolder(_) => self.say(Tone::Ok, format!("created {name}")),
             BarOp::Rename(old) => {
-                self.message = Some(format!("renamed to {name}"));
+                self.say(Tone::Ok, format!("renamed to {name}"));
                 self.follow_rename(&old, &path);
             }
             BarOp::SaveAs(_) | BarOp::GoToLine => {}
@@ -1730,7 +1737,7 @@ impl App {
                 self.buffer_mut().go_to_line(line);
                 self.follow_cursor();
             }
-            Err(_) => self.message = Some(format!("not a line number: {}", text.trim())),
+            Err(_) => self.say(Tone::Err, format!("not a line number: {}", text.trim())),
         }
     }
 
@@ -1807,7 +1814,7 @@ impl App {
         if !edits.is_empty() {
             self.edit(|buffer| buffer.replace_ranges(&edits));
         }
-        self.message = Some(format!("Replaced {}", edits.len()));
+        self.say(Tone::Ok, format!("Replaced {}", edits.len()));
         let buffer = &self.tabs.active().buffer;
         if let Some(find) = &mut self.find {
             find.research_from(&buffer.rope, buffer.cursor);
@@ -1879,7 +1886,7 @@ impl App {
             }
         }
         if matches == 0 {
-            self.message = Some("nothing to replace".into());
+            self.say(Tone::Warn, "nothing to replace");
             return;
         }
         self.pending_replace = Some(PendingReplace {
@@ -1943,7 +1950,13 @@ impl App {
             plural(files, "file", "files")
         )];
         message.extend(failures);
-        self.message = Some(message.join(" · "));
+        // A file that could not be written turns the report into a warning.
+        let tone = if message.len() > 1 {
+            Tone::Warn
+        } else {
+            Tone::Ok
+        };
+        self.say(tone, message.join(" · "));
         self.start_project_search(pending.query);
     }
 
@@ -2075,22 +2088,25 @@ impl App {
         if let Some(run) = &self.run
             && run.status == RunStatus::Running
         {
-            self.message = Some(format!("{} is already running", run.name));
+            self.say(Tone::Warn, format!("{} is already running", run.name));
             return;
         }
         let loaded = config::load_project(self.tree.root());
         if let Some(error) = loaded.error {
-            self.message = Some(error);
+            self.say(Tone::Err, error);
             return;
         }
         let configured = !loaded.config.run.is_empty();
         let mut entries = crate::run::run_choices(loaded.config.run, self.tree.root());
         match entries.len() {
             0 => {
-                self.message = Some(format!(
-                    "nothing to run: add a [[run]] entry to {}",
-                    config::PROJECT_FILE
-                ));
+                self.say(
+                    Tone::Warn,
+                    format!(
+                        "nothing to run: add a [[run]] entry to {}",
+                        config::PROJECT_FILE
+                    ),
+                );
             }
             // A guessed command is only offered, never started unasked.
             1 if configured => {
@@ -2134,7 +2150,7 @@ impl App {
                     self.toggle_run_panel();
                 }
             }
-            Err(err) => self.message = Some(format!("cannot run {}: {err}", entry.name)),
+            Err(err) => self.say(Tone::Err, format!("cannot run {}: {err}", entry.name)),
         }
     }
 
@@ -2147,7 +2163,7 @@ impl App {
                     tree.kill();
                 }
             }
-            _ => self.message = Some("nothing is running".to_string()),
+            _ => self.say(Tone::Warn, "nothing is running"),
         }
     }
 
@@ -2189,7 +2205,7 @@ impl App {
     fn save_as(&mut self, relative: &str) -> bool {
         let relative = relative.trim();
         if relative.is_empty() {
-            self.message = Some("no file name".into());
+            self.say(Tone::Warn, "no file name");
             return false;
         }
         let root = self.tree.root();
@@ -2206,11 +2222,11 @@ impl App {
             .is_some_and(|path| absolute(path) == absolute(&target));
         if !same_file {
             if self.tabs.find(&target).is_some() {
-                self.message = Some(format!("{relative} is open in another tab"));
+                self.say(Tone::Warn, format!("{relative} is open in another tab"));
                 return false;
             }
             if target.exists() {
-                self.message = Some(format!("{relative} already exists"));
+                self.say(Tone::Warn, format!("{relative} already exists"));
                 return false;
             }
         }
@@ -2221,14 +2237,14 @@ impl App {
             Ok(()) => {
                 // The backup was keyed by the old path (or the tab, if untitled).
                 let _ = self.backups.delete(old.as_deref(), id);
-                self.message = Some(format!("saved {name}"));
+                self.say(Tone::Ok, format!("saved {name}"));
                 self.tree.reload(Some(&target));
                 self.follow_tree();
                 true
             }
             Err(err) => {
                 self.buffer_mut().path = old;
-                self.message = Some(format!("cannot save {name}: {err}"));
+                self.say(Tone::Err, format!("cannot save {name}: {err}"));
                 false
             }
         }
@@ -2266,7 +2282,7 @@ impl App {
         };
         let name = file_name(&path);
         if let Err(err) = self.trash.delete(&path) {
-            self.message = Some(format!("cannot move {name} to trash: {err}"));
+            self.say(Tone::Err, format!("cannot move {name} to trash: {err}"));
             return;
         }
         let closed = self.tabs.close_where(|doc| {
@@ -2280,7 +2296,7 @@ impl App {
         }
         self.reset_mouse();
         self.follow_cursor();
-        self.message = Some(format!("moved {name} to trash"));
+        self.say(Tone::Ok, format!("moved {name} to trash"));
         self.tree.reload(None);
         self.follow_tree();
     }
@@ -2435,7 +2451,7 @@ impl App {
         match self.clipboard.set(&text) {
             Ok(()) => true,
             Err(err) => {
-                self.message = Some(format!("cannot copy: {err}"));
+                self.say(Tone::Err, format!("cannot copy: {err}"));
                 false
             }
         }
@@ -2536,7 +2552,10 @@ impl App {
             Ok(()) => self.backup_failed = false,
             Err(err) if !self.backup_failed => {
                 self.backup_failed = true;
-                self.message = Some(format!("cannot back up {}: {err}", self.buffer().name()));
+                self.say(
+                    Tone::Err,
+                    format!("cannot back up {}: {err}", self.buffer().name()),
+                );
             }
             Err(_) => {}
         }
@@ -2567,11 +2586,11 @@ impl App {
             Ok(()) => {
                 // Best effort, as in `delete_backup`.
                 let _ = self.backups.delete(doc.buffer.path.as_deref(), id);
-                self.message = Some(format!("saved {name}{note}"));
+                self.say(Tone::Ok, format!("saved {name}{note}"));
                 true
             }
             Err(err) => {
-                self.message = Some(format!("cannot save {name}: {err}"));
+                self.say(Tone::Err, format!("cannot save {name}: {err}"));
                 false
             }
         }
@@ -2609,7 +2628,7 @@ impl App {
                     doc,
                     revision: self.buffer().revision,
                 });
-                self.message = Some(format!("formatting {}", self.buffer().name()));
+                self.say(Tone::Ok, format!("formatting {}", self.buffer().name()));
                 if let Some(events) = self.events.clone() {
                     tokio::spawn(async move {
                         tokio::time::sleep(FORMAT_TIMEOUT).await;
@@ -2691,6 +2710,26 @@ impl App {
         self.follow_cursor();
     }
 
+    /// `buffer`'s path as the status bar shows it: relative to the project root
+    /// when it lies inside, so the directory part says where in the project it is.
+    fn shown_path(&self, buffer: &Buffer) -> String {
+        let Some(path) = buffer.path.as_deref() else {
+            return buffer.name();
+        };
+        // Absolute on both sides, so a root of "." or a path given with `..`
+        // still compare.
+        match absolute(path).strip_prefix(absolute(self.tree.root())) {
+            Ok(relative) => relative.display().to_string(),
+            Err(_) => buffer.name(),
+        }
+    }
+
+    /// Shows `text` in the status bar's path slot until the next key.
+    fn say(&mut self, tone: Tone, text: impl Into<String>) {
+        self.message = Some(text.into());
+        self.message_tone = tone;
+    }
+
     /// Whether a prompt, picker, bar or panel is taking the keys.
     fn modal_open(&self) -> bool {
         self.prompt.is_some()
@@ -2706,7 +2745,7 @@ impl App {
         let doc = self.tabs.active().id;
         let cursor = self.buffer().cursor;
         if !self.lsp.definition(doc, cursor) {
-            self.message = Some("No definition found".into());
+            self.say(Tone::Warn, "No definition found");
         }
     }
 
@@ -2869,16 +2908,25 @@ impl App {
                 .filter(|d| d.severity == severity)
                 .count()
         };
-        // The diagnostic under the cursor says what's wrong in the message area.
-        let message = diagnostic_at(diagnostics, buffer.cursor)
-            .map(|d| d.message.as_str())
-            .or(self.message.as_deref());
+        // What the last key did comes first; otherwise the diagnostic under the
+        // cursor says what's wrong there.
+        let message = match &self.message {
+            Some(text) => Some((self.message_tone, text.as_str())),
+            None => diagnostic_at(diagnostics, buffer.cursor).map(|d| {
+                // The bar has no glyph for info or a hint; they're advice.
+                let tone = match d.severity {
+                    Severity::Error => Tone::Err,
+                    _ => Tone::Warn,
+                };
+                (tone, d.message.as_str())
+            }),
+        };
         render_status(
             frame,
             theme,
             panes.status,
             &Status {
-                name: &buffer.name(),
+                path: &self.shown_path(buffer),
                 dirty: buffer.dirty,
                 message,
                 position: buffer.cursor_line_col(),
@@ -4220,9 +4268,30 @@ world",
         terminal.draw(|frame| app.render(frame))?;
         let buffer = terminal.backend().buffer();
         let last: String = (0..100).map(|x| buffer[(x, 29)].symbol()).collect();
-        assert!(last.starts_with("glyph"), "{last}");
-        assert!(last.contains("config error: boom"), "{last}");
-        assert!(last.contains("untitled"), "{last}");
+        assert!(last.starts_with(" ✦ glyph"), "{last}");
+        // The message holds the path slot at x = 20 until the next key.
+        let slot: String = last.chars().skip(20).collect();
+        assert!(slot.starts_with("✕ config error: boom"), "{last}");
+        assert!(!last.contains("untitled"), "{last}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_next_key_gives_the_path_slot_back() -> Result<()> {
+        let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+        let mut app = App::new(
+            Keymap::default(),
+            EditorConfig::default(),
+            None,
+            Some("config error: boom".into()),
+        );
+        press(&mut app, &["right"]);
+        terminal.draw(|frame| app.render(frame))?;
+        let buffer = terminal.backend().buffer();
+        let last: String = (0..100).map(|x| buffer[(x, 29)].symbol()).collect();
+        assert!(!last.contains("config error"), "{last}");
+        let slot: String = last.chars().skip(20).collect();
+        assert!(slot.starts_with("untitled"), "{last}");
         Ok(())
     }
 
@@ -4240,7 +4309,7 @@ world",
         for y in 2..29 {
             assert_eq!(row(y).trim(), "", "row {y} should be blank");
         }
-        assert!(row(29).starts_with("glyph"));
+        assert!(row(29).starts_with(" ✦ glyph"));
         Ok(())
     }
 

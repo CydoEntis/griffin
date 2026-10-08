@@ -12,7 +12,7 @@ fn starts_draws_the_status_line_and_quits_on_ctrl_q() {
     let screen = glyph.screen();
     assert_eq!(screen.len(), usize::from(ROWS));
     assert!(
-        screen[screen.len() - 1].starts_with("glyph"),
+        screen[screen.len() - 1].starts_with(" ✦ glyph"),
         "status line should be on the last row: {screen:#?}"
     );
     let (col, row) = glyph.cursor();
