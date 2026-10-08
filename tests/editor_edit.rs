@@ -134,6 +134,20 @@ fn brackets_close_themselves() {
 }
 
 #[test]
+fn backspace_in_an_empty_pair_deletes_both() {
+    let (mut glyph, _) = start_empty("");
+
+    glyph.type_text("x[");
+    wait_for_row(&glyph, 0, 1, "x[]");
+    glyph.send_keys("backspace");
+    // "x" alone is also a prefix of the old row, so wait for the cursor first.
+    wait_for_position(&glyph, 1, 2);
+    wait_for_row(&glyph, 0, 1, "x");
+
+    quit(&mut glyph);
+}
+
+#[test]
 fn auto_pairs_off_types_brackets_alone() {
     let (mut glyph, _) = start_empty("[editor]\nauto_pairs = false\n");
 

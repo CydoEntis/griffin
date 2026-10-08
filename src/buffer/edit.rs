@@ -171,6 +171,26 @@ impl Buffer {
         });
     }
 
+    /// Backspace with `auto_pairs`: between an empty bracket pair it deletes both
+    /// brackets as one step, undoing what typing the opener did.
+    pub fn backspace_pair(&mut self, auto_pairs: bool) {
+        let at = self.cursor;
+        let empty_pair = auto_pairs
+            && self.selection().is_none()
+            && at > 0
+            && at < self.rope.len_chars()
+            && closer_of(self.rope.char(at - 1)) == Some(self.rope.char(at));
+        if !empty_pair {
+            return self.backspace();
+        }
+        self.anchor = None;
+        self.apply(Change {
+            at: at - 1,
+            removed: self.rope.slice(at - 1..=at).to_string(),
+            inserted: String::new(),
+        });
+    }
+
     /// Deletes the char after the cursor; at line end that is the line break,
     /// joining the lines. Nothing at the end of the document. With a selection,
     /// deletes just the selection.
@@ -397,6 +417,48 @@ mod tests {
         let mut b = buf("|");
         b.paste("(");
         assert_eq!(show(&b), "(|");
+    }
+
+    #[test]
+    fn backspace_in_an_empty_pair_deletes_both() {
+        for before in ["a(|)b", "[|]", "x{|}\n"] {
+            let mut b = buf(before);
+            b.backspace_pair(true);
+            let after = before.replacen("(|)", "|", 1);
+            let after = after.replacen("[|]", "|", 1).replacen("{|}", "|", 1);
+            assert_eq!(show(&b), after, "backspace in {before:?}");
+        }
+    }
+
+    #[test]
+    fn backspace_on_a_pair_is_one_undo_step() {
+        let mut b = buf("f(|)");
+        b.backspace_pair(true);
+        assert_eq!(show(&b), "f|");
+        b.undo();
+        assert_eq!(show(&b), "f(|)");
+        assert!(!b.history.can_undo());
+    }
+
+    #[test]
+    fn backspace_elsewhere_deletes_one_char() {
+        for (before, after) in [("(x|)", "(|)"), ("(|]", "|]"), ("|()", "|()"), ("(|", "|")] {
+            let mut b = buf(before);
+            b.backspace_pair(true);
+            assert_eq!(show(&b), after, "backspace in {before:?}");
+        }
+    }
+
+    #[test]
+    fn backspace_without_auto_pairs_or_with_a_selection_is_plain() {
+        let mut b = buf("(|)");
+        b.backspace_pair(false);
+        assert_eq!(show(&b), "|)");
+
+        let mut b = buf("(|)");
+        b.select_to(0, 1);
+        b.backspace_pair(true);
+        assert_eq!(show(&b), "|)");
     }
 
     #[test]
