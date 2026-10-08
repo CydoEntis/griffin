@@ -94,13 +94,9 @@ pub fn render_status(frame: &mut Frame, theme: &Theme, area: Rect, status: &Stat
         .max(area.x);
     // The left slot stops a cell short of the right side so they never touch.
     let left_end = right_x.saturating_sub(1);
-    put(
-        buf,
-        area.x + PATH_X,
-        area.y,
-        left_end,
-        &left_runs(theme, status),
-    );
+    let left_x = area.x + PATH_X;
+    let left = left_runs(theme, status, left_end.saturating_sub(left_x));
+    put(buf, left_x, area.y, left_end, &left);
     put(buf, right_x, area.y, right_edge, &right);
 }
 
@@ -120,7 +116,9 @@ fn block_bg(theme: &Theme, i: u16) -> Color {
 }
 
 /// The path slot: a message with its glyph while there is one, else the path.
-fn left_runs(theme: &Theme, status: &Status) -> Vec<Run> {
+/// A path wider than `room` drops its directory (README §2.5), since the file
+/// name and the dirty mark are what the user needs when space runs out.
+fn left_runs(theme: &Theme, status: &Status, room: u16) -> Vec<Run> {
     if let Some((tone, text)) = status.message {
         let style = Style::new().fg(tone.color(theme));
         return vec![
@@ -137,6 +135,10 @@ fn left_runs(theme: &Theme, status: &Status) -> Vec<Run> {
     ];
     if status.dirty {
         runs.push((" •".to_string(), Style::new().fg(theme.warn)));
+    }
+    let full: u16 = runs.iter().map(|(s, _)| width(s)).sum();
+    if full > room {
+        runs.remove(0);
     }
     runs
 }
@@ -193,6 +195,28 @@ mod tests {
             block_bg(&theme, 17),
             mix(theme.accent2, theme.surface, 8.0 / 9.0)
         );
+    }
+
+    fn text(runs: &[Run]) -> String {
+        runs.iter().map(|(s, _)| s.as_str()).collect()
+    }
+
+    #[test]
+    fn a_path_too_wide_for_the_slot_keeps_only_its_name() {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let status = Status {
+            path: "src/workspace/walker/long_file_name.rs",
+            dirty: true,
+            ..Status::default()
+        };
+        // 38 cells of path plus 2 for the dirty mark.
+        assert_eq!(
+            text(&left_runs(&theme, &status, 40)),
+            "src/workspace/walker/long_file_name.rs •"
+        );
+        let short = left_runs(&theme, &status, 39);
+        assert_eq!(text(&short), "long_file_name.rs •");
+        assert_eq!(short[0].1.fg, Some(theme.strong));
     }
 
     #[test]

@@ -224,10 +224,14 @@ fn missing_server_keeps_editing() {
     glyph.wait_for_text("Go to file: b.rs", WAIT);
     glyph.send_keys("enter");
     glyph.wait_for_text_gone("Go to file:", WAIT);
-    glyph.type_text("z");
-    glyph.wait_for_text("b.rs ●", WAIT);
+    // Checked before the next key, since any key clears a message: opening
+    // b.rs syncs the server in the same frame, so a second "not found" would
+    // be on screen now in the path's place.
+    assert_eq!(glyph.text_col(ROWS - 1, "b.rs"), Some(20));
     let status = status_line(&glyph);
     assert!(!status.contains("server not found"), "{status:?}");
+    glyph.type_text("z");
+    glyph.wait_for_text("b.rs ●", WAIT);
 }
 
 /// npm installs servers as `.cmd` shims; Glyph has to find one through
