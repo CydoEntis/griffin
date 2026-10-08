@@ -160,10 +160,10 @@ fn ctrl_s_on_an_untitled_buffer_asks_for_a_path() {
     glyph.type_text("x");
     glyph.wait_for_text("untitled •", WAIT);
     glyph.send_keys("ctrl+s");
-    glyph.wait_for_text("Save as:", WAIT);
+    glyph.wait_for_text(" Save as  ", WAIT);
     // Esc leaves it unsaved.
     glyph.send_keys("esc");
-    glyph.wait_for_text_gone("Save as:", WAIT);
+    glyph.wait_for_text_gone(" Save as  ", WAIT);
     assert!(status_line(&glyph).contains("untitled •"));
     assert_eq!(fs::read_dir(dir.path()).expect("list dir").count(), 0);
 

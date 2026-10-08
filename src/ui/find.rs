@@ -6,7 +6,7 @@ use std::ops::Range;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ropey::Rope;
 use unicode_width::UnicodeWidthStr;
 
@@ -230,45 +230,71 @@ impl FindBar {
         }
     }
 
-    /// Draws `Find: text` (and `Replace: text` in the second half, when it's
-    /// there) with, at the right, the toggles (in the accent while on) and the
-    /// match count, and returns where the cursor goes.
+    /// Draws ` Find  text` (and, when it's there, a `│` rule at the middle and
+    /// ` Replace  text` after it) on `raised` with, at the right, the ` Aa ` and
+    /// ` .* ` chips (filled with the accent while on) and the match count, and
+    /// returns where the cursor goes.
     pub fn render(&self, theme: &Theme, frame: &mut Frame, area: Rect) -> (u16, u16) {
         let status = self.status();
-        let base = Style::new().bg(theme.card2);
-        let toggle = |on: bool| base.fg(if on { theme.accent } else { theme.muted });
-        let status_style = if self.error.is_some() {
-            base.fg(theme.err)
-        } else {
-            base.fg(theme.strong)
+        let base = Style::new().bg(theme.raised);
+        let chip = |on: bool| {
+            if on {
+                base.bg(theme.accent)
+                    .fg(theme.acc_ink)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                base.fg(theme.muted)
+            }
         };
-        // Right-aligned: `Aa  .*  1/3 `.
+        // A bad pattern is drawn in `err` along with the count saying why.
+        let (pattern, status_style) = if self.error.is_some() {
+            (Style::new().fg(theme.err), base.fg(theme.err))
+        } else {
+            (Style::new(), base.fg(theme.strong))
+        };
+        // Right-aligned: ` Aa   .*   1/3 `.
         let parts = [
-            ("Aa", toggle(self.case_sensitive)),
-            ("  ", base),
-            (".*", toggle(self.regex)),
+            (" Aa ", chip(self.case_sensitive)),
+            (" ", base),
+            (" .* ", chip(self.regex)),
             ("  ", base),
             (status.as_str(), status_style),
             (" ", base),
         ];
         let width: usize = parts.iter().map(|(text, _)| text.width()).sum();
         let width = u16::try_from(width).unwrap_or(u16::MAX);
+        let buf = frame.buffer_mut();
+        buf.set_style(area, base);
         let at = match &self.replace {
-            None => self.bar.render(theme, frame, area),
+            None => {
+                let find_area = Rect {
+                    width: area.width.saturating_sub(width),
+                    ..area
+                };
+                self.bar.render_field(theme, buf, find_area, true, pattern)
+            }
             Some(replace) => {
                 // Halves of the whole row, not of what the count leaves, so the
-                // Replace field stays put while the count changes width.
+                // Replace field stays put while the count changes width; the
+                // Replace field shrinks first as the row narrows.
+                let half = area.width / 2;
                 let find_area = Rect {
-                    width: area.width / 2,
+                    width: half,
                     ..area
                 };
                 let replace_area = Rect {
-                    x: area.x + find_area.width,
-                    width: (area.width - find_area.width).saturating_sub(width),
+                    x: area.x + half + 1,
+                    width: area.width.saturating_sub(half + 1).saturating_sub(width),
                     ..area
                 };
-                let find_at = self.bar.render(theme, frame, find_area);
-                let replace_at = replace.render(theme, frame, replace_area);
+                let find_at =
+                    self.bar
+                        .render_field(theme, buf, find_area, !self.in_replace, pattern);
+                if half < area.width {
+                    buf.set_string(area.x + half, area.y, "│", base.fg(theme.guide));
+                }
+                let replace_at =
+                    replace.render_field(theme, buf, replace_area, self.in_replace, Style::new());
                 if self.in_replace { replace_at } else { find_at }
             }
         };
@@ -276,7 +302,7 @@ impl FindBar {
         for (text, style) in parts {
             let w = u16::try_from(text.width()).unwrap_or(0);
             if x >= area.x {
-                frame.buffer_mut().set_string(x, area.y, text, style);
+                buf.set_string(x, area.y, text, style);
             }
             x += w;
         }
@@ -408,38 +434,75 @@ mod tests {
 
     #[test]
     fn renders_find_and_replace_fields_side_by_side() -> anyhow::Result<()> {
+        let theme = Theme::default();
         let rope = rope();
         let mut find = FindBar::new("foo", 0, &rope);
         find.show_replace(true);
         find.paste("bar", &rope);
-        let mut terminal = Terminal::new(TestBackend::new(52, 1))?;
+        let mut terminal = Terminal::new(TestBackend::new(60, 1))?;
         let mut at = (0, 0);
-        terminal.draw(|frame| at = find.render(&Theme::default(), frame, frame.area()))?;
+        terminal.draw(|frame| at = find.render(&theme, frame, frame.area()))?;
         let buffer = terminal.backend().buffer();
-        let row: String = (0..52).map(|x| buffer[(x, 0)].symbol()).collect();
-        // Find takes half the row; Replace the rest up to `Aa  .*  1/3 `.
+        let row: String = (0..60).map(|x| buffer[(x, 0)].symbol()).collect();
+        // Find takes half the row, the rule sits at the middle, and Replace runs
+        // up to the chips.
         assert_eq!(
             row,
             format!(
-                "{:<26}{:<14}{}",
-                "Find: foo", "Replace: bar", "Aa  .*  1/3 "
+                "{:<30}│{:<14}{}",
+                " Find  foo", " Replace  bar", " Aa   .*   1/3 "
             )
         );
-        assert_eq!(at, (38, 0));
+        assert_eq!(at, (44, 0));
+        assert_eq!(buffer[(30, 0)].fg, theme.guide);
+        // The focused field's label is `text`, the other one's `muted`.
+        assert_eq!(buffer[(1, 0)].fg, theme.muted);
+        assert_eq!(buffer[(32, 0)].fg, theme.text);
+        for x in 0..60 {
+            assert_eq!(buffer[(x, 0)].bg, theme.raised, "{x}");
+        }
         Ok(())
     }
 
     #[test]
-    fn renders_text_toggles_and_count() -> anyhow::Result<()> {
+    fn renders_text_chips_and_count() -> anyhow::Result<()> {
+        let theme = Theme::default();
         let rope = rope();
-        let find = FindBar::new("foo", 0, &rope);
+        let mut find = FindBar::new("foo", 0, &rope);
+        find.handle(Input::Action(Action::FindCase), &rope);
         let mut terminal = Terminal::new(TestBackend::new(40, 1))?;
         let mut at = (0, 0);
-        terminal.draw(|frame| at = find.render(&Theme::default(), frame, frame.area()))?;
+        terminal.draw(|frame| at = find.render(&theme, frame, frame.area()))?;
         let buffer = terminal.backend().buffer();
         let row: String = (0..40).map(|x| buffer[(x, 0)].symbol()).collect();
-        assert_eq!(row, format!("{:<28}{}", "Find: foo", "Aa  .*  1/3 "));
-        assert_eq!(at, (9, 0));
+        assert_eq!(row, format!("{:<25}{}", " Find  foo", " Aa   .*   1/2 "));
+        assert_eq!(at, (10, 0));
+        // An `on` chip is `acc_ink` on `accent`, bold; an `off` one `muted`.
+        let on = &buffer[(25, 0)];
+        assert_eq!((on.fg, on.bg), (theme.acc_ink, theme.accent));
+        assert!(on.modifier.contains(Modifier::BOLD));
+        let off = &buffer[(30, 0)];
+        assert_eq!((off.fg, off.bg), (theme.muted, theme.raised));
+        assert_eq!(buffer[(36, 0)].fg, theme.strong);
+        assert_eq!(buffer[(7, 0)].fg, theme.strong);
+        Ok(())
+    }
+
+    #[test]
+    fn a_bad_regex_draws_the_pattern_and_the_count_in_err() -> anyhow::Result<()> {
+        let theme = Theme::default();
+        let rope = rope();
+        let mut find = FindBar::new("(", 0, &rope);
+        find.handle(Input::Action(Action::FindRegex), &rope);
+        let mut terminal = Terminal::new(TestBackend::new(40, 1))?;
+        terminal.draw(|frame| {
+            find.render(&theme, frame, frame.area());
+        })?;
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..40).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(row.ends_with("  invalid regex "), "{row:?}");
+        assert_eq!(buffer[(7, 0)].fg, theme.err);
+        assert_eq!(buffer[(26, 0)].fg, theme.err);
         Ok(())
     }
 }

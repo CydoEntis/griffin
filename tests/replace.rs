@@ -10,8 +10,16 @@ const WAIT: Duration = Duration::from_secs(5);
 const FIND: &str = "tests/fixtures/find.txt";
 /// The find bar sits on the row above the status line.
 const BAR_ROW: u16 = ROWS - 2;
-/// The Replace field takes the right half of the bar.
-const REPLACE_X: u16 = COLS / 2;
+/// Find covers `[0, floor(W/2))` and the `│` rule sits at `floor(W/2)`.
+const RULE_X: u16 = COLS / 2;
+/// The Replace field runs from after the rule: ` Replace  ` and then its text.
+const REPLACE_TEXT_X: u16 = RULE_X + 11;
+/// hydra's `guide`, the rule between the fields.
+const GUIDE: vt100::Color = vt100::Color::Rgb(0x17, 0x22, 0x2e);
+/// hydra's `text`, the label of the field with focus.
+const TEXT: vt100::Color = vt100::Color::Rgb(0xa7, 0xb4, 0xc2);
+/// hydra's `muted`, the other label.
+const MUTED: vt100::Color = vt100::Color::Rgb(0x71, 0x80, 0x8f);
 
 fn open(path: &str) -> Glyph {
     let glyph = Glyph::spawn(&[path]);
@@ -28,7 +36,7 @@ fn bar(glyph: &Glyph) -> String {
 fn wait_for_count(glyph: &Glyph, count: &str) {
     glyph.wait_for_screen(&format!("the find bar to show {count:?}"), WAIT, |lines| {
         let bar = &lines[usize::from(BAR_ROW)];
-        bar.starts_with("Find:") && bar.ends_with(&format!("  {count}"))
+        bar.starts_with(" Find  ") && bar.ends_with(&format!("  {count}"))
     });
 }
 
@@ -43,44 +51,50 @@ fn wait_for_position(glyph: &Glyph, line: usize, col: usize) {
 /// Ctrl+R, `find` in the Find field, Tab, `with` in the Replace field.
 fn replace(glyph: &mut Glyph, find: &str, with: &str) {
     glyph.send_keys("ctrl+r");
-    glyph.wait_for_text("Replace:", WAIT);
+    glyph.wait_for_text(" Replace  ", WAIT);
     glyph.type_text(find);
-    glyph.wait_for_text(&format!("Find: {find}"), WAIT);
+    glyph.wait_for_text(&format!(" Find  {find}"), WAIT);
     // A key and quick typing after it can arrive as one paste on Windows, so wait
     // for each key to land before the next.
     glyph.send_keys("tab");
-    glyph.wait_for_cursor(REPLACE_X + 9, BAR_ROW, WAIT);
+    glyph.wait_for_cursor(REPLACE_TEXT_X, BAR_ROW, WAIT);
     glyph.type_text(with);
-    glyph.wait_for_text(&format!("Replace: {with}"), WAIT);
+    glyph.wait_for_text(&format!(" Replace  {with}"), WAIT);
 }
 
 #[test]
 fn ctrl_r_shows_find_and_replace_fields_and_tab_moves_between_them() {
     let mut glyph = open(FIND);
     glyph.send_keys("ctrl+r");
-    glyph.wait_for_text("Replace:", WAIT);
+    glyph.wait_for_text(" Replace  ", WAIT);
     let row = bar(&glyph);
-    assert!(row.starts_with("Find:"), "{row:?}");
-    assert_eq!(glyph.text_col(BAR_ROW, "Replace: "), Some(REPLACE_X));
-    // Typing starts in Find.
-    glyph.wait_for_cursor(6, BAR_ROW, WAIT);
+    assert!(row.starts_with(" Find  "), "{row:?}");
+    assert_eq!(glyph.text_col(BAR_ROW, "│ Replace  "), Some(RULE_X));
+    assert_eq!(glyph.fg_at(RULE_X, BAR_ROW), GUIDE);
+    // Typing starts in Find, whose label is lit while the other is quiet.
+    glyph.wait_for_cursor(7, BAR_ROW, WAIT);
+    assert_eq!(glyph.fg_at(1, BAR_ROW), TEXT);
+    assert_eq!(glyph.fg_at(RULE_X + 2, BAR_ROW), MUTED);
     glyph.type_text("foo");
     wait_for_count(&glyph, "1/3");
-    glyph.wait_for_cursor(9, BAR_ROW, WAIT);
+    glyph.wait_for_cursor(10, BAR_ROW, WAIT);
     // The field stays put while the count changes width.
-    assert_eq!(glyph.text_col(BAR_ROW, "Replace: "), Some(REPLACE_X));
+    assert_eq!(glyph.text_col(BAR_ROW, "│ Replace  "), Some(RULE_X));
 
     glyph.send_keys("tab");
-    glyph.wait_for_cursor(REPLACE_X + 9, BAR_ROW, WAIT);
+    glyph.wait_for_cursor(REPLACE_TEXT_X, BAR_ROW, WAIT);
+    // Focus moved, and the labels' colours with it.
+    assert_eq!(glyph.fg_at(1, BAR_ROW), MUTED);
+    assert_eq!(glyph.fg_at(RULE_X + 2, BAR_ROW), TEXT);
     glyph.type_text("xy");
-    glyph.wait_for_text("Replace: xy", WAIT);
-    glyph.wait_for_cursor(REPLACE_X + 11, BAR_ROW, WAIT);
+    glyph.wait_for_text(" Replace  xy", WAIT);
+    glyph.wait_for_cursor(REPLACE_TEXT_X + 2, BAR_ROW, WAIT);
     // Typing in Replace leaves the pattern and its matches alone.
-    assert!(bar(&glyph).starts_with("Find: foo "));
+    assert!(bar(&glyph).starts_with(" Find  foo "));
     wait_for_count(&glyph, "1/3");
 
     glyph.send_keys("tab");
-    glyph.wait_for_cursor(9, BAR_ROW, WAIT);
+    glyph.wait_for_cursor(10, BAR_ROW, WAIT);
     glyph.type_text("x");
     wait_for_count(&glyph, "0/0");
 }
@@ -121,7 +135,7 @@ fn alt_a_replaces_all_reports_the_count_and_undoes_in_one_step() {
     wait_for_count(&glyph, "0/0");
 
     glyph.send_keys("esc");
-    glyph.wait_for_text_gone("Find:", WAIT);
+    glyph.wait_for_text_gone(" Find  ", WAIT);
     glyph.send_keys("ctrl+z");
     glyph.wait_for_text("1  one foo", WAIT);
     glyph.wait_for_text("2  two foo three", WAIT);

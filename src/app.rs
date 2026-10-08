@@ -144,6 +144,17 @@ enum BarOp {
     SaveAs(AfterSave),
 }
 
+impl BarOp {
+    /// What Enter and Esc do, shown at the right of the bar (SPEC_V1_LAYOUT §8).
+    fn hint(&self) -> &'static str {
+        match self {
+            BarOp::NewFile(_) | BarOp::NewFolder(_) => "⏎ create   esc cancel",
+            BarOp::Rename(_) => "⏎ rename   esc cancel",
+            BarOp::SaveAs(_) => "⏎ save   esc cancel",
+        }
+    }
+}
+
 /// The prompt bar while it asks for a name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NamePrompt {
@@ -2982,9 +2993,9 @@ impl App {
                 frame,
             );
             // Matches belong to the active buffer, which the focused split shows.
-            let highlights = match &self.find {
-                Some(find) if split == focused => find.matches(),
-                _ => &[],
+            let (highlights, current) = match &self.find {
+                Some(find) if split == focused => (find.matches(), find.current_match()),
+                _ => (&[][..], None),
             };
             render_buffer(
                 theme,
@@ -2993,6 +3004,7 @@ impl App {
                 self.editor.tab_width,
                 Marks {
                     highlights,
+                    current,
                     diagnostics: &self.tabs.doc(tabs.active().doc).diagnostics,
                 },
                 split == focused,
@@ -3103,7 +3115,9 @@ impl App {
             }
         }
         if let (Some(name_prompt), Some(area)) = (&self.name_prompt, panes.bar) {
-            let at = name_prompt.bar.render(theme, frame, area);
+            let at = name_prompt
+                .bar
+                .render(theme, frame, area, name_prompt.op.hint());
             frame.set_cursor_position(at);
         }
         if let (Some(find), Some(area)) = (&self.find, panes.bar) {

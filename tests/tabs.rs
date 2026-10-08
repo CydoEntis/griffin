@@ -274,17 +274,17 @@ fn ctrl_n_then_alt_s_saves_relative_to_the_project_root() {
 
     // A name another file already has changes nothing.
     glyph.send_keys("alt+s");
-    glyph.wait_for_text("Save as:", WAIT);
+    glyph.wait_for_text(" Save as  ", WAIT);
     glyph.type_text("a.txt");
     glyph.send_keys("enter");
     glyph.wait_for_text("a.txt already exists", WAIT);
     assert_eq!(read(&root, "a.txt"), "alpha\n");
 
     glyph.send_keys("alt+s");
-    glyph.wait_for_text("Save as:", WAIT);
+    glyph.wait_for_text(" Save as  ", WAIT);
     glyph.type_text("new.txt");
     glyph.send_keys("enter");
-    glyph.wait_for_text_gone("Save as:", WAIT);
+    glyph.wait_for_text_gone(" Save as  ", WAIT);
     wait_for_tabs(&glyph, &["untitled", "new.txt"], 1);
     assert_eq!(read(&root, "new.txt"), "hello");
     assert!(!parent.path().join("new.txt").exists());
@@ -296,7 +296,8 @@ fn ctrl_n_then_alt_s_saves_relative_to_the_project_root() {
     // tab to the new name; the old file stays as it was.
     glyph.type_text("!");
     glyph.send_keys("alt+s");
-    glyph.wait_for_text("Save as: new.txt", WAIT);
+    glyph.wait_for_text(" Save as  new.txt", WAIT);
+    glyph.wait_for_text("⏎ save   esc cancel", WAIT);
     for _ in 0.."new.txt".len() {
         glyph.send_keys("backspace");
     }

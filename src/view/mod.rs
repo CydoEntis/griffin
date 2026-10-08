@@ -18,10 +18,14 @@ use crate::ui::tree::cut;
 pub use undercurl::UndercurlBackend;
 
 /// Ranges drawn over a buffer's text, by char index.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct Marks<'a> {
-    /// Find matches, sorted by start; drawn in the selection colours.
+    /// Find matches, sorted by start; drawn on `find_match_bg`, apart from the
+    /// selection so a match never reads as selected text.
     pub highlights: &'a [Range<usize>],
+    /// The find match Enter acts on, drawn `bg` on `warn` so it stands out from
+    /// the other matches.
+    pub current: Option<Range<usize>>,
     /// The language server's diagnostics, sorted by start; underlined in their
     /// severity's colour, with a mark in the gutter.
     pub diagnostics: &'a [Diagnostic],
@@ -183,6 +187,7 @@ pub fn render_buffer(
 ) {
     let Marks {
         highlights,
+        current,
         diagnostics,
     } = marks;
     let digits = number_width(buf);
@@ -303,12 +308,9 @@ pub fn render_buffer(
             let line_cells = line_width(buf.rope.line(line_idx), tab_width);
             draw_lens(theme, diagnostic, x, line_cells, view, area, y, out);
         }
-        // Only the highlights that touch this line, found by bisecting the sorted list.
-        let first = highlights.partition_point(|h| h.end <= line_start);
-        let on_line = highlights[first..]
-            .iter()
-            .take_while(|h| h.start < line_end);
-        for range in selection.iter().chain(on_line) {
+        let paint = |out: &mut ratatui::buffer::Buffer,
+                     range: &Range<usize>,
+                     draw: &dyn Fn(&mut ratatui::buffer::Cell)| {
             let cells = selected_cells(buf, line_idx, range, tab_width);
             let from = cells.start.max(view.scroll_col);
             let to = cells.end.min(view.scroll_col + text_width);
@@ -316,9 +318,24 @@ pub fn render_buffer(
                 // Below `text_width`, which fits in the area's u16 width.
                 let cell_x = x + (col - view.scroll_col) as u16;
                 if let Some(cell) = out.cell_mut((cell_x, y)) {
-                    cell.set_style(Theme::highlight(theme.selection_bg, theme.fg));
+                    draw(cell);
                 }
             }
+        };
+        // Only the highlights that touch this line, found by bisecting the sorted list.
+        let first = highlights.partition_point(|h| h.end <= line_start);
+        let on_line = highlights[first..]
+            .iter()
+            .take_while(|h| h.start < line_end)
+            .filter(|h| Some(*h) != current.as_ref());
+        for range in on_line {
+            paint(out, range, &|cell| match_style(theme, cell));
+        }
+        if let Some(range) = &current {
+            paint(out, range, &|cell| current_match_style(theme, cell));
+        }
+        if let Some(range) = &selection {
+            paint(out, range, &|cell| selection_style(theme, cell));
         }
     }
 
@@ -384,6 +401,42 @@ fn draw_lens(
             .fg(lens_color(theme, diagnostic.severity))
             .add_modifier(Modifier::ITALIC),
     );
+}
+
+/// A find match: `find_match_bg` (README §5.5) behind text that keeps its colour.
+/// `mono` can't blend that colour, so it underlines the match instead.
+fn match_style(theme: &Theme, cell: &mut ratatui::buffer::Cell) {
+    if theme.ramps() {
+        cell.set_bg(mix(theme.bg, theme.warn, FIND_MATCH_MIX));
+    } else {
+        cell.modifier.insert(Modifier::UNDERLINED);
+    }
+}
+
+/// How far `find_match_bg` sits from `bg` towards `warn` (README §5.5).
+const FIND_MATCH_MIX: f64 = 0.3;
+
+/// The current find match: `bg` on `warn`. In `mono`, whose `bg` is the
+/// terminal's own, the same pair as reverse video.
+fn current_match_style(theme: &Theme, cell: &mut ratatui::buffer::Cell) {
+    if theme.ramps() {
+        cell.set_style(Style::new().fg(theme.bg).bg(theme.warn));
+    } else {
+        cell.set_style(Theme::highlight(theme.warn, theme.bg));
+    }
+}
+
+/// Selected text: `sel` behind, the text's own (syntax) colour kept
+/// (SPEC_V1_LAYOUT §4). It goes through `Theme::highlight` so `mono` still
+/// shows it and the PTY tests still find it as reverse video.
+fn selection_style(theme: &Theme, cell: &mut ratatui::buffer::Cell) {
+    // Plain text and the blank past a line's end have no colour of their own;
+    // reversed, a reset colour would draw the terminal's ground, not text.
+    let fg = match cell.fg {
+        Color::Reset => theme.fg,
+        fg => fg,
+    };
+    cell.set_style(Theme::highlight(theme.sel, fg));
 }
 
 /// How text in `role` is drawn: the theme's syntax style, with comments in
@@ -764,44 +817,116 @@ mod tests {
         assert_eq!(view.scroll_row, 8);
     }
 
-    #[test]
-    fn highlights_get_the_selection_colours_on_their_own_cells() -> Result<()> {
-        let buf = Buffer {
-            rope: Rope::from_str(
-                "foo x
-ab foo foo",
-            ),
-            ..Buffer::empty()
-        };
+    /// Draws `buf` 30 cells wide with `marks`, unfocused so no glow sits behind.
+    fn draw_marked(theme: &Theme, buf: &Buffer, marks: Marks) -> Result<ratatui::buffer::Buffer> {
         let mut terminal = Terminal::new(TestBackend::new(30, 2))?;
         terminal.draw(|frame| {
             render_buffer(
-                &Theme::default(),
-                &buf,
+                theme,
+                buf,
                 &View::default(),
                 4,
-                Marks {
-                    highlights: &[0..3, 9..12, 13..16],
-                    ..Marks::default()
-                },
-                true,
+                marks,
+                false,
                 frame.area(),
                 frame,
             )
         })?;
-        let screen = terminal.backend().buffer();
-        let marked = |y: u16| -> String {
-            (0..30)
-                .filter(|&x| {
-                    screen[(x, y)]
-                        .modifier
-                        .contains(ratatui::style::Modifier::REVERSED)
-                })
-                .map(|x| screen[(x, y)].symbol())
-                .collect()
+        Ok(terminal.backend().buffer().clone())
+    }
+
+    /// The symbols on row `y` of `screen` whose cell passes `keep`.
+    fn cells_where(
+        screen: &ratatui::buffer::Buffer,
+        y: u16,
+        keep: impl Fn(&ratatui::buffer::Cell) -> bool,
+    ) -> String {
+        (0..30)
+            .filter(|&x| keep(&screen[(x, y)]))
+            .map(|x| screen[(x, y)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn find_matches_have_their_own_colours_apart_from_the_selection() -> Result<()> {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let buf = buffer_at("foo x\nab foo foo", 0);
+        let screen = draw_marked(
+            &theme,
+            &buf,
+            Marks {
+                highlights: &[0..3, 9..12, 13..16],
+                current: Some(9..12),
+                ..Marks::default()
+            },
+        )?;
+        let match_bg = mix(theme.bg, theme.warn, 0.3);
+        assert_eq!(cells_where(&screen, 0, |c| c.bg == match_bg), "foo");
+        assert_eq!(cells_where(&screen, 1, |c| c.bg == match_bg), "foo");
+        // The current one is `bg` on `warn`. Gutter "   1  " is 6 cells.
+        assert_eq!(cells_where(&screen, 1, |c| c.bg == theme.warn), "foo");
+        assert_eq!(screen[(9, 1)].fg, theme.bg);
+        // The other matches keep the text's colour, and none is reverse video,
+        // so a match never reads as selected text.
+        assert_eq!(screen[(6, 0)].fg, Color::Reset);
+        for y in 0..2 {
+            assert_eq!(
+                cells_where(&screen, y, |c| c.modifier.contains(Modifier::REVERSED)),
+                ""
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn selection_keeps_the_syntax_colour_on_sel() -> Result<()> {
+        let theme = Theme::named("aurora").expect("aurora exists");
+        let mut buf = Buffer {
+            rope: Rope::from_str("fn f\nx"),
+            path: Some("a.rs".into()),
+            ..Buffer::empty()
         };
-        assert_eq!(marked(0), "foo");
-        assert_eq!(marked(1), "foofoo");
+        buf.sync_highlight();
+        // `fn f` and the line break after it.
+        buf.anchor = Some(0);
+        buf.cursor = 5;
+        let screen = draw_marked(&theme, &buf, Marks::default())?;
+        // Reverse video over swapped colours: it shows the cell's bg-slot colour
+        // as text on its fg-slot colour, so the keyword's own colour on `sel`.
+        let keyword = theme.syntax.keyword.fg.unwrap_or_default();
+        assert!(screen[(6, 0)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(screen[(6, 0)].fg, theme.sel);
+        assert_eq!(screen[(6, 0)].bg, keyword);
+        // The selected line break is one `sel` cell past the line's end.
+        assert_eq!(
+            cells_where(&screen, 0, |c| c.modifier.contains(Modifier::REVERSED)),
+            "fn f "
+        );
+        assert_eq!(screen[(10, 0)].fg, theme.sel);
+        assert_eq!(screen[(10, 0)].bg, theme.fg);
+        Ok(())
+    }
+
+    #[test]
+    fn mono_underlines_matches_and_reverses_the_current_one() -> Result<()> {
+        let theme = Theme::named("mono").expect("mono exists");
+        let mut buf = buffer_at("foo foo x", 9);
+        buf.anchor = Some(8);
+        let screen = draw_marked(
+            &theme,
+            &buf,
+            Marks {
+                highlights: &[0..3, 4..7],
+                current: Some(4..7),
+                ..Marks::default()
+            },
+        )?;
+        let with = |m: Modifier| cells_where(&screen, 0, |c| c.modifier.contains(m));
+        assert_eq!(with(Modifier::UNDERLINED), "foo");
+        // The current match and the selected `x` are reverse video.
+        assert_eq!(with(Modifier::REVERSED), "foox");
+        assert_eq!(screen[(10, 0)].fg, theme.warn);
+        assert_eq!(screen[(14, 0)].fg, theme.sel);
         Ok(())
     }
 
@@ -959,8 +1084,8 @@ ab foo foo",
             scroll_col,
         };
         let marks = Marks {
-            highlights: &[],
             diagnostics,
+            ..Marks::default()
         };
         terminal.draw(|frame| {
             render_buffer(theme, &buf, &view, 4, marks, false, frame.area(), frame)
