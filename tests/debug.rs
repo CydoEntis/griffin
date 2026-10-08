@@ -1,6 +1,6 @@
 //! Starting and stopping a debug session against `fake_dap`, the scripted
 //! adapter in `src/bin/fake_dap.rs`, driven through the real binary
-//! (glyph-debugger spec D4, D5).
+//! (glyph-debugger spec D4, D5, D6).
 
 mod harness;
 
@@ -346,4 +346,236 @@ fn a_crashed_adapter_is_one_message_and_editing_carries_on() {
     assert!(!status_line(&glyph.screen()).contains("debugging"));
     glyph.type_text("z");
     glyph.wait_for_text("1  za = 1", WAIT);
+}
+
+/// A stop in `main.py` on thread `thread`, as the fake sends it.
+fn stopped(thread: i64) -> Value {
+    json!({"event": "stopped", "body": {"reason": "step", "threadId": thread}})
+}
+
+/// The `stackTrace` answers for the stops in turn: each on `main.py` at one of
+/// `lines`.
+fn stacks(project: &Project, lines: &[u64]) -> Value {
+    let main = project.path("main.py");
+    lines
+        .iter()
+        .map(|line| {
+            json!({"stackFrames": [
+                {"id": 1, "name": "<module>", "source": {"path": main}, "line": line, "column": 1}
+            ]})
+        })
+        .collect()
+}
+
+fn write_script(project: &Project, script: &Value) {
+    fs::write(project.files.path().join("script.json"), script.to_string()).expect("write script");
+}
+
+/// Waits until the `▶` marker is on buffer line `line` and nowhere else.
+fn wait_for_marker(glyph: &Glyph, line: u16) {
+    glyph.wait_for_screen(&format!("▶ on line {line} alone"), WAIT, |screen| {
+        (1..=3).all(|l| screen[usize::from(row(l))].starts_with('▶') == (l == line))
+    });
+}
+
+fn wait_for_no_marker(glyph: &Glyph) {
+    glyph.wait_for_screen("no ▶", WAIT, |screen| {
+        (1..=3).all(|l| !screen[usize::from(row(l))].starts_with('▶'))
+    });
+}
+
+#[test]
+fn stepping_and_continuing_go_to_the_stopped_thread() {
+    let project = Project::new(json!({}), "");
+    let script = json!({
+        "events": {
+            "configurationDone": [stopped(7)],
+            "next": [stopped(7)],
+            "stepIn": [stopped(7)],
+            "stepOut": [stopped(7)],
+        },
+        "responses": {"stackTrace": stacks(&project, &[3, 1, 2, 3])},
+    });
+    write_script(&project, &script);
+
+    let mut glyph = project.open("main.py");
+    glyph.send_keys("alt+f5");
+    wait_for_status(&glyph, "‖ paused main.py:3");
+    wait_for_marker(&glyph, 3);
+
+    glyph.send_keys("f10");
+    wait_for_status(&glyph, "‖ paused main.py:1");
+    wait_for_marker(&glyph, 1);
+    glyph.send_keys("alt+f10");
+    wait_for_status(&glyph, "‖ paused main.py:2");
+    wait_for_marker(&glyph, 2);
+    glyph.send_keys("shift+f10");
+    wait_for_status(&glyph, "‖ paused main.py:3");
+    wait_for_marker(&glyph, 3);
+
+    // `continue` is answered with no stop: the program runs on.
+    glyph.send_keys("alt+f5");
+    project.wait_for(&glyph, "continue", 1);
+    wait_for_status(&glyph, "● debugging");
+    wait_for_no_marker(&glyph);
+
+    let requests = project.requests();
+    let steps: Vec<(String, Value)> = requests
+        .iter()
+        .filter(|r| {
+            ["next", "stepIn", "stepOut", "continue"]
+                .contains(&r["command"].as_str().unwrap_or_default())
+        })
+        .map(|r| {
+            (
+                r["command"].as_str().unwrap_or_default().to_string(),
+                r["arguments"]["threadId"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ("next".to_string(), json!(7)),
+            ("stepIn".to_string(), json!(7)),
+            ("stepOut".to_string(), json!(7)),
+            ("continue".to_string(), json!(7)),
+        ]
+    );
+}
+
+#[test]
+fn stepping_while_running_does_nothing_and_the_marker_returns_at_the_next_stop() {
+    let project = Project::new(json!({}), "");
+    // Toggling a breakpoint while the program runs is what stops it here, as
+    // the fake has no program of its own to hit one.
+    let script = json!({
+        "events": {"setBreakpoints": [stopped(1)]},
+        "responses": {"stackTrace": stacks(&project, &[3, 2])},
+    });
+    write_script(&project, &script);
+
+    let mut glyph = project.open("main.py");
+    glyph.send_keys("alt+f5");
+    wait_for_status(&glyph, "● debugging");
+    project.wait_for(&glyph, "configurationDone", 1);
+    for key in ["f10", "alt+f10", "shift+f10", "alt+f5"] {
+        glyph.send_keys(key);
+    }
+    // Keys are handled in order, so by the time this breakpoint is sent the
+    // four before it were already handled.
+    glyph.send_keys("f9");
+    project.wait_for(&glyph, "setBreakpoints", 1);
+    wait_for_status(&glyph, "‖ paused main.py:3");
+    wait_for_marker(&glyph, 3);
+    let commands = project.commands();
+    for step in ["next", "stepIn", "stepOut", "continue"] {
+        assert!(!commands.iter().any(|c| c == step), "{commands:?}");
+    }
+
+    glyph.send_keys("alt+f5");
+    project.wait_for(&glyph, "continue", 1);
+    wait_for_status(&glyph, "● debugging");
+    wait_for_no_marker(&glyph);
+
+    glyph.send_keys("f9");
+    wait_for_status(&glyph, "‖ paused main.py:2");
+    wait_for_marker(&glyph, 2);
+}
+
+#[test]
+fn the_program_ending_after_continue_says_exited_and_clears_the_marker() {
+    let project = Project::new(json!({}), "");
+    let script = json!({
+        "events": {
+            "configurationDone": [stopped(1)],
+            "continue": [
+                {"event": "exited", "body": {"exitCode": 0}},
+                {"event": "terminated"}
+            ],
+        },
+        "responses": {"stackTrace": stacks(&project, &[2])},
+    });
+    write_script(&project, &script);
+
+    let mut glyph = project.open("main.py");
+    glyph.send_keys("alt+f5");
+    wait_for_status(&glyph, "‖ paused main.py:2");
+    wait_for_marker(&glyph, 2);
+
+    glyph.send_keys("alt+f5");
+    wait_for_status(&glyph, "exited 0");
+    wait_for_no_marker(&glyph);
+    let screen = glyph.screen();
+    assert!(!status_line(&screen).contains("debugging"), "{screen:#?}");
+    assert!(!status_line(&screen).contains("paused"), "{screen:#?}");
+    project.wait_for(&glyph, "disconnect", 1);
+}
+
+#[test]
+fn a_refused_step_keeps_the_program_paused_where_it_was() {
+    let project = Project::new(json!({}), "");
+    let script = json!({
+        "events": {
+            "configurationDone": [stopped(7)],
+            "stepIn": [stopped(7)],
+        },
+        "errors": {"next": "busy"},
+        "responses": {"stackTrace": stacks(&project, &[3, 1])},
+    });
+    write_script(&project, &script);
+
+    let mut glyph = project.open("main.py");
+    glyph.send_keys("alt+f5");
+    wait_for_status(&glyph, "‖ paused main.py:3");
+    wait_for_marker(&glyph, 3);
+
+    glyph.send_keys("f10");
+    wait_for_status(&glyph, "debugger: next failed: busy");
+    wait_for_marker(&glyph, 3);
+
+    // The stopped thread came back with the pause, so stepping still works.
+    glyph.send_keys("f10");
+    project.wait_for(&glyph, "next", 2);
+    wait_for_marker(&glyph, 3);
+    glyph.send_keys("alt+f10");
+    wait_for_status(&glyph, "‖ paused main.py:1");
+    wait_for_marker(&glyph, 1);
+
+    let threads: Vec<Value> = project
+        .requests()
+        .iter()
+        .filter(|r| ["next", "stepIn"].contains(&r["command"].as_str().unwrap_or_default()))
+        .map(|r| r["arguments"]["threadId"].clone())
+        .collect();
+    assert_eq!(threads, [json!(7), json!(7), json!(7)]);
+}
+
+#[test]
+fn alt_f5_continues_a_paused_session_with_no_file_open() {
+    let project = Project::new(json!({}), "");
+    let script = json!({
+        "events": {"configurationDone": [stopped(7)]},
+        "responses": {"stackTrace": stacks(&project, &[3])},
+    });
+    write_script(&project, &script);
+
+    let mut glyph = project.open("main.py");
+    glyph.send_keys("alt+f5");
+    wait_for_status(&glyph, "‖ paused main.py:3");
+
+    // Closing the last tab leaves the key list, but the session is still
+    // paused and Alt+F5 still continues it.
+    glyph.send_keys("ctrl+w");
+    glyph.wait_for_text("no file open", WAIT);
+    glyph.send_keys("alt+f5");
+    project.wait_for(&glyph, "continue", 1);
+
+    let threads: Vec<Value> = project
+        .requests()
+        .iter()
+        .filter(|r| r["command"] == "continue")
+        .map(|r| r["arguments"]["threadId"].clone())
+        .collect();
+    assert_eq!(threads, [json!(7)]);
 }

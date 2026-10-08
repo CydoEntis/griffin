@@ -7,7 +7,8 @@
 //!   `{"responses": {"<command>": <body>}, "events": {"<command>": [<message>]},
 //!   "errors": {"<command>": "<text>"}, "exit_on": "<command>", "hold":
 //!   ["<command>"]}`. Every key is optional:
-//!   - `responses`: the body answering each command. Unscripted, `initialize`
+//!   - `responses`: the body answering each command, or a list of bodies
+//!     answering its requests in turn, the last answering any more. Unscripted, `initialize`
 //!     says it supports `configurationDone`, `setBreakpoints` verifies every line
 //!     it was given, `threads` lists one thread `1` named `main`, `continue` says
 //!     all threads continued, and anything else gets `{}`.
@@ -24,6 +25,7 @@
 //!
 //! It exits cleanly after answering `disconnect`, or when stdin closes.
 
+use std::collections::HashMap;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
@@ -49,6 +51,8 @@ fn main() -> ExitCode {
         seq: 0,
     };
     let mut held: Vec<Value> = Vec::new();
+    // How many of each command came, for `responses` lists.
+    let mut asked: HashMap<String, usize> = HashMap::new();
 
     while let Ok(Some(message)) = read_message(&mut input) {
         if let Some(log) = &mut log {
@@ -75,10 +79,17 @@ fn main() -> ExitCode {
             response["success"] = json!(false);
             response["message"] = text.clone();
         } else {
+            let count = asked.entry(command.to_string()).or_default();
             response["body"] = match script["responses"].get(command) {
+                // DAP bodies are objects, so a list can only mean turns.
+                Some(Value::Array(turns)) => {
+                    let turn = (*count).min(turns.len().saturating_sub(1));
+                    turns.get(turn).cloned().unwrap_or_else(|| json!({}))
+                }
                 Some(body) => body.clone(),
                 None => default_body(command, &message["arguments"]),
             };
+            *count += 1;
         }
         let holds = script["hold"]
             .as_array()
