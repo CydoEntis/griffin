@@ -7,10 +7,11 @@ Verify: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo
 
 ## Now
 
-Active phase: **8 — Glyph opens on a splash and can switch projects.** The person checks
-for Phases 6 and 7 are still open.
-Next unblocked: #113 — feat(lsp): stop one project's language servers;
-#115 — feat(splash): splash screen when Glyph starts with nothing to edit.
+Active phase: **8 — Glyph opens on a splash and can switch projects.** Phases 9 and 10 are
+ticketed ahead, as Cody asked to build them in one run (2026-10-08). The person checks for
+Phases 6 and 7 are still open.
+Next unblocked: #124 — fix(project): open a folder onto the tree and an empty pane, not the
+splash (PR #125).
 
 ## Phases
 
@@ -79,8 +80,45 @@ Exit when:
 3. #115 — feat(splash): splash screen when Glyph starts with nothing to edit · can run alongside 1
 4. #116 — feat(splash): New directory and Open directory on the splash · after 2, 3
 5. #117 — feat(project): unsaved files card before switching projects · after 2
+6. #124 — fix(project): open a folder onto the tree and an empty pane, not the splash · after 4
+7. #126 — fix(splash): splash layout from Cody's design · after 6
+8. #127 — feat(splash): splash status bar, q to quit, tree hidden · after 7
+9. #128 — feat(editor): no file open screen with the key list · after 8
 
-### 9 — The v1 layout behaviours from the Aurora handoff
+### 9 — Install language servers from a catalog inside Glyph
+
+Exit when:
+- every ticket below is closed and its change is on `main`;
+- `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` passes on `main`;
+- the spec's person check passes (install a missing server from the catalog on Windows and
+  get completion in an open file without restarting).
+
+[Language server catalog](features/glyph-catalog/intent.md) · [spec](features/glyph-catalog/spec.md)
+
+1. #129 — feat(lsp): retry a language's server after it was missing
+2. #130 — feat(lsp): install commands for each language server · can run alongside 1
+3. #131 — feat(catalog): language servers catalog card · after 2
+4. #132 — feat(catalog): install a server from the catalog and start it · after 1, 3
+
+### 10 — Debug Rust, Python and Go through the Debug Adapter Protocol
+
+Exit when:
+- every ticket below is closed and its change is on `main`;
+- `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` passes on `main`;
+- the spec's person check passes (break, step and read variables in a Rust, a Python and a
+  Go program on Windows and Ubuntu).
+
+[Debugger](features/glyph-debugger/intent.md) · [spec](features/glyph-debugger/spec.md)
+
+1. #133 — feat(dap): Debug Adapter Protocol client and fake adapter
+2. #134 — feat(debug): breakpoints in the gutter · can run alongside 1
+3. #135 — feat(debug): debug adapters and launch settings · can run alongside 1
+4. #136 — feat(debug): start and stop debugging, and the paused line · after 1, 2, 3
+5. #137 — feat(debug): continue and step over, into and out · after 4
+6. #138 — feat(debug): debug panel with call stack and variables · after 4
+7. #139 — feat(catalog): debug adapters in the catalog · after 3, Phase 9's #132
+
+### 11 — The v1 layout behaviours from the Aurora handoff
 
 Work: [SPEC_V1_LAYOUT.md](features/glyph-aurora/design/SPEC_V1_LAYOUT.md) §1–§11 and §14
 items not in Phase 7: minimum-size message, tree width and hiding while split, tab overflow
@@ -97,8 +135,13 @@ Open decisions:
 - Glyph Aurora — shipped — [intent](features/glyph-aurora/intent.md) ·
   [spec](features/glyph-aurora/spec.md)
 - Splash and opening projects — active — [intent](features/glyph-splash/intent.md) ·
-  [spec](features/glyph-splash/spec.md). Replaces the layout handoff's empty-editor key
-  list (SPEC_V1_LAYOUT 9a, "No launch splash"; decided 2026-10-08).
+  [spec](features/glyph-splash/spec.md). Overrides the layout handoff's "No launch
+  splash" (SPEC_V1_LAYOUT 9a); its key list shows whenever no file is open (decided
+  2026-10-08).
+- Language server catalog — planned — [intent](features/glyph-catalog/intent.md) ·
+  [spec](features/glyph-catalog/spec.md)
+- Debugger — planned — [intent](features/glyph-debugger/intent.md) ·
+  [spec](features/glyph-debugger/spec.md)
 
 ## Out
 
