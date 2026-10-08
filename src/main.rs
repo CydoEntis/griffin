@@ -4,6 +4,7 @@ mod buffer;
 mod clipboard;
 mod config;
 mod dap;
+mod framing;
 mod highlight;
 mod keymap;
 mod lsp;

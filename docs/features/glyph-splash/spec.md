@@ -74,8 +74,8 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
 - **S7.** Opening a folder makes it the project: every tab closes, the run panel's command
   is stopped, the old folder's language servers are shut down; the tree, the brand label,
   the Ctrl+P file list, project search, F5's `.glyph.toml` and newly started language
-  servers all use the new folder; Glyph then shows the tree and the splash, as
-  `glyph <folder>` would — checked by PTY tests (tree and brand show the new folder, Ctrl+P
+  servers all use the new folder; Glyph then shows the tree and an empty untitled pane,
+  with the tree focused (no splash; changed 2026-10-08 after Cody tried it, #124) — checked by PTY tests (tree and brand show the new folder, Ctrl+P
   lists its files, F5 uses its `.glyph.toml`) and a fake-server test (old server gets
   shutdown/exit, a file in the new folder starts a new one).
 - **S8.** `>open directory` (title "Open directory") in the cast palette opens the same
@@ -148,7 +148,7 @@ through the card.
 - S4 → #115
 - S5 → #116
 - S6 → #114
-- S7 → #113, #114, #116
+- S7 → #113, #114, #116, #124
 - S8 → #114
 - S9 → #114 (refusal), #117
 - S11 → #128
