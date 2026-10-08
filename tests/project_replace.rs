@@ -49,9 +49,13 @@ fn fixture_copy() -> std::io::Result<tempfile::TempDir> {
     Ok(dir)
 }
 
-/// Glyph in `dir` with no file open, so the root is that folder.
+/// Glyph in `dir` with no file open, so the root is that folder. Opening
+/// `src/app.rs` would start the real rust-analyzer, which on CI can crash at any
+/// moment and put its own message over the one a test waits for; a server that
+/// isn't found is reported once, as the file opens, and never again.
 fn open_in(dir: &Path) -> Glyph {
-    let glyph = Glyph::spawn_in(dir, &[]);
+    let glyph =
+        Glyph::spawn_in_with_config(dir, "[lsp.rust]\ncommand = \"glyph-no-such-server\"\n", &[]);
     glyph.wait_for_text("Ln 1, Col 1", START);
     glyph
 }
