@@ -123,6 +123,8 @@ pub enum Action {
     LanguageServers,
     /// Catalog only: copies the selected server's install command.
     CatalogCopy,
+    /// Opens `config.toml` in a tab, creating it from a template if missing.
+    Settings,
     /// Splash only: moves the selection up a row, wrapping.
     SplashUp,
     /// Splash only: moves the selection down a row, wrapping.
@@ -270,6 +272,7 @@ impl Action {
         Action::OpenFolderHere,
         Action::LanguageServers,
         Action::CatalogCopy,
+        Action::Settings,
         Action::SplashUp,
         Action::SplashDown,
         Action::SplashRun,
@@ -418,6 +421,7 @@ impl Action {
             Action::OpenDirectory => "open_directory",
             Action::OpenFolderHere => "open_folder_here",
             Action::LanguageServers => "language_servers",
+            Action::Settings => "settings",
             Action::CatalogCopy => "catalog_copy",
             Action::SplashUp => "splash_up",
             Action::SplashDown => "splash_down",
@@ -536,6 +540,7 @@ impl Action {
             Action::OpenDirectory => "Open directory",
             Action::OpenFolderHere => "Open this folder",
             Action::LanguageServers => "Language servers",
+            Action::Settings => "Settings",
             Action::CatalogCopy => "Catalog: copy command",
             Action::SplashUp => "Splash: up",
             Action::SplashDown => "Splash: down",
@@ -700,6 +705,7 @@ const UNBOUND: &[Action] = &[
     Action::OpenDirectory,
     Action::ClearBreakpoints,
     Action::LanguageServers,
+    Action::Settings,
 ];
 
 /// What a key event means to the editor.
@@ -1932,6 +1938,20 @@ mod tests {
         assert_eq!(
             map.resolve(&ev(KeyCode::Char('l'), KeyModifiers::ALT)),
             Input::Action(Action::LanguageServers)
+        );
+    }
+
+    #[test]
+    fn settings_is_a_command_with_no_key_until_one_is_bound() {
+        let map = Keymap::default();
+        assert!(Action::commands().any(|a| a == Action::Settings));
+        assert_eq!(Action::Settings.title(), "Settings");
+        assert_eq!(Action::Settings.scope(), Scope::Global);
+        assert_eq!(map.key_label(Action::Settings), None);
+        let map = Keymap::new(&keys(&[("settings", one("alt+j"))])).unwrap();
+        assert_eq!(
+            map.resolve(&ev(KeyCode::Char('j'), KeyModifiers::ALT)),
+            Input::Action(Action::Settings)
         );
     }
 

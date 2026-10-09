@@ -160,6 +160,43 @@ fn describe(err: &toml::de::Error, text: &str) -> String {
     }
 }
 
+/// What `>settings` writes when there is no `config.toml` yet. Every line is
+/// commented out, so the new file changes nothing until the user says so, and
+/// each `[editor]` line shows the default it would keep.
+pub const TEMPLATE: &str = r#"# Glyph's settings. Remove the `#` in front of a line to change it.
+
+# One of aurora, moonlit, hydra, papercolor-dark, tango-dark, monokai,
+# tokyo-night, catppuccin-mocha, catppuccin-latte, gruvbox, nord, dracula, mono.
+# theme = "hydra"
+
+[editor]
+# tab_width = 4
+# insert_spaces = true
+# auto_pairs = true
+
+[keys]
+# action = "key" or ["key", "key"]
+# save = "ctrl+s"
+# go_to_file = ["ctrl+p", "alt+p"]
+"#;
+
+/// Writes `TEMPLATE` to `path`, making its folders first, unless a file is
+/// already there: `create_new` keeps a file that appeared meanwhile.
+pub fn create_template(path: &Path) -> std::io::Result<()> {
+    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(dir)?;
+    }
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => std::io::Write::write_all(&mut file, TEMPLATE.as_bytes()),
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
 /// The project's `.glyph.toml`, at the project root.
 pub const PROJECT_FILE: &str = ".glyph.toml";
 
@@ -236,6 +273,78 @@ pub fn parse_project(text: &str) -> LoadedProject {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn template_parses_to_the_defaults() {
+        let loaded = parse(TEMPLATE);
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert_eq!(loaded.config.editor, EditorConfig::default());
+        assert_eq!(loaded.config.theme, None);
+        assert!(loaded.config.keys.is_empty());
+    }
+
+    #[test]
+    fn template_names_each_editor_option_with_its_default() {
+        // Uncommenting every line must change nothing: the values shown are
+        // the defaults, and the examples are valid.
+        let uncommented: String = TEMPLATE
+            .lines()
+            .filter_map(|line| line.strip_prefix("# "))
+            .filter(|line| line.contains(" = "))
+            .filter(|line| !line.starts_with("action"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        let sections = uncommented
+            .replace(
+                "tab_width",
+                "[editor]
+tab_width",
+            )
+            .replace(
+                "save =",
+                "[keys]
+save =",
+            );
+        let loaded = parse(&sections);
+        assert!(
+            loaded.error.is_none(),
+            "{:?}
+{sections}",
+            loaded.error
+        );
+        assert_eq!(loaded.config.editor, EditorConfig::default());
+        assert_eq!(loaded.config.theme.as_deref(), Some("hydra"));
+        assert!(crate::keymap::Keymap::new(&loaded.config.keys).is_ok());
+        for name in ["tab_width", "insert_spaces", "auto_pairs"] {
+            assert!(TEMPLATE.contains(&format!("# {name} = ")), "{name}");
+        }
+        for theme in crate::theme::NAMES {
+            assert!(TEMPLATE.contains(theme), "{theme}");
+        }
+    }
+
+    #[test]
+    fn create_template_makes_the_folders_and_keeps_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("glyph").join("nested").join("config.toml");
+        create_template(&path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), TEMPLATE);
+        fs::write(
+            &path,
+            "theme = \"nord\"
+",
+        )
+        .unwrap();
+        create_template(&path).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "theme = \"nord\"
+"
+        );
+    }
 
     #[test]
     fn empty_file_is_defaults() {
