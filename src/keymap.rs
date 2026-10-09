@@ -123,6 +123,8 @@ pub enum Action {
     LanguageServers,
     /// Catalog only: copies the selected server's install command.
     CatalogCopy,
+    /// Opens the keybindings card: every command, its keys and config name.
+    Keybindings,
     /// Splash only: moves the selection up a row, wrapping.
     SplashUp,
     /// Splash only: moves the selection down a row, wrapping.
@@ -270,6 +272,7 @@ impl Action {
         Action::OpenFolderHere,
         Action::LanguageServers,
         Action::CatalogCopy,
+        Action::Keybindings,
         Action::SplashUp,
         Action::SplashDown,
         Action::SplashRun,
@@ -419,6 +422,7 @@ impl Action {
             Action::OpenFolderHere => "open_folder_here",
             Action::LanguageServers => "language_servers",
             Action::CatalogCopy => "catalog_copy",
+            Action::Keybindings => "keybindings",
             Action::SplashUp => "splash_up",
             Action::SplashDown => "splash_down",
             Action::SplashRun => "splash_run",
@@ -537,6 +541,7 @@ impl Action {
             Action::OpenFolderHere => "Open this folder",
             Action::LanguageServers => "Language servers",
             Action::CatalogCopy => "Catalog: copy command",
+            Action::Keybindings => "Keybindings",
             Action::SplashUp => "Splash: up",
             Action::SplashDown => "Splash: down",
             Action::SplashRun => "Splash: run selected",
@@ -561,6 +566,11 @@ impl Action {
             .iter()
             .copied()
             .filter(|a| a.scope() == Scope::Global && *a != Action::Cancel)
+    }
+
+    /// Every action, in the order the keybindings card lists them.
+    pub fn all() -> impl Iterator<Item = Action> {
+        Action::ALL.iter().copied()
     }
 
     fn from_name(name: &str) -> Option<Action> {
@@ -700,6 +710,7 @@ const UNBOUND: &[Action] = &[
     Action::OpenDirectory,
     Action::ClearBreakpoints,
     Action::LanguageServers,
+    Action::Keybindings,
 ];
 
 /// What a key event means to the editor.
@@ -822,6 +833,28 @@ impl Keymap {
             .filter(|&(_, &bound)| bound == action)
             .map(|(&key, _)| key_label(key))
             .min_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)))
+    }
+
+    /// Every key that runs `action` in its own scope, labelled as the cast
+    /// palette labels them, in `key_label`'s order: the palette's pick first.
+    pub fn key_labels(&self, action: Action) -> Vec<String> {
+        let table = match action.scope() {
+            Scope::Global => &self.bindings,
+            Scope::Tree => &self.tree,
+            Scope::Find => &self.find,
+            Scope::Search => &self.search,
+            Scope::Folders => &self.folders,
+            Scope::Catalog => &self.catalog,
+            Scope::Splash => &self.splash,
+            Scope::Debug => &self.debug,
+        };
+        let mut labels: Vec<String> = table
+            .iter()
+            .filter(|&(_, &bound)| bound == action)
+            .map(|(&key, _)| key_label(key))
+            .collect();
+        labels.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+        labels
     }
 
     /// What `event` means outside the tree.
@@ -1933,6 +1966,32 @@ mod tests {
             map.resolve(&ev(KeyCode::Char('l'), KeyModifiers::ALT)),
             Input::Action(Action::LanguageServers)
         );
+    }
+
+    #[test]
+    fn keybindings_is_a_command_with_no_key() {
+        let map = Keymap::default();
+        assert!(Action::commands().any(|a| a == Action::Keybindings));
+        assert_eq!(Action::Keybindings.title(), "Keybindings");
+        assert_eq!(Action::Keybindings.name(), "keybindings");
+        assert_eq!(Action::Keybindings.scope(), Scope::Global);
+        assert_eq!(map.key_label(Action::Keybindings), None);
+        assert!(map.key_labels(Action::Keybindings).is_empty());
+    }
+
+    #[test]
+    fn key_labels_lists_every_key_in_the_actions_own_scope() {
+        let map = Keymap::default();
+        assert_eq!(map.key_labels(Action::TreeNewFolder), ["Shift+A"]);
+        assert_eq!(map.key_labels(Action::SplashRun), ["Enter"]);
+        assert_eq!(map.key_labels(Action::ProjectReplace), ["Alt+A"]);
+        let map = Keymap::new(&keys(&[(
+            "save",
+            KeyBinding::Many(vec!["ctrl+shift+s".into(), "alt+w".into()]),
+        )]))
+        .unwrap();
+        assert_eq!(map.key_labels(Action::Save), ["Alt+W", "Ctrl+Shift+S"]);
+        assert_eq!(map.key_label(Action::Save).as_deref(), Some("Alt+W"));
     }
 
     #[test]
