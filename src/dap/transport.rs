@@ -40,7 +40,7 @@ pub fn spawn(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        // Glyph quitting, or dropping a session, takes the adapter with it.
+        // Tome quitting, or dropping a session, takes the adapter with it.
         .kill_on_drop(true)
         .spawn()?;
     let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {

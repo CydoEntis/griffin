@@ -617,7 +617,7 @@ pub struct Stopped {
     pub exit: Option<JoinHandle<()>>,
 }
 
-/// Every language server Glyph has started, and which buffers each one follows.
+/// Every language server Tome has started, and which buffers each one follows.
 #[derive(Debug, Default)]
 pub struct Lsp {
     config: BTreeMap<String, LspServer>,
@@ -1025,7 +1025,7 @@ impl Lsp {
                 self.failures.remove(&client.lang);
             }
             client::State::Failed if before != client::State::Failed => {
-                // No reason means Glyph stopped it: not a failure.
+                // No reason means Tome stopped it: not a failure.
                 if let Some(reason) = &client.reason {
                     self.failures.insert(client.lang.clone(), reason.clone());
                 }
@@ -1259,7 +1259,7 @@ mod tests {
 
     #[test]
     fn clearing_a_failure_forgets_only_that_languages_reason() {
-        let mut lsp = Lsp::new(config("glyph-no-such-server"));
+        let mut lsp = Lsp::new(config("tome-no-such-server"));
         lsp.failures.insert("rust".into(), "exit code 3".into());
         lsp.failures.insert("go".into(), "no gopls".into());
         lsp.clear_failure("rust");
@@ -1281,7 +1281,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_server_is_reported_once_for_every_file_of_its_language() {
         let dir = tempfile::tempdir().unwrap();
-        let mut lsp = Lsp::new(config("glyph-no-such-server"));
+        let mut lsp = Lsp::new(config("tome-no-such-server"));
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         lsp.connect(tx);
         let (a, b) = (
@@ -1296,7 +1296,7 @@ mod tests {
         let first = lsp.sync(dir.path(), &[(1, &a), (2, &notes)]);
         assert_eq!(
             first,
-            ["rust: server not found (glyph-no-such-server) · >language servers installs it"]
+            ["rust: server not found (tome-no-such-server) · >language servers installs it"]
         );
         assert!(
             lsp.sync(dir.path(), &[(1, &a), (2, &notes), (3, &b)])
@@ -1307,7 +1307,7 @@ mod tests {
         assert!(!lsp.docs.contains_key(&2));
         assert_eq!(
             lsp.server_state(3),
-            Some((ServerState::NotFound, "glyph-no-such-server".to_string()))
+            Some((ServerState::NotFound, "tome-no-such-server".to_string()))
         );
         assert_eq!(lsp.server_state(2), None);
     }
@@ -1605,7 +1605,7 @@ mod tests {
     #[test]
     fn without_an_app_channel_nothing_starts() {
         let dir = tempfile::tempdir().unwrap();
-        let mut lsp = Lsp::new(config("glyph-no-such-server"));
+        let mut lsp = Lsp::new(config("tome-no-such-server"));
         let a = rust_buffer(dir.path(), "a.rs");
         assert!(lsp.sync(dir.path(), &[(1, &a)]).is_empty());
         assert!(lsp.servers.is_empty());
@@ -1944,7 +1944,7 @@ mod tests {
     #[test]
     fn stopping_a_root_without_servers_does_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let mut lsp = Lsp::new(config("glyph-no-such-server"));
+        let mut lsp = Lsp::new(config("tome-no-such-server"));
         // No runtime here: nothing is spawned for a root with no servers.
         assert!(lsp.stop_root(dir.path()).is_none());
     }
@@ -1952,7 +1952,7 @@ mod tests {
     #[tokio::test]
     async fn stopping_a_missing_or_crashed_server_never_blocks_editing() {
         let root = tempfile::tempdir().unwrap();
-        let mut lsp = Lsp::new(config("glyph-no-such-server"));
+        let mut lsp = Lsp::new(config("tome-no-such-server"));
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         lsp.connect(tx);
         let a = rust_buffer(root.path(), "a.rs");
@@ -2010,7 +2010,7 @@ mod tests {
     async fn forgetting_failed_servers_drops_every_failed_one_of_the_language_only() {
         let roots: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
         let (one, two, three) = (roots[0].path(), roots[1].path(), roots[2].path());
-        let missing = one.join("glyph-no-such-server");
+        let missing = one.join("tome-no-such-server");
         let mut fake = Fake::new(None);
         let a = rust_buffer(one, "a.rs");
         fake.run_until(one, &[(1, &a)], opened(1)).await;
@@ -2124,7 +2124,7 @@ mod tests {
     #[tokio::test]
     async fn forgetting_with_nothing_failed_does_nothing() {
         let root = tempfile::tempdir().unwrap();
-        let mut empty = Lsp::new(config("glyph-no-such-server"));
+        let mut empty = Lsp::new(config("tome-no-such-server"));
         assert!(!empty.forget_failed("rust"));
 
         let mut fake = Fake::new(None);
@@ -2143,7 +2143,7 @@ mod tests {
     #[tokio::test]
     async fn only_a_server_that_is_up_counts_as_running() {
         let dir = tempfile::tempdir().unwrap();
-        let mut missing = Lsp::new(config("glyph-no-such-server"));
+        let mut missing = Lsp::new(config("tome-no-such-server"));
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         missing.connect(tx);
         assert!(!missing.is_running("rust"));

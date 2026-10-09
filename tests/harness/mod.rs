@@ -1,4 +1,4 @@
-//! PTY harness: runs the real `glyph` binary in a 100x30 pseudo-terminal, sends
+//! PTY harness: runs the real `tome` binary in a 100x30 pseudo-terminal, sends
 //! keys and mouse input as terminal bytes, and reads the screen back through vt100.
 //!
 //! Integration tests include it with `mod harness;`.
@@ -61,13 +61,13 @@ const CURSOR_QUERY: &[u8] = b"[6n";
 struct Shared {
     parser: Mutex<vt100::Parser>,
     changed: Condvar,
-    /// Every byte glyph wrote, for what vt100 doesn't keep (underline colour and
+    /// Every byte tome wrote, for what vt100 doesn't keep (underline colour and
     /// style). Appended under the `parser` lock, so waiting on `changed` covers it.
     raw: Mutex<Vec<u8>>,
 }
 
-/// A running `glyph` inside a pseudo-terminal. Dropping it kills the process.
-pub struct Glyph {
+/// A running `tome` inside a pseudo-terminal. Dropping it kills the process.
+pub struct Tome {
     shared: Arc<Shared>,
     writer: SharedWriter,
     killer: Box<dyn ChildKiller + Send + Sync>,
@@ -75,43 +75,43 @@ pub struct Glyph {
     exited: Option<ExitStatus>,
     // Kept alive so the PTY stays open for the reader and the child.
     _master: Box<dyn MasterPty + Send>,
-    // Kept alive so `GLYPH_CONFIG` points at a real file until the end.
+    // Kept alive so `TOME_CONFIG` points at a real file until the end.
     _config: NamedTempFile,
-    // The run's own `GLYPH_DATA_DIR` when the test didn't pick one, so backups
+    // The run's own `TOME_DATA_DIR` when the test didn't pick one, so backups
     // never land in the real data dir.
     _data: Option<TempDir>,
 }
 
-impl Glyph {
-    /// Starts glyph in the current directory (the crate root under `cargo test`).
+impl Tome {
+    /// Starts tome in the current directory (the crate root under `cargo test`).
     pub fn spawn(args: &[&str]) -> Self {
         let dir = std::env::current_dir().expect("test process has a current directory");
         Self::spawn_in(&dir, args)
     }
 
-    /// Starts glyph with `dir` as its working directory.
+    /// Starts tome with `dir` as its working directory.
     pub fn spawn_in(dir: &Path, args: &[&str]) -> Self {
         Self::spawn_in_with_config(dir, "", args)
     }
 
-    /// Starts glyph in the current directory with `toml` as its `config.toml`.
+    /// Starts tome in the current directory with `toml` as its `config.toml`.
     pub fn spawn_with_config(toml: &str, args: &[&str]) -> Self {
         let dir = std::env::current_dir().expect("test process has a current directory");
         Self::spawn_in_with_config(&dir, toml, args)
     }
 
-    /// Starts glyph with `dir` as its working directory and `toml` as its config.
+    /// Starts tome with `dir` as its working directory and `toml` as its config.
     pub fn spawn_in_with_config(dir: &Path, toml: &str, args: &[&str]) -> Self {
         Self::spawn_full(dir, toml, None, &[], args)
     }
 
-    /// Starts glyph in `dir` with extra environment variables, e.g. a `PATH`
+    /// Starts tome in `dir` with extra environment variables, e.g. a `PATH`
     /// that holds a fixture's commands.
     pub fn spawn_in_with_env(dir: &Path, env: &[(&str, OsString)], args: &[&str]) -> Self {
         Self::spawn_full(dir, "", None, env, args)
     }
 
-    /// Starts glyph in `dir` with `toml` as its config and extra environment
+    /// Starts tome in `dir` with `toml` as its config and extra environment
     /// variables, e.g. where the fake language server writes its log.
     pub fn spawn_in_with_config_and_env(
         dir: &Path,
@@ -122,7 +122,7 @@ impl Glyph {
         Self::spawn_full(dir, toml, None, env, args)
     }
 
-    /// Starts glyph in `dir` with `data` as its data dir, which outlives this run
+    /// Starts tome in `dir` with `data` as its data dir, which outlives this run
     /// so a relaunch can find what the last one left there.
     pub fn spawn_in_with_data(dir: &Path, data: &Path, args: &[&str]) -> Self {
         Self::spawn_full(dir, "", Some(data.to_path_buf()), &[], args)
@@ -157,17 +157,17 @@ impl Glyph {
             })
             .expect("open pseudo-terminal");
 
-        let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_glyph"));
+        let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_tome"));
         cmd.args(args);
         cmd.cwd(dir);
-        cmd.env("GLYPH_CONFIG", config.path());
-        cmd.env("GLYPH_DATA_DIR", &data);
+        cmd.env("TOME_CONFIG", config.path());
+        cmd.env("TOME_DATA_DIR", &data);
         cmd.env("TERM", "xterm-256color");
         for (key, value) in env {
             cmd.env(key, value);
         }
 
-        let mut child = pair.slave.spawn_command(cmd).expect("spawn glyph");
+        let mut child = pair.slave.spawn_command(cmd).expect("spawn tome");
         // The child holds its own handle; ours would keep the PTY open after it exits.
         drop(pair.slave);
 
@@ -214,7 +214,7 @@ impl Glyph {
         }
     }
 
-    /// Kills glyph without letting it clean up, as a crash would, and waits for
+    /// Kills tome without letting it clean up, as a crash would, and waits for
     /// it to be gone.
     pub fn kill(&mut self) {
         if self.exited.is_none() {
@@ -513,7 +513,7 @@ impl Glyph {
         }
     }
 
-    /// Waits until glyph's raw output, escape sequences and all, has contained
+    /// Waits until tome's raw output, escape sequences and all, has contained
     /// `bytes`. For what the screen model doesn't keep, such as underline colours.
     /// Panics with the screen on timeout.
     pub fn wait_for_output(&self, bytes: &[u8], timeout: Duration) {
@@ -698,12 +698,12 @@ impl Glyph {
         }
     }
 
-    /// Checks glyph is still running after `grace`. Proving a key did nothing
-    /// needs some window to wait in; this returns early if glyph exits.
+    /// Checks tome is still running after `grace`. Proving a key did nothing
+    /// needs some window to wait in; this returns early if tome exits.
     pub fn assert_running_for(&mut self, grace: Duration) {
         if self.exited.is_some() {
             panic!(
-                "glyph already exited
+                "tome already exited
 {}",
                 dump(&self.screen())
             );
@@ -711,15 +711,15 @@ impl Glyph {
         match self.exit.recv_timeout(grace) {
             Err(RecvTimeoutError::Timeout) => {}
             Ok(status) => panic!(
-                "glyph exited unexpectedly with {status:?}
+                "tome exited unexpectedly with {status:?}
 {}",
                 dump(&self.screen())
             ),
-            Err(RecvTimeoutError::Disconnected) => panic!("glyph's wait thread vanished"),
+            Err(RecvTimeoutError::Disconnected) => panic!("tome's wait thread vanished"),
         }
     }
 
-    /// Waits for glyph to exit and returns its status. Panics with the screen on timeout.
+    /// Waits for tome to exit and returns its status. Panics with the screen on timeout.
     pub fn wait_exit(&mut self, timeout: Duration) -> ExitStatus {
         if let Some(status) = &self.exited {
             return status.clone();
@@ -729,12 +729,12 @@ impl Glyph {
                 self.exited = Some(status.clone());
                 status
             }
-            Ok(Err(err)) => panic!("waiting for glyph failed: {err}"),
+            Ok(Err(err)) => panic!("waiting for tome failed: {err}"),
             Err(RecvTimeoutError::Timeout) => panic!(
-                "glyph did not exit within {timeout:?}\n{}",
+                "tome did not exit within {timeout:?}\n{}",
                 dump(&self.screen())
             ),
-            Err(RecvTimeoutError::Disconnected) => panic!("glyph's wait thread vanished"),
+            Err(RecvTimeoutError::Disconnected) => panic!("tome's wait thread vanished"),
         }
     }
 
@@ -759,7 +759,7 @@ impl Glyph {
     }
 }
 
-impl Drop for Glyph {
+impl Drop for Tome {
     fn drop(&mut self) {
         if self.exited.is_none() && self.exit.try_recv().is_err() {
             let _ = self.killer.kill();
@@ -880,7 +880,7 @@ fn wait_for_contents(shared: &Shared, text: &str, timeout: Duration) -> Result<(
     }
 }
 
-/// Begin and end synchronized update (DEC mode 2026), which glyph wraps around
+/// Begin and end synchronized update (DEC mode 2026), which tome wraps around
 /// each frame.
 const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
 const SYNC_END: &[u8] = b"\x1b[?2026l";
@@ -974,7 +974,7 @@ impl FrameGate {
 /// `bytes` with each underline style (`4:1` curly and the rest, `4:0` off) in an
 /// SGR sequence turned into the plain `4` or `24` vt100 knows; it ignores the
 /// styled forms. A curly diagnostic underline is still an underline to a test,
-/// and ConPTY re-emits glyph's `4` + `4:3` as `4:3` alone (CI run 37715924579).
+/// and ConPTY re-emits tome's `4` + `4:3` as `4:3` alone (CI run 37715924579).
 fn plain_underlines(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut at = 0;

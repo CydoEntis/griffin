@@ -103,7 +103,7 @@ impl Default for Backups {
 }
 
 impl Backups {
-    /// `data_dir` is glyph's own data folder; backups go in `backups/` under it.
+    /// `data_dir` is tome's own data folder; backups go in `backups/` under it.
     pub fn new(data_dir: Option<PathBuf>) -> Self {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -215,14 +215,14 @@ impl Job {
     }
 }
 
-/// Glyph's data folder: `GLYPH_DATA_DIR` when set and non-empty, otherwise the
-/// OS data dir's `glyph` folder (next to the config dir's, which #3 put under
+/// Tome's data folder: `TOME_DATA_DIR` when set and non-empty, otherwise the
+/// OS data dir's `tome` folder (next to the config dir's, which #3 put under
 /// `BaseDirs`).
 pub fn data_dir(env_override: Option<OsString>) -> Option<PathBuf> {
     if let Some(dir) = env_override.filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(dir));
     }
-    directories::BaseDirs::new().map(|dirs| dirs.data_dir().join("glyph"))
+    directories::BaseDirs::new().map(|dirs| dirs.data_dir().join("tome"))
 }
 
 /// 64-bit FNV-1a. Backup names must stay the same across runs and Rust versions,
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn hash_is_stable() {
-        // Changing this would orphan every backup written by an older glyph.
+        // Changing this would orphan every backup written by an older tome.
         assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a(b"a"), 0xaf63_dc4c_8601_ec8c);
     }

@@ -409,7 +409,7 @@ struct Tabs {
     focused: usize,
     next_id: u64,
     /// The breakpoints of closed files, by absolute path, so reopening one while
-    /// Glyph runs brings them back (glyph-debugger spec D2). Open files keep
+    /// Tome runs brings them back (tome-debugger spec D2). Open files keep
     /// theirs on the buffer.
     kept_breakpoints: HashMap<PathBuf, BTreeSet<usize>>,
 }
@@ -837,7 +837,7 @@ struct Paused {
     at: Option<(PathBuf, usize)>,
 }
 
-/// The debug session (one at a time) and what Glyph knows of its program.
+/// The debug session (one at a time) and what Tome knows of its program.
 #[derive(Debug)]
 struct DebugSession {
     session: Session,
@@ -914,15 +914,15 @@ pub struct App {
     project: String,
     tree_visible: bool,
     /// Whether the launch asked for the tree. The splash hides it only while
-    /// it's up (glyph-splash spec S3), so leaving the splash brings this back.
+    /// it's up (tome-splash spec S3), so leaving the splash brings this back.
     tree_after_splash: bool,
     focus: Focus,
-    /// The splash, while Glyph is still as it started with nothing to edit
-    /// (glyph-splash spec S1). It's drawn over the editor area in place of the
+    /// The splash, while Tome is still as it started with nothing to edit
+    /// (tome-splash spec S1). It's drawn over the editor area in place of the
     /// untouched untitled tab underneath, which is what leaving it shows.
     splash: Option<Splash>,
     /// No file is open since the last tab closed or another folder was opened
-    /// (glyph-splash spec S11): the editor area shows the key list in place of
+    /// (tome-splash spec S11): the editor area shows the key list in place of
     /// the untouched untitled tab underneath, which Ctrl+N shows.
     no_file: bool,
     /// The prompt bar, while it's asking for a name; it takes every key.
@@ -1022,7 +1022,7 @@ pub struct App {
     /// `config.toml`'s `[debug.<lang>]` tables.
     debug_adapters: BTreeMap<String, DebugAdapter>,
     /// Where `config.toml` lives, for `>settings`; `None` when the OS has no
-    /// config folder and `GLYPH_CONFIG` isn't set.
+    /// config folder and `TOME_CONFIG` isn't set.
     config_path: Option<PathBuf>,
     /// How many debug sessions have started, numbering them so an old
     /// adapter's last words are dropped.
@@ -1042,7 +1042,7 @@ impl App {
     ) -> Self {
         let mut messages: Vec<String> = message.into_iter().collect();
         let launch = Launch::from_arg(path.as_deref());
-        // Only a named file gives Glyph something to edit at launch.
+        // Only a named file gives Tome something to edit at launch.
         let splash = launch.file.is_none().then(Splash::default);
         let buffer = match launch.file {
             Some(path) => Buffer::open(&path).unwrap_or_else(|err| {
@@ -1061,7 +1061,7 @@ impl App {
             message_tone: Tone::Err,
             tree: Tree::new(&launch.root),
             project: project_label(&launch.root, std::env::home_dir().as_deref()),
-            // The splash hides the tree (glyph-splash spec S3); Ctrl+B or Ctrl+E
+            // The splash hides the tree (tome-splash spec S3); Ctrl+B or Ctrl+E
             // brings it back beside it, and leaving the splash restores it.
             tree_visible: launch.show_tree && splash.is_none(),
             tree_after_splash: launch.show_tree,
@@ -1848,7 +1848,7 @@ impl App {
     }
 
     /// After tabs close: with no file left open, the key list takes the editor
-    /// area (glyph-splash spec S11). The splash, if it's still up, already
+    /// area (tome-splash spec S11). The splash, if it's still up, already
     /// stands for there being nothing.
     fn note_nothing_open(&mut self) {
         if self.splash.is_none() && self.tabs.nothing_open() {
@@ -2179,7 +2179,7 @@ impl App {
                 self.tabs.clear_breakpoints();
                 self.send_breakpoints(&had);
             }
-            // One key starts a session and continues it (glyph-debugger spec).
+            // One key starts a session and continues it (tome-debugger spec).
             Action::DebugStart if self.debug.is_some() => self.debug_step(Session::resume),
             Action::DebugStart => self.start_debugging(),
             Action::DebugStop => self.stop_debugging(),
@@ -2651,7 +2651,7 @@ impl App {
     }
 
     /// `>language servers`: the catalog, with what's on PATH as of now, so a
-    /// server installed outside Glyph shows once the catalog is opened again.
+    /// server installed outside Tome shows once the catalog is opened again.
     fn open_catalog(&mut self) {
         let lsp = &self.lsp;
         let catalog = with_lookup(|lookup| {
@@ -2758,7 +2758,7 @@ impl App {
 
     /// What an install's exit means. On success the server's failed starts are
     /// forgotten, so the `sync_lsp` after this event starts it for the open
-    /// files. Glyph's PATH was read when it started and doesn't change, so a
+    /// files. Tome's PATH was read when it started and doesn't change, so a
     /// server installed into a folder added to PATH since can't be found yet.
     fn installed(&mut self, install: &catalog::Install, code: Option<i32>) {
         match code {
@@ -2794,7 +2794,7 @@ impl App {
         }
     }
 
-    /// Makes `dir` the project, as `glyph <dir>` would: every tab closes, the
+    /// Makes `dir` the project, as `tome <dir>` would: every tab closes, the
     /// run is stopped, the old folder's language servers are shut down, and
     /// the tree shows the new folder beside the splash. Everything else that reads
     /// the project (Ctrl+P, project search, F5, save as, new servers) asks the
@@ -2851,7 +2851,7 @@ impl App {
         self.debug_build = None;
         self.end_debugging(RunStatus::Stopped);
         // Ctrl+F5 would run the old command in the new folder; without it,
-        // Ctrl+F5 is F5, which reads the new folder's `.glyph.toml`.
+        // Ctrl+F5 is F5, which reads the new folder's `.tome.toml`.
         self.run_entry = None;
         self.close_project_search();
         self.find = None;
@@ -3151,7 +3151,7 @@ impl App {
         }
     }
 
-    /// F5: reads `.glyph.toml` afresh, so edits to it count without a restart,
+    /// F5: reads `.tome.toml` afresh, so edits to it count without a restart,
     /// then runs its one entry or asks which of several. Without `[[run]]` it
     /// offers commands detected from the project files instead.
     fn start_run(&mut self) {
@@ -3304,7 +3304,7 @@ impl App {
     }
 
     /// Alt+F5 with no session: works out the adapter and launch for the active
-    /// file's language, reading `.glyph.toml` afresh as F5 does, then runs the
+    /// file's language, reading `.tome.toml` afresh as F5 does, then runs the
     /// build in the run panel if there is one, or starts the adapter at once.
     fn start_debugging(&mut self) {
         // One session at a time; Alt+F5 during one is continue's, not this.
@@ -4213,7 +4213,7 @@ impl App {
         }
     }
 
-    /// Whether `path` is the `config.toml` this Glyph reads, however it was
+    /// Whether `path` is the `config.toml` this Tome reads, however it was
     /// spelled when opened.
     fn is_config(&self, path: &Path) -> bool {
         self.config_path
@@ -4947,7 +4947,7 @@ impl App {
 }
 
 /// Calls `f` with the catalog's lookup in this process's environment. PATH is
-/// read each time, so the catalog shows a program installed outside Glyph once
+/// read each time, so the catalog shows a program installed outside Tome once
 /// it's opened again.
 fn with_lookup<R>(f: impl FnOnce(&catalog::Lookup) -> R) -> R {
     let path = std::env::var_os("PATH");
@@ -5602,7 +5602,7 @@ mod tests {
     #[test]
     fn settings_creates_the_template_and_opens_it_once() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("glyph").join("config.toml");
+        let path = dir.path().join("tome").join("config.toml");
         let clipboard = FakeClipboard::default();
         let mut app = app_with("text", &clipboard).with_config_path(Some(path.clone()));
         app.handle_action(Action::Settings);
@@ -5667,7 +5667,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // An adapter that never starts is still a session the app holds.
         let (events, _rx) = mpsc::unbounded_channel();
-        let program = dir.path().join("glyph-no-such-adapter");
+        let program = dir.path().join("tome-no-such-adapter");
         let session = Session::start(1, &program, &[], dir.path(), events);
         let launch = adapters::Launch {
             build: None,
@@ -5759,7 +5759,7 @@ mod tests {
     #[test]
     fn rebinding_with_no_config_file_creates_it_from_the_template() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("glyph").join("config.toml");
+        let path = dir.path().join("tome").join("config.toml");
         let clipboard = FakeClipboard::default();
         let mut app = app_with("", &clipboard).with_config_path(Some(path.clone()));
         // Resetting a command the file never named writes nothing.
@@ -5768,7 +5768,7 @@ mod tests {
         assert!(!path.exists());
         press(&mut app, &["enter", "f2"]);
         let written = std::fs::read_to_string(&path).unwrap();
-        assert!(written.starts_with("# Glyph's settings."), "{written}");
+        assert!(written.starts_with("# Tome's settings."), "{written}");
         assert!(written.contains("[keys]\nquit = \"f2\"\n"), "{written}");
         assert_eq!(app.keymap.key_labels(Action::Quit), ["F2"]);
     }
@@ -7201,7 +7201,7 @@ world",
         terminal.draw(|frame| app.render(frame))?;
         let buffer = terminal.backend().buffer();
         let last: String = (0..100).map(|x| buffer[(x, 29)].symbol()).collect();
-        assert!(last.starts_with(" ✦ glyph"), "{last}");
+        assert!(last.starts_with(" ✦ tome"), "{last}");
         // The message holds the path slot at x = 20 until the next key.
         let slot: String = last.chars().skip(20).collect();
         assert!(slot.starts_with("✕ config error: boom"), "{last}");
@@ -7246,7 +7246,7 @@ world",
         for y in 4..29 {
             assert_eq!(row(y).trim(), "", "row {y} should be blank");
         }
-        assert!(row(29).starts_with(" ✦ glyph"));
+        assert!(row(29).starts_with(" ✦ tome"));
         Ok(())
     }
 

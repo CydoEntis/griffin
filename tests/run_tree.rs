@@ -4,13 +4,13 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use harness::Glyph;
+use harness::Tome;
 
 const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(15);
 /// R27: the grandchild has to be gone this soon after a stop or a quit.
 const GONE_WITHIN: Duration = Duration::from_secs(2);
-/// `.glyph.toml` has one entry, `dev`, which runs the `spawn-tree` script: it
+/// `.tome.toml` has one entry, `dev`, which runs the `spawn-tree` script: it
 /// starts a long-lived grandchild, prints `grandchild <pid>`, then waits on it.
 const PROJECT: &str = "tests/fixtures/run-tree";
 
@@ -26,7 +26,7 @@ fn fixture_path() -> Vec<(&'static str, OsString)> {
     vec![("PATH", joined)]
 }
 
-/// Kills the grandchild if a test fails before Glyph does, so a failure doesn't
+/// Kills the grandchild if a test fails before Tome does, so a failure doesn't
 /// leave it running for five minutes.
 struct Leftover(u32);
 
@@ -68,24 +68,24 @@ fn alive(pid: u32) -> bool {
 }
 
 /// Polls, since a process ending has no output to wait for.
-fn assert_gone(pid: u32, glyph: &Glyph) {
+fn assert_gone(pid: u32, tome: &Tome) {
     let deadline = Instant::now() + GONE_WITHIN;
     while alive(pid) {
         assert!(
             Instant::now() < deadline,
             "grandchild {pid} still running {GONE_WITHIN:?} later\n{}",
-            glyph.screen().join("\n")
+            tome.screen().join("\n")
         );
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
 /// Starts `dev` and returns the grandchild's pid once the script has printed it.
-fn run_dev(glyph: &mut Glyph) -> u32 {
-    glyph.send_keys("f5");
-    glyph.wait_for_text("● dev  running", WAIT);
-    glyph.wait_for_text("grandchild ", WAIT);
-    let screen = glyph.screen();
+fn run_dev(tome: &mut Tome) -> u32 {
+    tome.send_keys("f5");
+    tome.wait_for_text("● dev  running", WAIT);
+    tome.wait_for_text("grandchild ", WAIT);
+    let screen = tome.screen();
     let pid = screen
         .iter()
         .find_map(|line| {
@@ -97,29 +97,29 @@ fn run_dev(glyph: &mut Glyph) -> u32 {
     pid
 }
 
-fn open_project() -> Glyph {
-    let glyph = Glyph::spawn_in_with_env(Path::new(PROJECT), &fixture_path(), &[]);
-    glyph.wait_for_text("Open directory", START);
-    glyph
+fn open_project() -> Tome {
+    let tome = Tome::spawn_in_with_env(Path::new(PROJECT), &fixture_path(), &[]);
+    tome.wait_for_text("Open directory", START);
+    tome
 }
 
 #[test]
 fn stop_kills_grandchild() {
-    let mut glyph = open_project();
-    let pid = run_dev(&mut glyph);
+    let mut tome = open_project();
+    let pid = run_dev(&mut tome);
     let _leftover = Leftover(pid);
-    glyph.send_keys("shift+f5");
-    glyph.wait_for_text("■ dev  stopped", WAIT);
-    assert_gone(pid, &glyph);
-    glyph.assert_running_for(Duration::from_millis(100));
+    tome.send_keys("shift+f5");
+    tome.wait_for_text("■ dev  stopped", WAIT);
+    assert_gone(pid, &tome);
+    tome.assert_running_for(Duration::from_millis(100));
 }
 
 #[test]
 fn quit_kills_grandchild() {
-    let mut glyph = open_project();
-    let pid = run_dev(&mut glyph);
+    let mut tome = open_project();
+    let pid = run_dev(&mut tome);
     let _leftover = Leftover(pid);
-    glyph.send_keys("ctrl+q");
-    glyph.wait_exit(WAIT);
-    assert_gone(pid, &glyph);
+    tome.send_keys("ctrl+q");
+    tome.wait_exit(WAIT);
+    assert_gone(pid, &tome);
 }

@@ -1,7 +1,7 @@
-//! The status bar on the last row (design README §2.5): the glyph block, the
+//! The status bar on the last row (design README §2.5): the brand block, the
 //! path slot at x = 20, and on the right the debug session's state, the cursor
 //! position, the language, its server's state and the diagnostic counts — or, while the splash is up, its
-//! keys and Glyph's version.
+//! keys and Tome's version.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -12,7 +12,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::lsp::ServerState;
 use crate::theme::{Theme, grad, mix};
 
-/// Cells the glyph block covers: ten on the accent ramp, then eight fading into
+/// Cells the brand block covers: ten on the accent ramp, then eight fading into
 /// the bar.
 const BLOCK_WIDTH: u16 = 18;
 /// Where the path (or a message in its place) starts.
@@ -47,7 +47,7 @@ impl Tone {
     }
 }
 
-/// Where a debug session is, for its segment (glyph-debugger spec D4).
+/// Where a debug session is, for its segment (tome-debugger spec D4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Debugging<'a> {
     /// The program is running (or starting).
@@ -77,7 +77,7 @@ pub struct Status<'a> {
     /// The language server's warnings and errors for the buffer.
     pub warnings: usize,
     pub errors: usize,
-    /// The splash is up (glyph-splash spec S3): there's no cursor or language to
+    /// The splash is up (tome-splash spec S3): there's no cursor or language to
     /// report, so the right side says how to drive the splash instead.
     pub splash: bool,
     /// The debug session's state, while there is one. It leads the right side
@@ -148,7 +148,7 @@ pub fn render_status(frame: &mut Frame, theme: &Theme, area: Rect, status: &Stat
         area.y,
         right_edge,
         &[(
-            "✦ glyph".to_string(),
+            "✦ tome".to_string(),
             Style::new().fg(theme.acc_ink).add_modifier(Modifier::BOLD),
         )],
     );

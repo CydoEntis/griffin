@@ -30,7 +30,7 @@ pub struct Marks<'a> {
     /// severity's colour, with a mark in the gutter.
     pub diagnostics: &'a [Diagnostic],
     /// The 0-based line the debugged program is paused on, when it's in this
-    /// buffer: `▶` in the mark cell and a glow in `accent2` (glyph-debugger
+    /// buffer: `▶` in the mark cell and a glow in `accent2` (tome-debugger
     /// spec D5).
     pub paused: Option<usize>,
 }
@@ -63,7 +63,7 @@ fn lens_color(theme: &Theme, severity: Severity) -> Color {
 const GUTTER_MARK: &str = "◆";
 
 /// In the gutter's first cell, on a line with a breakpoint; it wins over a
-/// diagnostic mark there (glyph-debugger spec D2).
+/// diagnostic mark there (tome-debugger spec D2).
 const BREAKPOINT_MARK: &str = "●";
 
 /// In the gutter's first cell, on the line the debugged program is paused on;
@@ -190,7 +190,7 @@ fn glow_in(theme: &Theme, light: Color, dx: u16, width: u16) -> Color {
 }
 
 /// Draws `buf` into `area`: a gutter of diagnostic mark and right-aligned line
-/// number, then each line cut at the right edge (Glyph never wraps), and puts the
+/// number, then each line cut at the right edge (Tome never wraps), and puts the
 /// terminal cursor on the buffer cursor when it's in view. In the `focused` split
 /// the cursor row glows and its number is lit. Diagnostics are underlined in their
 /// colour and mark the gutter with the most severe one on the line; the selection

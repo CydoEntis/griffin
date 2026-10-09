@@ -1,4 +1,4 @@
-//! The debug panel (glyph-debugger spec D7): while a debug session is on it
+//! The debug panel (tome-debugger spec D7): while a debug session is on it
 //! takes the run panel's slot, with the paused program's call stack on the left
 //! and the selected frame's variables, by scope, on the right. While the program
 //! runs there is no stack to show, so the body is the program's output.

@@ -64,7 +64,7 @@ pub fn spawn(
         // Read all along, never waited on: a server blocks once a full stderr
         // pipe goes unread, and its last words say why it failed.
         .stderr(Stdio::piped())
-        // Glyph quitting, or dropping a server, takes the process with it.
+        // Tome quitting, or dropping a server, takes the process with it.
         .kill_on_drop(true)
         .spawn()?;
     let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {

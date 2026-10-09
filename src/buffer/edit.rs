@@ -441,7 +441,7 @@ mod tests {
         type_all(&mut b, "foo(bar)", true);
         assert_eq!(show(&b), "foo(bar)|");
 
-        // Whether or not Glyph inserted it.
+        // Whether or not Tome inserted it.
         let mut b = buf("a|]");
         b.type_char(']', true);
         assert_eq!(show(&b), "a]|");
@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(show(&b), "x |");
         assert!(!b.history.can_undo(), "stepping over `)` split the run");
 
-        // Over a closer Glyph didn't insert, too.
+        // Over a closer Tome didn't insert, too.
         let mut b = buf("(|)");
         type_all(&mut b, "a);", true);
         assert_eq!(show(&b), "(a);|");

@@ -1,11 +1,11 @@
 [package]
-name = "glyph"
+name = "tome"
 version = "0.1.0"
 edition = "2024"
 description = "A non-modal TUI text editor"
 
 [[bin]]
-name = "glyph"
+name = "tome"
 path = "src/main.rs"
 
 [dependencies]

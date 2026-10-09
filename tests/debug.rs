@@ -1,6 +1,6 @@
 //! Starting and stopping a debug session against `fake_dap`, the scripted
 //! adapter in `src/bin/fake_dap.rs`, driven through the real binary
-//! (glyph-debugger spec D4, D5, D6, D7).
+//! (tome-debugger spec D4, D5, D6, D7).
 
 mod harness;
 
@@ -8,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use harness::{Glyph, ROWS};
+use harness::{ROWS, Tome};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -40,13 +40,13 @@ struct Project {
 }
 
 impl Project {
-    /// `script` is the fake's script; `glyph_toml` the project's `.glyph.toml`.
-    fn new(script: Value, glyph_toml: &str) -> Self {
+    /// `script` is the fake's script; `tome_toml` the project's `.tome.toml`.
+    fn new(script: Value, tome_toml: &str) -> Self {
         let dir = tempfile::tempdir().expect("create project dir");
         fs::write(dir.path().join("main.py"), "a = 1\nb = 2\nc = 3\n").expect("write main.py");
         fs::write(dir.path().join("other.py"), "x = 0\n").expect("write other.py");
-        if !glyph_toml.is_empty() {
-            fs::write(dir.path().join(".glyph.toml"), glyph_toml).expect("write .glyph.toml");
+        if !tome_toml.is_empty() {
+            fs::write(dir.path().join(".tome.toml"), tome_toml).expect("write .tome.toml");
         }
         let files = tempfile::tempdir().expect("create log dir");
         fs::write(files.path().join("script.json"), script.to_string()).expect("write script");
@@ -73,15 +73,15 @@ impl Project {
         )
     }
 
-    /// Glyph on `file` with the fake as Python's adapter.
-    fn open(&self, file: &str) -> Glyph {
+    /// Tome on `file` with the fake as Python's adapter.
+    fn open(&self, file: &str) -> Tome {
         self.open_with(fake(), file)
     }
 
-    fn open_with(&self, adapter: &str, file: &str) -> Glyph {
-        let glyph = Glyph::spawn_in_with_config(self.dir.path(), &self.config(adapter), &[file]);
-        glyph.wait_for_text("Ln 1, Col 1", START);
-        glyph
+    fn open_with(&self, adapter: &str, file: &str) -> Tome {
+        let tome = Tome::spawn_in_with_config(self.dir.path(), &self.config(adapter), &[file]);
+        tome.wait_for_text("Ln 1, Col 1", START);
+        tome
     }
 
     /// Every request the fake received, in order.
@@ -104,8 +104,8 @@ impl Project {
     }
 
     /// Waits until the fake has received `count` requests named `command`.
-    fn wait_for(&self, glyph: &Glyph, command: &str, count: usize) {
-        glyph.wait_for_files(&format!("{count} × {command}"), WAIT, || {
+    fn wait_for(&self, tome: &Tome, command: &str, count: usize) {
+        tome.wait_for_files(&format!("{count} × {command}"), WAIT, || {
             self.commands().iter().filter(|c| *c == command).count() >= count
         });
     }
@@ -124,8 +124,8 @@ fn breakpoints(request: &Value) -> (String, Vec<u64>) {
     (path, lines)
 }
 
-fn wait_for_status(glyph: &Glyph, text: &str) {
-    glyph.wait_for_screen(&format!("{text:?} in the status line"), WAIT, |screen| {
+fn wait_for_status(tome: &Tome, text: &str) {
+    tome.wait_for_screen(&format!("{text:?} in the status line"), WAIT, |screen| {
         status_line(screen).contains(text)
     });
 }
@@ -133,23 +133,23 @@ fn wait_for_status(glyph: &Glyph, text: &str) {
 #[test]
 fn alt_f5_builds_then_launches_with_every_breakpoint_in_order() {
     let project = Project::new(json!({}), "[debug]\nbuild = \"echo built\"\n");
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("down");
-    glyph.wait_for_text("Ln 2, Col 1", WAIT);
-    glyph.send_keys("f9");
+    let mut tome = project.open("main.py");
+    tome.send_keys("down");
+    tome.wait_for_text("Ln 2, Col 1", WAIT);
+    tome.send_keys("f9");
     // A second file, so the breakpoints go file by file.
-    glyph.send_keys("ctrl+p");
-    glyph.wait_for_text("cast", WAIT);
-    glyph.type_text("other.py");
-    glyph.wait_for_text("other.py  ", WAIT);
-    glyph.send_keys("enter");
-    glyph.wait_for_text("1  x = 0", WAIT);
-    glyph.send_keys("f9");
+    tome.send_keys("ctrl+p");
+    tome.wait_for_text("cast", WAIT);
+    tome.type_text("other.py");
+    tome.wait_for_text("other.py  ", WAIT);
+    tome.send_keys("enter");
+    tome.wait_for_text("1  x = 0", WAIT);
+    tome.send_keys("f9");
 
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "● debugging");
-    glyph.wait_for_text("debug other.py", WAIT);
-    project.wait_for(&glyph, "configurationDone", 1);
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "● debugging");
+    tome.wait_for_text("debug other.py", WAIT);
+    project.wait_for(&tome, "configurationDone", 1);
     assert_eq!(
         project.commands(),
         [
@@ -176,24 +176,24 @@ fn alt_f5_builds_then_launches_with_every_breakpoint_in_order() {
 #[test]
 fn a_failed_build_stops_there() {
     let project = Project::new(json!({}), "[debug]\nbuild = \"exit 3\"\n");
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "build failed");
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "build failed");
     // The run panel keeps the build's own result.
-    glyph.wait_for_text("exited 3", WAIT);
+    tome.wait_for_text("exited 3", WAIT);
     assert!(project.commands().is_empty(), "{:?}", project.commands());
-    assert!(!status_line(&glyph.screen()).contains("debugging"));
+    assert!(!status_line(&tome.screen()).contains("debugging"));
 }
 
 #[test]
 fn program_output_goes_to_the_run_panel_titled_debug_program() {
     let output = json!({"event": "output", "body": {"category": "stdout", "output": "hello from the program\n"}});
     let project = Project::new(json!({"events": {"configurationDone": [output]}}), "");
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    glyph.wait_for_text("debug main.py", WAIT);
-    glyph.wait_for_text("hello from the program", WAIT);
-    wait_for_status(&glyph, "● debugging");
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    tome.wait_for_text("debug main.py", WAIT);
+    tome.wait_for_text("hello from the program", WAIT);
+    wait_for_status(&tome, "● debugging");
 }
 
 #[test]
@@ -211,17 +211,17 @@ fn a_stop_opens_the_top_frames_file_and_marks_the_paused_line() {
     });
     fs::write(project.files.path().join("script.json"), script.to_string()).expect("write script");
 
-    let mut glyph = project.open("other.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "‖ paused main.py:3");
-    wait_for_status(&glyph, "Ln 3, Col 1");
-    glyph.wait_for_text("3  c = 3", WAIT);
-    glyph.wait_for_screen("▶ on line 3", WAIT, |screen| {
+    let mut tome = project.open("other.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "‖ paused main.py:3");
+    wait_for_status(&tome, "Ln 3, Col 1");
+    tome.wait_for_text("3  c = 3", WAIT);
+    tome.wait_for_screen("▶ on line 3", WAIT, |screen| {
         screen[usize::from(row(3))].starts_with('▶')
     });
-    glyph.wait_for_fg_at(0, row(3), ACCENT2, WAIT);
+    tome.wait_for_fg_at(0, row(3), ACCENT2, WAIT);
     // Only the paused line is marked.
-    let screen = glyph.screen();
+    let screen = tome.screen();
     assert!(!screen[usize::from(row(2))].starts_with('▶'));
     // The stack was asked of the thread that stopped.
     let requests = project.requests();
@@ -235,26 +235,26 @@ fn a_stop_opens_the_top_frames_file_and_marks_the_paused_line() {
 #[test]
 fn alt_f6_disconnects_and_ends_the_session() {
     let project = Project::new(json!({}), "");
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "● debugging");
-    project.wait_for(&glyph, "configurationDone", 1);
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "● debugging");
+    project.wait_for(&tome, "configurationDone", 1);
 
-    glyph.send_keys("alt+f6");
-    wait_for_status(&glyph, "debugging stopped");
-    project.wait_for(&glyph, "disconnect", 1);
+    tome.send_keys("alt+f6");
+    wait_for_status(&tome, "debugging stopped");
+    project.wait_for(&tome, "disconnect", 1);
     let requests = project.requests();
     let disconnect = requests
         .iter()
         .find(|r| r["command"] == "disconnect")
         .expect("a disconnect request");
     assert_eq!(disconnect["arguments"]["terminateDebuggee"], true);
-    glyph.wait_for_text("stopped", WAIT);
-    assert!(!status_line(&glyph.screen()).contains("● debugging"));
+    tome.wait_for_text("stopped", WAIT);
+    assert!(!status_line(&tome.screen()).contains("● debugging"));
 
     // Nothing is left to stop.
-    glyph.send_keys("alt+f6");
-    wait_for_status(&glyph, "not debugging");
+    tome.send_keys("alt+f6");
+    wait_for_status(&tome, "not debugging");
 }
 
 #[test]
@@ -264,12 +264,12 @@ fn the_program_exiting_ends_the_session_with_its_code() {
         {"event": "terminated"}
     ]}});
     let project = Project::new(script, "");
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "exited 4");
-    assert!(!status_line(&glyph.screen()).contains("debugging"));
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "exited 4");
+    assert!(!status_line(&tome.screen()).contains("debugging"));
     // The session is over: the adapter was let go.
-    project.wait_for(&glyph, "disconnect", 1);
+    project.wait_for(&tome, "disconnect", 1);
 }
 
 #[test]
@@ -279,30 +279,30 @@ fn a_lone_terminated_ends_the_session_without_calling_it_a_failure() {
         {"event": "terminated"}
     ]}});
     let project = Project::new(script, "");
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "program ended");
-    glyph.wait_for_text("debug main.py  ended", WAIT);
-    let screen = glyph.screen();
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "program ended");
+    tome.wait_for_text("debug main.py  ended", WAIT);
+    let screen = tome.screen();
     assert!(!status_line(&screen).contains("debugging"));
     assert!(!screen.iter().any(|line| line.contains('✕')), "{screen:#?}");
-    project.wait_for(&glyph, "disconnect", 1);
+    project.wait_for(&tome, "disconnect", 1);
 }
 
 #[test]
 fn breakpoints_toggled_during_a_session_are_sent() {
     let project = Project::new(json!({}), "");
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "● debugging");
-    project.wait_for(&glyph, "configurationDone", 1);
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "● debugging");
+    project.wait_for(&tome, "configurationDone", 1);
     // No breakpoints at the start, so none were sent.
     assert!(!project.commands().contains(&"setBreakpoints".to_string()));
 
-    glyph.send_keys("f9");
-    project.wait_for(&glyph, "setBreakpoints", 1);
-    glyph.send_keys("f9");
-    project.wait_for(&glyph, "setBreakpoints", 2);
+    tome.send_keys("f9");
+    project.wait_for(&tome, "setBreakpoints", 1);
+    tome.send_keys("f9");
+    project.wait_for(&tome, "setBreakpoints", 2);
     let sent: Vec<(String, Vec<u64>)> = project
         .requests()
         .iter()
@@ -317,35 +317,35 @@ fn breakpoints_toggled_during_a_session_are_sent() {
 fn a_language_without_an_adapter_has_no_debugger() {
     let project = Project::new(json!({}), "");
     fs::write(project.path("app.ts"), "let a = 1;\n").expect("write app.ts");
-    let mut glyph = project.open("app.ts");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "no debugger for typescript");
+    let mut tome = project.open("app.ts");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "no debugger for typescript");
 }
 
 #[test]
 fn a_missing_adapter_is_one_message_and_editing_carries_on() {
     let project = Project::new(json!({}), "");
     let missing = project.files.path().join("no-such-adapter");
-    let mut glyph = project.open_with(&missing.display().to_string(), "main.py");
-    glyph.send_keys("alt+f5");
+    let mut tome = project.open_with(&missing.display().to_string(), "main.py");
+    tome.send_keys("alt+f5");
     // The message names the adapter by its path, too long to show whole here.
-    wait_for_status(&glyph, "✕ can't start");
-    glyph.wait_for_screen("the session gone", WAIT, |screen| {
+    wait_for_status(&tome, "✕ can't start");
+    tome.wait_for_screen("the session gone", WAIT, |screen| {
         !status_line(screen).contains("debugging")
     });
-    glyph.type_text("z");
-    glyph.wait_for_text("1  za = 1", WAIT);
+    tome.type_text("z");
+    tome.wait_for_text("1  za = 1", WAIT);
 }
 
 #[test]
 fn a_crashed_adapter_is_one_message_and_editing_carries_on() {
     let project = Project::new(json!({"exit_on": "launch"}), "");
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "debug adapter exited (3)");
-    assert!(!status_line(&glyph.screen()).contains("debugging"));
-    glyph.type_text("z");
-    glyph.wait_for_text("1  za = 1", WAIT);
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "debug adapter exited (3)");
+    assert!(!status_line(&tome.screen()).contains("debugging"));
+    tome.type_text("z");
+    tome.wait_for_text("1  za = 1", WAIT);
 }
 
 /// A project paused in `inner` (main.py:3), called from `caller` in other.py:1.
@@ -390,91 +390,91 @@ fn asked(project: &Project, command: &str, key: &str, value: i64) -> usize {
 #[test]
 fn the_debug_panel_takes_the_run_panels_slot_while_debugging() {
     let project = paused_project();
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "‖ paused main.py:3");
-    glyph.wait_for_text("call stack", WAIT);
-    glyph.wait_for_text("debug main.py  paused", WAIT);
-    glyph.wait_for_text("▶ inner  main.py:3", WAIT);
-    glyph.wait_for_text("caller  other.py:1", WAIT);
-    glyph.wait_for_text("▾ Locals", WAIT);
-    glyph.wait_for_text("n = 3  int", WAIT);
-    glyph.wait_for_text("▸ items = [7]  list", WAIT);
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "‖ paused main.py:3");
+    tome.wait_for_text("call stack", WAIT);
+    tome.wait_for_text("debug main.py  paused", WAIT);
+    tome.wait_for_text("▶ inner  main.py:3", WAIT);
+    tome.wait_for_text("caller  other.py:1", WAIT);
+    tome.wait_for_text("▾ Locals", WAIT);
+    tome.wait_for_text("n = 3  int", WAIT);
+    tome.wait_for_text("▸ items = [7]  list", WAIT);
 
     // F4 hides it and shows it again.
-    glyph.send_keys("f4");
-    glyph.wait_for_text_gone("call stack", WAIT);
-    glyph.send_keys("f4");
-    glyph.wait_for_text("call stack", WAIT);
+    tome.send_keys("f4");
+    tome.wait_for_text_gone("call stack", WAIT);
+    tome.send_keys("f4");
+    tome.wait_for_text("call stack", WAIT);
 
     // The session over, the run panel is back with the program's output.
-    glyph.send_keys("alt+f6");
-    glyph.wait_for_text("debug main.py  stopped", WAIT);
-    glyph.wait_for_text_gone("call stack", WAIT);
+    tome.send_keys("alt+f6");
+    tome.wait_for_text("debug main.py  stopped", WAIT);
+    tome.wait_for_text_gone("call stack", WAIT);
 }
 
 #[test]
 fn f6_enters_the_panel_where_the_arrows_expand_and_collapse_values() {
     let project = paused_project();
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    glyph.wait_for_text("▸ items = [7]  list", WAIT);
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    tome.wait_for_text("▸ items = [7]  list", WAIT);
 
     // Tree, editor, then the panel.
-    glyph.send_keys("f6");
-    glyph.send_keys("tab");
-    glyph.send_keys("down");
-    glyph.send_keys("down");
-    glyph.send_keys("right");
-    glyph.wait_for_text("▾ items = [7]  list", WAIT);
-    glyph.wait_for_text("0 = 7  int", WAIT);
+    tome.send_keys("f6");
+    tome.send_keys("tab");
+    tome.send_keys("down");
+    tome.send_keys("down");
+    tome.send_keys("right");
+    tome.wait_for_text("▾ items = [7]  list", WAIT);
+    tome.wait_for_text("0 = 7  int", WAIT);
     assert_eq!(asked(&project, "variables", "variablesReference", 11), 1);
 
-    glyph.send_keys("left");
-    glyph.wait_for_text("▸ items = [7]  list", WAIT);
-    glyph.wait_for_text_gone("0 = 7  int", WAIT);
+    tome.send_keys("left");
+    tome.wait_for_text("▸ items = [7]  list", WAIT);
+    tome.wait_for_text_gone("0 = 7  int", WAIT);
     // Enter expands too; what was loaded isn't asked for again.
-    glyph.send_keys("enter");
-    glyph.wait_for_text("0 = 7  int", WAIT);
+    tome.send_keys("enter");
+    tome.wait_for_text("0 = 7  int", WAIT);
     assert_eq!(asked(&project, "variables", "variablesReference", 11), 1);
 
     // Nothing typed reaches the buffer while the panel has the keys; F6 goes
     // on round to the editor, the tree being hidden.
-    glyph.type_text("q");
-    glyph.send_keys("f6");
-    glyph.type_text("z");
-    glyph.wait_for_text("3  zc = 3", WAIT);
+    tome.type_text("q");
+    tome.send_keys("f6");
+    tome.type_text("z");
+    tome.wait_for_text("3  zc = 3", WAIT);
 }
 
 #[test]
 fn enter_on_a_frame_opens_its_file_at_its_line_and_shows_its_variables() {
     let project = paused_project();
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    glyph.wait_for_text("n = 3  int", WAIT);
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    tome.wait_for_text("n = 3  int", WAIT);
 
     // ↓ then ↑ is back on the top frame, which Enter opens again. Opening a
     // frame takes the keys to its code, so F6 comes back to the panel.
-    glyph.send_keys("f6");
-    glyph.send_keys("down");
-    glyph.send_keys("up");
-    glyph.send_keys("enter");
-    project.wait_for(&glyph, "scopes", 2);
+    tome.send_keys("f6");
+    tome.send_keys("down");
+    tome.send_keys("up");
+    tome.send_keys("enter");
+    project.wait_for(&tome, "scopes", 2);
     assert_eq!(asked(&project, "scopes", "frameId", 1), 2);
     assert_eq!(asked(&project, "scopes", "frameId", 2), 0);
-    glyph.wait_for_text("n = 3  int", WAIT);
+    tome.wait_for_text("n = 3  int", WAIT);
 
-    glyph.send_keys("f6");
-    glyph.send_keys("down");
-    glyph.send_keys("enter");
-    glyph.wait_for_text("▾ Globals", WAIT);
-    glyph.wait_for_text("x = 0  int", WAIT);
-    glyph.wait_for_text_gone("n = 3  int", WAIT);
-    glyph.wait_for_text("1  x = 0", WAIT);
-    wait_for_status(&glyph, "Ln 1, Col 1");
+    tome.send_keys("f6");
+    tome.send_keys("down");
+    tome.send_keys("enter");
+    tome.wait_for_text("▾ Globals", WAIT);
+    tome.wait_for_text("x = 0  int", WAIT);
+    tome.wait_for_text_gone("n = 3  int", WAIT);
+    tome.wait_for_text("1  x = 0", WAIT);
+    wait_for_status(&tome, "Ln 1, Col 1");
     assert_eq!(asked(&project, "scopes", "frameId", 2), 1);
     // The frame shown is the one marked.
-    glyph.wait_for_text("▶ caller  other.py:1", WAIT);
+    tome.wait_for_text("▶ caller  other.py:1", WAIT);
 }
 
 /// A stop in `main.py` on thread `thread`, as the fake sends it.
@@ -501,14 +501,14 @@ fn write_script(project: &Project, script: &Value) {
 }
 
 /// Waits until the `▶` marker is on buffer line `line` and nowhere else.
-fn wait_for_marker(glyph: &Glyph, line: u16) {
-    glyph.wait_for_screen(&format!("▶ on line {line} alone"), WAIT, |screen| {
+fn wait_for_marker(tome: &Tome, line: u16) {
+    tome.wait_for_screen(&format!("▶ on line {line} alone"), WAIT, |screen| {
         (1..=3).all(|l| screen[usize::from(row(l))].starts_with('▶') == (l == line))
     });
 }
 
-fn wait_for_no_marker(glyph: &Glyph) {
-    glyph.wait_for_screen("no ▶", WAIT, |screen| {
+fn wait_for_no_marker(tome: &Tome) {
+    tome.wait_for_screen("no ▶", WAIT, |screen| {
         (1..=3).all(|l| !screen[usize::from(row(l))].starts_with('▶'))
     });
 }
@@ -527,26 +527,26 @@ fn stepping_and_continuing_go_to_the_stopped_thread() {
     });
     write_script(&project, &script);
 
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "‖ paused main.py:3");
-    wait_for_marker(&glyph, 3);
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "‖ paused main.py:3");
+    wait_for_marker(&tome, 3);
 
-    glyph.send_keys("f10");
-    wait_for_status(&glyph, "‖ paused main.py:1");
-    wait_for_marker(&glyph, 1);
-    glyph.send_keys("alt+f10");
-    wait_for_status(&glyph, "‖ paused main.py:2");
-    wait_for_marker(&glyph, 2);
-    glyph.send_keys("shift+f10");
-    wait_for_status(&glyph, "‖ paused main.py:3");
-    wait_for_marker(&glyph, 3);
+    tome.send_keys("f10");
+    wait_for_status(&tome, "‖ paused main.py:1");
+    wait_for_marker(&tome, 1);
+    tome.send_keys("alt+f10");
+    wait_for_status(&tome, "‖ paused main.py:2");
+    wait_for_marker(&tome, 2);
+    tome.send_keys("shift+f10");
+    wait_for_status(&tome, "‖ paused main.py:3");
+    wait_for_marker(&tome, 3);
 
     // `continue` is answered with no stop: the program runs on.
-    glyph.send_keys("alt+f5");
-    project.wait_for(&glyph, "continue", 1);
-    wait_for_status(&glyph, "● debugging");
-    wait_for_no_marker(&glyph);
+    tome.send_keys("alt+f5");
+    project.wait_for(&tome, "continue", 1);
+    wait_for_status(&tome, "● debugging");
+    wait_for_no_marker(&tome);
 
     let requests = project.requests();
     let steps: Vec<(String, Value)> = requests
@@ -584,32 +584,32 @@ fn stepping_while_running_does_nothing_and_the_marker_returns_at_the_next_stop()
     });
     write_script(&project, &script);
 
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "● debugging");
-    project.wait_for(&glyph, "configurationDone", 1);
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "● debugging");
+    project.wait_for(&tome, "configurationDone", 1);
     for key in ["f10", "alt+f10", "shift+f10", "alt+f5"] {
-        glyph.send_keys(key);
+        tome.send_keys(key);
     }
     // Keys are handled in order, so by the time this breakpoint is sent the
     // four before it were already handled.
-    glyph.send_keys("f9");
-    project.wait_for(&glyph, "setBreakpoints", 1);
-    wait_for_status(&glyph, "‖ paused main.py:3");
-    wait_for_marker(&glyph, 3);
+    tome.send_keys("f9");
+    project.wait_for(&tome, "setBreakpoints", 1);
+    wait_for_status(&tome, "‖ paused main.py:3");
+    wait_for_marker(&tome, 3);
     let commands = project.commands();
     for step in ["next", "stepIn", "stepOut", "continue"] {
         assert!(!commands.iter().any(|c| c == step), "{commands:?}");
     }
 
-    glyph.send_keys("alt+f5");
-    project.wait_for(&glyph, "continue", 1);
-    wait_for_status(&glyph, "● debugging");
-    wait_for_no_marker(&glyph);
+    tome.send_keys("alt+f5");
+    project.wait_for(&tome, "continue", 1);
+    wait_for_status(&tome, "● debugging");
+    wait_for_no_marker(&tome);
 
-    glyph.send_keys("f9");
-    wait_for_status(&glyph, "‖ paused main.py:2");
-    wait_for_marker(&glyph, 2);
+    tome.send_keys("f9");
+    wait_for_status(&tome, "‖ paused main.py:2");
+    wait_for_marker(&tome, 2);
 }
 
 #[test]
@@ -627,18 +627,18 @@ fn the_program_ending_after_continue_says_exited_and_clears_the_marker() {
     });
     write_script(&project, &script);
 
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "‖ paused main.py:2");
-    wait_for_marker(&glyph, 2);
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "‖ paused main.py:2");
+    wait_for_marker(&tome, 2);
 
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "exited 0");
-    wait_for_no_marker(&glyph);
-    let screen = glyph.screen();
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "exited 0");
+    wait_for_no_marker(&tome);
+    let screen = tome.screen();
     assert!(!status_line(&screen).contains("debugging"), "{screen:#?}");
     assert!(!status_line(&screen).contains("paused"), "{screen:#?}");
-    project.wait_for(&glyph, "disconnect", 1);
+    project.wait_for(&tome, "disconnect", 1);
 }
 
 #[test]
@@ -654,22 +654,22 @@ fn a_refused_step_keeps_the_program_paused_where_it_was() {
     });
     write_script(&project, &script);
 
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "‖ paused main.py:3");
-    wait_for_marker(&glyph, 3);
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "‖ paused main.py:3");
+    wait_for_marker(&tome, 3);
 
-    glyph.send_keys("f10");
-    wait_for_status(&glyph, "debugger: next failed: busy");
-    wait_for_marker(&glyph, 3);
+    tome.send_keys("f10");
+    wait_for_status(&tome, "debugger: next failed: busy");
+    wait_for_marker(&tome, 3);
 
     // The stopped thread came back with the pause, so stepping still works.
-    glyph.send_keys("f10");
-    project.wait_for(&glyph, "next", 2);
-    wait_for_marker(&glyph, 3);
-    glyph.send_keys("alt+f10");
-    wait_for_status(&glyph, "‖ paused main.py:1");
-    wait_for_marker(&glyph, 1);
+    tome.send_keys("f10");
+    project.wait_for(&tome, "next", 2);
+    wait_for_marker(&tome, 3);
+    tome.send_keys("alt+f10");
+    wait_for_status(&tome, "‖ paused main.py:1");
+    wait_for_marker(&tome, 1);
 
     let threads: Vec<Value> = project
         .requests()
@@ -689,16 +689,16 @@ fn alt_f5_continues_a_paused_session_with_no_file_open() {
     });
     write_script(&project, &script);
 
-    let mut glyph = project.open("main.py");
-    glyph.send_keys("alt+f5");
-    wait_for_status(&glyph, "‖ paused main.py:3");
+    let mut tome = project.open("main.py");
+    tome.send_keys("alt+f5");
+    wait_for_status(&tome, "‖ paused main.py:3");
 
     // Closing the last tab leaves the key list, but the session is still
     // paused and Alt+F5 still continues it.
-    glyph.send_keys("ctrl+w");
-    glyph.wait_for_text("no file open", WAIT);
-    glyph.send_keys("alt+f5");
-    project.wait_for(&glyph, "continue", 1);
+    tome.send_keys("ctrl+w");
+    tome.wait_for_text("no file open", WAIT);
+    tome.send_keys("alt+f5");
+    project.wait_for(&tome, "continue", 1);
 
     let threads: Vec<Value> = project
         .requests()

@@ -38,9 +38,9 @@ use crate::view::UndercurlBackend;
 
 pub type Tui = Terminal<UndercurlBackend<Stdout>>;
 
-/// Glyph, a non-modal terminal text editor.
+/// Tome, a non-modal terminal text editor.
 #[derive(Debug, Parser)]
-#[command(name = "glyph", version, about)]
+#[command(name = "tome", version, about)]
 struct Cli {
     /// File or folder to open.
     path: Option<PathBuf>,
@@ -75,16 +75,14 @@ async fn main() -> Result<()> {
         }
     };
 
-    let backups = Backups::new(backup::data_dir(std::env::var_os("GLYPH_DATA_DIR")));
+    let backups = Backups::new(backup::data_dir(std::env::var_os("TOME_DATA_DIR")));
     let result = App::new(settings.keymap, settings.editor, path, config_error)
         .with_theme(settings.theme)
         .with_lsp(Lsp::new(lsp::servers::with_defaults(settings.lsp)))
         .with_debug_adapters(settings.debug)
-        .with_config_path(config::config_path(std::env::var_os("GLYPH_CONFIG")))
+        .with_config_path(config::config_path(std::env::var_os("TOME_CONFIG")))
         .with_backups(backups)
-        .with_clipboard(clipboard::from_env(std::env::var_os(
-            "GLYPH_CLIPBOARD_FILE",
-        )))
+        .with_clipboard(clipboard::from_env(std::env::var_os("TOME_CLIPBOARD_FILE")))
         .run(&mut terminal)
         .await;
     let restored = restore_terminal();
@@ -175,11 +173,11 @@ mod tests {
 
     #[test]
     fn cli_accepts_an_optional_path() {
-        assert_eq!(Cli::parse_from(["glyph"]).path, None);
-        assert!(!Cli::parse_from(["glyph"]).health);
-        assert!(Cli::parse_from(["glyph", "--health"]).health);
+        assert_eq!(Cli::parse_from(["tome"]).path, None);
+        assert!(!Cli::parse_from(["tome"]).health);
+        assert!(Cli::parse_from(["tome", "--health"]).health);
         assert_eq!(
-            Cli::parse_from(["glyph", "notes.txt"]).path,
+            Cli::parse_from(["tome", "notes.txt"]).path,
             Some(PathBuf::from("notes.txt"))
         );
     }

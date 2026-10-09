@@ -1,4 +1,4 @@
-//! The folder browser `>open directory` opens (glyph-splash spec S6): a card in
+//! The folder browser `>open directory` opens (tome-splash spec S6): a card in
 //! the cast's style listing one folder's sub-folders, to walk the disk and pick
 //! a folder to open as the project.
 
@@ -428,7 +428,7 @@ pub fn list_folders(dir: &Path) -> io::Result<Vec<String>> {
 }
 
 /// `path` made absolute with `.` and `..` worked out from the text alone, so
-/// the header shows `C:\dev` rather than `C:\dev\glyph\..` and going up from it
+/// the header shows `C:\dev` rather than `C:\dev\tome\..` and going up from it
 /// goes where it says.
 pub fn clean(path: &Path) -> PathBuf {
     let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());

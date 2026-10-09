@@ -1,4 +1,4 @@
-//! The file tree panel on the left (design README §2.1): the `✦ glyph` brand and
+//! The file tree panel on the left (design README §2.1): the `✦ tome` brand and
 //! project folder, then one row per visible node. It's set off from the editor by
 //! its `surface` ground alone; the `│` divider here is only drawn between splits.
 
@@ -77,9 +77,9 @@ pub fn render_tree(
     if area.height > 1 {
         let y = area.y + 1;
         put(out, area, 2, y, "✦", Style::new().fg(theme.accent2));
-        let brand = ['g', 'l', 'y', 'p', 'h'];
+        let brand = ['t', 'o', 'm', 'e'];
         for (i, c) in (0u16..).zip(brand) {
-            let fg = grad(&[theme.accent, theme.accent2], f64::from(i) / 4.0);
+            let fg = grad(&[theme.accent, theme.accent2], f64::from(i) / 3.0);
             let style = Style::new().fg(fg).add_modifier(Modifier::BOLD);
             put(out, area, 4 + i, y, c.encode_utf8(&mut [0; 4]), style);
         }
@@ -267,7 +267,7 @@ mod tests {
             dirty: std::slice::from_ref(&long),
         };
         let (buffer, at) = draw(&theme, &tree, &marks, false)?;
-        assert_eq!(row(&buffer, 1).trim_end(), "  ✦ glyph   ~/src");
+        assert_eq!(row(&buffer, 1).trim_end(), "  ✦ tome    ~/src");
         assert_eq!(row(&buffer, 3).trim_end(), "  ▾ src");
         assert_eq!(row(&buffer, 4).trim_end(), "   │  a_very_long_file_n…•");
         assert_eq!(row(&buffer, 5).trim_end(), "    notes.txt");
@@ -275,7 +275,7 @@ mod tests {
 
         assert_eq!(buffer[(2, 1)].fg, theme.accent2);
         assert_eq!(buffer[(4, 1)].fg, theme.accent);
-        assert_eq!(buffer[(8, 1)].fg, theme.accent2);
+        assert_eq!(buffer[(7, 1)].fg, theme.accent2);
         assert!(buffer[(6, 1)].modifier.contains(Modifier::BOLD));
         assert_eq!(buffer[(12, 1)].fg, theme.muted);
         assert_eq!(buffer[(3, 4)].fg, theme.guide);
@@ -335,8 +335,8 @@ mod tests {
     #[test]
     fn the_project_reads_from_home() -> anyhow::Result<()> {
         let home = std::path::absolute("home")?;
-        let root = home.join("src").join("glyph");
-        assert_eq!(project_label(&root, Some(&home)), "~/src/glyph");
+        let root = home.join("src").join("tome");
+        assert_eq!(project_label(&root, Some(&home)), "~/src/tome");
         let elsewhere = std::path::absolute("elsewhere")?;
         assert_eq!(
             project_label(&elsewhere, Some(&home)),

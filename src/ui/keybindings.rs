@@ -1,5 +1,5 @@
 //! The card `>keybindings` opens: every command with its keys and its name in
-//! `[keys]`, searchable, in the catalog card's style (glyph-catalog spec C2).
+//! `[keys]`, searchable, in the catalog card's style (tome-catalog spec C2).
 //! Commands that only work in one place (the tree, the splash…) come after the
 //! rest, under a heading naming that place.
 

@@ -3,7 +3,7 @@ mod harness;
 use std::fs;
 use std::time::Duration;
 
-use harness::{COLS, Glyph, ROWS};
+use harness::{COLS, ROWS, Tome};
 use vt100::Color;
 
 const START: Duration = Duration::from_secs(10);
@@ -11,62 +11,61 @@ const EXIT: Duration = Duration::from_secs(5);
 const WAIT: Duration = Duration::from_secs(5);
 const FIXTURE: &str = "tests/fixtures/render.txt";
 
-fn status_line(glyph: &Glyph) -> String {
-    glyph.screen()[usize::from(ROWS) - 1].clone()
+fn status_line(tome: &Tome) -> String {
+    tome.screen()[usize::from(ROWS) - 1].clone()
 }
 
-fn quit(glyph: &mut Glyph) {
-    glyph.send_keys("ctrl+q");
-    let status = glyph.wait_exit(EXIT);
-    assert!(status.success(), "glyph exited with {status:?}");
+fn quit(tome: &mut Tome) {
+    tome.send_keys("ctrl+q");
+    let status = tome.wait_exit(EXIT);
+    assert!(status.success(), "tome exited with {status:?}");
 }
 
 /// Column of `text` on `row`, panicking with the screen when it's missing.
-fn col_of(glyph: &Glyph, row: u16, text: &str) -> u16 {
-    glyph
-        .text_col(row, text)
-        .unwrap_or_else(|| panic!("{text:?} not on row {row}: {:#?}", glyph.screen()))
+fn col_of(tome: &Tome, row: u16, text: &str) -> u16 {
+    tome.text_col(row, text)
+        .unwrap_or_else(|| panic!("{text:?} not on row {row}: {:#?}", tome.screen()))
 }
 
 #[test]
 fn opens_file() {
-    let mut glyph = Glyph::spawn(&[FIXTURE]);
-    glyph.wait_for_text("fn main() {", START);
+    let mut tome = Tome::spawn(&[FIXTURE]);
+    tome.wait_for_text("fn main() {", START);
 
-    let text_col = col_of(&glyph, 3, "fn main() {");
+    let text_col = col_of(&tome, 3, "fn main() {");
     // Each line's number sits in the same right-aligned column, left of the text.
     for (row, number) in (3u16..7).zip(["1", "2", "3", "4"]) {
-        let number_col = col_of(&glyph, row, number);
-        assert!(number_col < text_col, "row {row}: {:#?}", glyph.screen());
+        let number_col = col_of(&tome, row, number);
+        assert!(number_col < text_col, "row {row}: {:#?}", tome.screen());
         assert_eq!(
             number_col,
-            col_of(&glyph, 3, "1"),
+            col_of(&tome, 3, "1"),
             "gutter misaligned: {:#?}",
-            glyph.screen()
+            tome.screen()
         );
     }
-    let status = status_line(&glyph);
+    let status = status_line(&tome);
     assert!(status.contains("render.txt"), "status line: {status:?}");
 
-    quit(&mut glyph);
+    quit(&mut tome);
 }
 
 #[test]
 fn tabs_and_wide_chars() {
-    let mut glyph = Glyph::spawn(&[FIXTURE]);
-    glyph.wait_for_text("😀 ok", START);
+    let mut tome = Tome::spawn(&[FIXTURE]);
+    tome.wait_for_text("😀 ok", START);
 
-    let base = col_of(&glyph, 3, "fn main() {");
+    let base = col_of(&tome, 3, "fn main() {");
     // `\tlet`: the tab fills to column 4 of the text area.
-    assert_eq!(col_of(&glyph, 4, "let x = 1;"), base + 4);
+    assert_eq!(col_of(&tome, 4, "let x = 1;"), base + 4);
     // `日本語 ok`: three 2-wide characters and a space.
-    assert_eq!(col_of(&glyph, 5, "日本語"), base);
-    assert_eq!(col_of(&glyph, 5, "ok"), base + 7);
+    assert_eq!(col_of(&tome, 5, "日本語"), base);
+    assert_eq!(col_of(&tome, 5, "ok"), base + 7);
     // `😀 ok`: one 2-wide emoji and a space.
-    assert_eq!(col_of(&glyph, 6, "😀"), base);
-    assert_eq!(col_of(&glyph, 6, "ok"), base + 3);
+    assert_eq!(col_of(&tome, 6, "😀"), base);
+    assert_eq!(col_of(&tome, 6, "ok"), base + 3);
 
-    quit(&mut glyph);
+    quit(&mut tome);
 }
 
 #[test]
@@ -75,10 +74,10 @@ fn long_line_is_cut() {
     let long = format!("start{}END", "x".repeat(300));
     fs::write(dir.path().join("long.txt"), format!("{long}\nsecond\n")).unwrap();
 
-    let mut glyph = Glyph::spawn_in(dir.path(), &["long.txt"]);
-    glyph.wait_for_text("second", START);
+    let mut tome = Tome::spawn_in(dir.path(), &["long.txt"]);
+    tome.wait_for_text("second", START);
 
-    let screen = glyph.screen();
+    let screen = tome.screen();
     // The first line fills the row to the right edge and stops there.
     assert_eq!(screen[3].chars().count(), usize::from(COLS), "{screen:#?}");
     assert!(screen[3].ends_with('x'), "{screen:#?}");
@@ -87,20 +86,20 @@ fn long_line_is_cut() {
     assert!(screen[4].contains("second"), "{screen:#?}");
     assert!(screen[4].trim_start().starts_with('2'), "{screen:#?}");
 
-    quit(&mut glyph);
+    quit(&mut tome);
 }
 
 #[test]
 fn no_path_opens_untitled_under_the_splash() {
-    let mut glyph = Glyph::spawn(&[]);
-    glyph.wait_for_text("New file", START);
+    let mut tome = Tome::spawn(&[]);
+    tome.wait_for_text("New file", START);
     // Esc leaves the splash for the untitled buffer it stood in for.
-    glyph.send_keys("esc");
-    glyph.wait_for_text("untitled", WAIT);
-    glyph.wait_for_text_gone("New file", WAIT);
+    tome.send_keys("esc");
+    tome.wait_for_text("untitled", WAIT);
+    tome.wait_for_text_gone("New file", WAIT);
 
-    let screen = glyph.screen();
-    assert!(status_line(&glyph).contains("untitled"), "{screen:#?}");
+    let screen = tome.screen();
+    assert!(status_line(&tome).contains("untitled"), "{screen:#?}");
     // The tab header (blank, pill, thread), one empty line numbered 1, and
     // nothing else.
     assert_eq!(screen[0].trim(), "", "{screen:#?}");
@@ -113,22 +112,22 @@ fn no_path_opens_untitled_under_the_splash() {
             .all(|row| row.is_empty())
     );
 
-    quit(&mut glyph);
+    quit(&mut tome);
 }
 
 #[test]
 fn missing_file_opens_empty_with_its_name() {
     let dir = tempfile::tempdir().unwrap();
-    let mut glyph = Glyph::spawn_in(dir.path(), &["missing.txt"]);
-    glyph.wait_for_text("missing.txt", START);
+    let mut tome = Tome::spawn_in(dir.path(), &["missing.txt"]);
+    tome.wait_for_text("missing.txt", START);
 
-    let screen = glyph.screen();
-    assert!(status_line(&glyph).contains("missing.txt"), "{screen:#?}");
+    let screen = tome.screen();
+    assert!(status_line(&tome).contains("missing.txt"), "{screen:#?}");
     assert_eq!(screen[3].trim(), "1", "{screen:#?}");
     // Opening alone never creates the file; saving (#7) does.
     assert!(!dir.path().join("missing.txt").exists());
 
-    quit(&mut glyph);
+    quit(&mut tome);
 }
 
 #[test]
@@ -136,17 +135,17 @@ fn non_utf8_file_is_not_opened() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("bad.txt"), [b'o', b'k', 0xff, 0xfe, b'\n']).unwrap();
 
-    let mut glyph = Glyph::spawn_in(dir.path(), &["bad.txt"]);
-    glyph.wait_for_text("cannot open bad.txt: not UTF-8", START);
+    let mut tome = Tome::spawn_in(dir.path(), &["bad.txt"]);
+    tome.wait_for_text("cannot open bad.txt: not UTF-8", START);
 
-    let screen = glyph.screen();
+    let screen = tome.screen();
     assert!(
-        status_line(&glyph).contains("cannot open bad.txt: not UTF-8"),
+        status_line(&tome).contains("cannot open bad.txt: not UTF-8"),
         "{screen:#?}"
     );
     assert_eq!(screen[3].trim(), "1", "{screen:#?}");
 
-    quit(&mut glyph);
+    quit(&mut tome);
 }
 
 // The `aurora` roles the gutter and cursor line use (README §4.1).
@@ -184,98 +183,98 @@ fn glow(dx: u16, width: u16) -> Color {
 
 #[test]
 fn gutter_is_a_mark_cell_a_three_cell_number_and_two_blanks() {
-    let mut glyph = Glyph::spawn(&[FIXTURE]);
-    glyph.wait_for_text("fn main() {", START);
+    let mut tome = Tome::spawn(&[FIXTURE]);
+    tome.wait_for_text("fn main() {", START);
 
-    let screen = glyph.screen();
+    let screen = tome.screen();
     // One cell for the diagnostic mark, the number right-aligned in three, two
     // blanks, then the text: no divider rule.
     assert!(screen[3].starts_with("   1  fn main() {"), "{screen:#?}");
     assert!(screen[5].starts_with("   3  日本語 ok"), "{screen:#?}");
-    assert_eq!(col_of(&glyph, TOP, "fn main() {"), 6);
+    assert_eq!(col_of(&tome, TOP, "fn main() {"), 6);
     let editor = &screen[3..usize::from(ROWS) - 1];
     assert!(editor.iter().all(|row| !row.contains('│')), "{screen:#?}");
 
-    quit(&mut glyph);
+    quit(&mut tome);
 }
 
 #[test]
 fn the_focused_cursor_row_glows_and_lights_its_number() {
-    let mut glyph = Glyph::spawn_with_config(AURORA, &[FIXTURE]);
-    glyph.wait_for_text("fn main() {", START);
+    let mut tome = Tome::spawn_with_config(AURORA, &[FIXTURE]);
+    tome.wait_for_text("fn main() {", START);
 
     // Bright out of the gutter, fading into `cur_line` across the row.
-    glyph.wait_for_bg(0, TOP, mix(AURORA_BG, AURORA_ACCENT, 0.20), START);
-    assert_eq!(glyph.bg_at(3, TOP), glow(3, COLS));
-    assert_eq!(glyph.bg_at(COLS / 2, TOP), glow(COLS / 2, COLS));
-    assert_ne!(glyph.bg_at(COLS / 2, TOP), AURORA_CUR_LINE);
-    assert_eq!(glyph.bg_at(COLS - 1, TOP), AURORA_CUR_LINE);
+    tome.wait_for_bg(0, TOP, mix(AURORA_BG, AURORA_ACCENT, 0.20), START);
+    assert_eq!(tome.bg_at(3, TOP), glow(3, COLS));
+    assert_eq!(tome.bg_at(COLS / 2, TOP), glow(COLS / 2, COLS));
+    assert_ne!(tome.bg_at(COLS / 2, TOP), AURORA_CUR_LINE);
+    assert_eq!(tome.bg_at(COLS - 1, TOP), AURORA_CUR_LINE);
     // Other rows stay on the ground.
-    assert_eq!(glyph.bg_at(0, TOP + 1), AURORA_BG);
-    assert_eq!(glyph.bg_at(COLS / 2, TOP + 1), AURORA_BG);
+    assert_eq!(tome.bg_at(0, TOP + 1), AURORA_BG);
+    assert_eq!(tome.bg_at(COLS / 2, TOP + 1), AURORA_BG);
     // The cursor line's number is `accent` bold; the rest are `gutter`.
-    assert_eq!(glyph.fg_at(3, TOP), AURORA_ACCENT);
-    assert!(glyph.bold_at(3, TOP));
-    assert_eq!(glyph.fg_at(3, TOP + 1), AURORA_GUTTER);
-    assert!(!glyph.bold_at(3, TOP + 1));
+    assert_eq!(tome.fg_at(3, TOP), AURORA_ACCENT);
+    assert!(tome.bold_at(3, TOP));
+    assert_eq!(tome.fg_at(3, TOP + 1), AURORA_GUTTER);
+    assert!(!tome.bold_at(3, TOP + 1));
 
     // The glow follows the cursor.
-    glyph.send_keys("down");
-    glyph.wait_for_bg(0, TOP + 1, glow(0, COLS), WAIT);
-    assert_eq!(glyph.bg_at(0, TOP), AURORA_BG);
-    assert_eq!(glyph.fg_at(3, TOP + 1), AURORA_ACCENT);
+    tome.send_keys("down");
+    tome.wait_for_bg(0, TOP + 1, glow(0, COLS), WAIT);
+    assert_eq!(tome.bg_at(0, TOP), AURORA_BG);
+    assert_eq!(tome.fg_at(3, TOP + 1), AURORA_ACCENT);
 
-    quit(&mut glyph);
+    quit(&mut tome);
 }
 
 #[test]
 fn an_unfocused_split_has_no_glow_and_a_text_number() {
-    let mut glyph = Glyph::spawn_with_config(AURORA, &[FIXTURE]);
-    glyph.wait_for_text("fn main() {", START);
+    let mut tome = Tome::spawn_with_config(AURORA, &[FIXTURE]);
+    tome.wait_for_text("fn main() {", START);
     // Two splits: 0..50, the divider, then the new, focused one at 51..100.
-    glyph.send_keys("alt+v");
+    tome.send_keys("alt+v");
     let right = 51;
-    glyph.wait_for_bg(right, TOP, glow(0, COLS - right), WAIT);
-    assert_eq!(glyph.bg_at(right + 25, TOP), glow(25, COLS - right));
-    assert_eq!(glyph.fg_at(right + 3, TOP), AURORA_ACCENT);
-    assert!(glyph.bold_at(right + 3, TOP));
+    tome.wait_for_bg(right, TOP, glow(0, COLS - right), WAIT);
+    assert_eq!(tome.bg_at(right + 25, TOP), glow(25, COLS - right));
+    assert_eq!(tome.fg_at(right + 3, TOP), AURORA_ACCENT);
+    assert!(tome.bold_at(right + 3, TOP));
 
     // The left split shows the same cursor row unlit.
-    glyph.wait_for_bg(0, TOP, AURORA_BG, WAIT);
-    assert_eq!(glyph.bg_at(25, TOP), AURORA_BG);
-    assert_eq!(glyph.fg_at(3, TOP), AURORA_TEXT);
-    assert!(!glyph.bold_at(3, TOP));
+    tome.wait_for_bg(0, TOP, AURORA_BG, WAIT);
+    assert_eq!(tome.bg_at(25, TOP), AURORA_BG);
+    assert_eq!(tome.fg_at(3, TOP), AURORA_TEXT);
+    assert!(!tome.bold_at(3, TOP));
 
-    quit(&mut glyph);
+    quit(&mut tome);
 }
 
 #[test]
 fn comments_are_italic() {
-    let mut glyph = Glyph::spawn_with_config(AURORA, &["tests/fixtures/highlight/sample.rs"]);
-    glyph.wait_for_text("// A sample for the highlight tests.", START);
+    let mut tome = Tome::spawn_with_config(AURORA, &["tests/fixtures/highlight/sample.rs"]);
+    tome.wait_for_text("// A sample for the highlight tests.", START);
 
-    let comment = col_of(&glyph, TOP, "// A sample");
+    let comment = col_of(&tome, TOP, "// A sample");
     // Highlighting may land a frame after the text; the comment colour says it has.
-    glyph.wait_for_fg_at(comment, TOP, AURORA_COMMENT, WAIT);
-    assert!(glyph.italic_at(comment, TOP));
-    assert!(glyph.italic_at(comment + 5, TOP));
+    tome.wait_for_fg_at(comment, TOP, AURORA_COMMENT, WAIT);
+    assert!(tome.italic_at(comment, TOP));
+    assert!(tome.italic_at(comment + 5, TOP));
     // Code is upright.
-    let code = col_of(&glyph, TOP + 1, "use std::fmt;");
-    assert!(!glyph.italic_at(code, TOP + 1));
+    let code = col_of(&tome, TOP + 1, "use std::fmt;");
+    assert!(!tome.italic_at(code, TOP + 1));
 
-    quit(&mut glyph);
+    quit(&mut tome);
 }
 
 #[test]
 fn mono_has_no_glow_but_a_bold_number() {
-    let mut glyph = Glyph::spawn_with_config("theme = \"mono\"\n", &[FIXTURE]);
-    glyph.wait_for_text("fn main() {", START);
+    let mut tome = Tome::spawn_with_config("theme = \"mono\"\n", &[FIXTURE]);
+    tome.wait_for_text("fn main() {", START);
 
-    assert!(glyph.screen()[3].starts_with("   1  fn main() {"));
-    assert!(glyph.bold_at(3, TOP));
-    assert!(!glyph.bold_at(3, TOP + 1));
-    assert_eq!(glyph.bg_at(0, TOP), Color::Default);
-    assert_eq!(glyph.bg_at(COLS / 2, TOP), Color::Default);
+    assert!(tome.screen()[3].starts_with("   1  fn main() {"));
+    assert!(tome.bold_at(3, TOP));
+    assert!(!tome.bold_at(3, TOP + 1));
+    assert_eq!(tome.bg_at(0, TOP), Color::Default);
+    assert_eq!(tome.bg_at(COLS / 2, TOP), Color::Default);
 
-    quit(&mut glyph);
+    quit(&mut tome);
 }

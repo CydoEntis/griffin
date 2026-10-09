@@ -59,7 +59,7 @@ pub struct Source {
     pub path: Option<PathBuf>,
 }
 
-/// One frame of a call stack. `line` and `column` count from 1, as Glyph asks
+/// One frame of a call stack. `line` and `column` count from 1, as Tome asks
 /// adapters to in `initialize`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct StackFrame {
@@ -186,7 +186,7 @@ pub struct Session {
     next_seq: i64,
     /// Requests sent and not yet answered, by `seq`.
     pending: HashMap<i64, Pending>,
-    /// Glyph sent `disconnect`, so the adapter exiting is no crash.
+    /// Tome sent `disconnect`, so the adapter exiting is no crash.
     disconnecting: bool,
     /// `Failed` or `Ended` was reported; nothing more is.
     over: bool,
@@ -250,8 +250,8 @@ impl Session {
     /// `lldb-dap`.
     pub fn initialize(&mut self, adapter: &str) -> Option<i64> {
         let arguments = json!({
-            "clientID": "glyph",
-            "clientName": "Glyph",
+            "clientID": "tome",
+            "clientName": "Tome",
             "adapterID": adapter,
             "pathFormat": "path",
             // Counting from 1 matches what people read; callers convert from
@@ -403,7 +403,7 @@ impl Session {
                     "request_seq": message["seq"],
                     "command": message["command"],
                     "success": false,
-                    "message": "not supported by Glyph",
+                    "message": "not supported by Tome",
                 });
                 if let Some(outgoing) = &self.outgoing
                     && outgoing.send(reply).is_ok()
@@ -459,7 +459,7 @@ impl Session {
     }
 }
 
-/// The news in an adapter's event, for the events Glyph follows.
+/// The news in an adapter's event, for the events Tome follows.
 fn event(message: &Value) -> Option<DapNews> {
     let body = &message["body"];
     let text = |key: &str| body[key].as_str().map(str::to_string);

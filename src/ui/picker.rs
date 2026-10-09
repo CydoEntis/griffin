@@ -1080,7 +1080,7 @@ mod tests {
             .map(|(name, detail)| Choice {
                 name: name.into(),
                 detail: detail.into(),
-                source: ".glyph.toml",
+                source: ".tome.toml",
             })
             .to_vec()
     }
@@ -1110,7 +1110,7 @@ mod tests {
         );
         let first = row(card.y + 2);
         assert!(first.starts_with("  dev         npm run dev"), "{first:?}");
-        assert!(first.ends_with(".glyph.toml  ⏎    "), "{first:?}");
+        assert!(first.ends_with(".tome.toml  ⏎    "), "{first:?}");
         assert_eq!(
             buffer[(card.x, card.y + 2)].bg,
             mix(theme.raised, theme.accent, 0.3)
