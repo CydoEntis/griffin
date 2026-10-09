@@ -22,7 +22,10 @@ const TOP: u16 = 4;
 /// rule above it; a blank and the footer below.
 const CHROME: u16 = 6;
 const HEADER: &str = "keybindings";
-const FOOTER: &str = "⏎ rebind  ⌫ reset  esc close";
+// Delete, not Backspace, resets: Backspace keeps correcting the query.
+const FOOTER: &str = "⏎ rebind  del reset  esc close";
+/// What the selected row shows in place of its keys while Enter waits for one.
+pub const WAITING: &str = "press a key… (esc cancels)";
 /// What a command with no key shows in place of its keys.
 const NO_KEY: &str = "—";
 /// Cells for the title, so the config names line up: the longest title and two
@@ -94,6 +97,8 @@ enum Line {
 pub enum Step {
     /// Esc: close it.
     Close,
+    /// Delete on a row: take its `[keys]` entry away, so its defaults are back.
+    Reset(Action),
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +114,9 @@ pub struct Keybindings {
     /// The first line of the list in view. It moves only when the selection
     /// would leave the view, so ↑ moves the glow rather than the list.
     top: usize,
+    /// The command Enter is rebinding, while the card waits for its new key.
+    /// The app hands that key over whole, as only the keymap can name it.
+    waiting: Option<Action>,
 }
 
 impl Keybindings {
@@ -135,6 +143,25 @@ impl Keybindings {
             shown,
             selected: 0,
             top: 0,
+            waiting: None,
+        }
+    }
+
+    /// The command waiting for a new key, if Enter started a rebind.
+    pub fn waiting(&self) -> Option<Action> {
+        self.waiting
+    }
+
+    /// Ends the wait for a key: it came, or Esc cancelled it.
+    pub fn stop_waiting(&mut self) {
+        self.waiting = None;
+    }
+
+    /// Shows the keys `keymap` gives each command, after a rebind or reset.
+    /// The rows, query and selection stay as they are.
+    pub fn refresh(&mut self, keymap: &Keymap) {
+        for row in &mut self.rows {
+            row.keys = keymap.key_labels(row.action);
         }
     }
 
@@ -143,17 +170,17 @@ impl Keybindings {
         &self.rows
     }
 
-    /// The command the selected row is for, if any row is shown: what #170
-    /// rebinds or resets.
-    #[cfg(test)]
+    /// The command the selected row is for, if any row is shown: what Enter
+    /// rebinds and Delete resets.
     pub fn selected_action(&self) -> Option<Action> {
         let &row = self.shown.get(self.selected)?;
         Some(self.rows[row].action)
     }
 
     /// ↑ and ↓ move the selection, stopping at either end, and scroll the
-    /// list as the card drawn in `area` needs; Esc closes; Enter does nothing
-    /// yet; anything else edits the query.
+    /// list as the card drawn in `area` needs; Esc closes; Enter waits for a
+    /// new key for the selected row; Delete resets it; anything else edits the
+    /// query.
     pub fn handle(&mut self, input: Input, area: Rect) -> Option<Step> {
         match input {
             Input::Action(Action::Move(Motion::Up)) => {
@@ -165,11 +192,8 @@ impl Keybindings {
                 self.top = self.first_line(self.room(area));
             }
             Input::Action(Action::Cancel) => return Some(Step::Close),
-            // Rebinding the selected row (#170) goes here.
-            Input::Action(Action::Newline) => {}
-            // With nothing typed, Backspace is the selected row's reset
-            // (#170); with a query it has to stay able to correct a typo.
-            Input::Action(Action::Backspace) if self.query.text().is_empty() => {}
+            Input::Action(Action::Newline) => self.waiting = self.selected_action(),
+            Input::Action(Action::Delete) => return self.selected_action().map(Step::Reset),
             _ => {
                 let before = self.query.text().to_string();
                 self.query.handle(input);
@@ -314,7 +338,9 @@ impl Keybindings {
             match *line {
                 Line::Row(i) => {
                     let row = &self.rows[self.shown[i]];
-                    render_row(theme, out, card, y, row, i == self.selected);
+                    let selected = i == self.selected;
+                    let waiting = selected && self.waiting.is_some();
+                    render_row(theme, out, card, y, row, selected, waiting);
                 }
                 Line::Heading(heading) => {
                     out.set_string(
@@ -336,7 +362,17 @@ impl Keybindings {
 /// The title, the config name in `muted`, and the keys at the right as the
 /// palette shows them. A selected row is on the glow row, its title in
 /// `strong`; in `mono` it carries no colours, so the reverse video reads.
-fn render_row(theme: &Theme, out: &mut Buffer, card: Rect, y: u16, row: &Row, selected: bool) {
+/// While it waits for a new key, `WAITING` stands in for its keys, in
+/// `accent`.
+fn render_row(
+    theme: &Theme,
+    out: &mut Buffer,
+    card: Rect,
+    y: u16,
+    row: &Row,
+    selected: bool,
+    waiting: bool,
+) {
     let left = card.x + 4;
     let right = card.right() - 4;
     if selected {
@@ -349,9 +385,14 @@ fn render_row(theme: &Theme, out: &mut Buffer, card: Rect, y: u16, row: &Row, se
     // `…` beyond that.
     let title_min = width_of(row.title).min(TITLE_MIN);
     let keys_room = right.saturating_sub(left + title_min + 2);
-    let keys = cut(&row.keys_label(), keys_room);
+    let (label, fg) = if waiting {
+        (WAITING.to_string(), theme.accent)
+    } else {
+        (row.keys_label(), theme.text)
+    };
+    let keys = cut(&label, keys_room);
     let keys_x = right.saturating_sub(width_of(&keys));
-    out.set_string(keys_x, y, &keys, pick(Style::new().fg(theme.text)));
+    out.set_string(keys_x, y, &keys, pick(Style::new().fg(fg)));
 
     let title = pick(Style::new().fg(if selected { theme.strong } else { theme.fg }));
     out.set_stringn(
@@ -535,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn arrows_stop_at_the_ends_enter_and_backspace_do_nothing_and_esc_closes() {
+    fn arrows_stop_at_the_ends_and_esc_closes() {
         let mut k = fresh();
         let press = |k: &mut Keybindings, a: Action| k.handle(Input::Action(a), SCREEN);
         assert_eq!(press(&mut k, Action::Move(Motion::Up)), None);
@@ -546,11 +587,58 @@ mod tests {
             press(&mut k, Action::Move(Motion::Down));
         }
         assert_eq!(k.selected_action(), Some(Action::DebugSwitchPane));
-        assert_eq!(press(&mut k, Action::Newline), None);
-        assert_eq!(press(&mut k, Action::Backspace), None);
-        assert_eq!(k.selected_action(), Some(Action::DebugSwitchPane));
-        assert_eq!(k.query.text(), "");
         assert_eq!(press(&mut k, Action::Cancel), Some(Step::Close));
+    }
+
+    #[test]
+    fn enter_waits_for_a_key_and_delete_resets_while_backspace_edits_the_query() {
+        let mut k = fresh();
+        let press = |k: &mut Keybindings, a: Action| k.handle(Input::Action(a), SCREEN);
+        press(&mut k, Action::Move(Motion::Down));
+        assert_eq!(press(&mut k, Action::Newline), None);
+        assert_eq!(k.waiting(), Some(Action::Save));
+        k.stop_waiting();
+        assert_eq!(k.waiting(), None);
+        assert_eq!(
+            press(&mut k, Action::Delete),
+            Some(Step::Reset(Action::Save))
+        );
+        // Backspace with nothing typed does nothing; with a query it erases.
+        assert_eq!(press(&mut k, Action::Backspace), None);
+        assert_eq!(k.selected_action(), Some(Action::Save));
+        type_text(&mut k, "zzz");
+        press(&mut k, Action::Backspace);
+        assert_eq!(k.query.text(), "zz");
+        // With no row shown, neither has anything to act on.
+        assert_eq!(press(&mut k, Action::Delete), None);
+        press(&mut k, Action::Newline);
+        assert_eq!(k.waiting(), None);
+    }
+
+    #[test]
+    fn the_waiting_row_asks_for_a_key_and_refresh_shows_new_keys() -> anyhow::Result<()> {
+        let mut k = fresh();
+        k.handle(Input::Action(Action::Move(Motion::Down)), SCREEN);
+        k.handle(Input::Action(Action::Newline), SCREEN);
+        let theme = Theme::default();
+        let card = k.card(SCREEN);
+        let buffer = draw(&k, &theme)?;
+        let save = card_row(&buffer, card, card.y + 5);
+        assert!(save.starts_with("    Save "), "{save:?}");
+        assert!(save.ends_with(&format!("{WAITING}    ")), "{save:?}");
+        let at = card.right() - 4 - width_of(WAITING);
+        assert_eq!(buffer[(at, card.y + 5)].fg, theme.accent);
+
+        k.stop_waiting();
+        let keys: KeysConfig = [("save".to_string(), KeyBinding::One("alt+w".into()))]
+            .into_iter()
+            .collect();
+        k.refresh(&Keymap::new(&keys)?);
+        assert_eq!(row(&k, Action::Save).keys_label(), "Alt+W");
+        assert_eq!(k.selected_action(), Some(Action::Save));
+        let save = card_row(&draw(&k, &theme)?, card, card.y + 5);
+        assert!(save.ends_with("Alt+W    "), "{save:?}");
+        Ok(())
     }
 
     #[test]

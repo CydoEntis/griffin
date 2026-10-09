@@ -1078,8 +1078,8 @@ fn key_label(key: Key) -> String {
 
 /// How `[keys]` names the key `event` is, e.g. `alt+w`, `ctrl+shift+left`,
 /// `f5`: what the keybindings card writes when a key is pressed to rebind a
-/// command. `None` for a key the notation has no name for (Caps Lock, a media
-/// key, Shift+Space), so nothing unreadable reaches `config.toml`.
+/// command. `None` for a key the notation has no name for (Caps Lock, Pause,
+/// a media key), so nothing unreadable reaches `config.toml`.
 pub fn key_notation(event: &KeyEvent) -> Option<String> {
     let key = normalize(event.code, event.modifiers);
     let text = notation(key)?;
@@ -2174,11 +2174,7 @@ mod tests {
             Some("alt+shift+w")
         );
         assert_eq!(
-            named(
-                KeyCode::Left,
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT
-            )
-            .as_deref(),
+            named(KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::SHIFT).as_deref(),
             Some("ctrl+shift+left")
         );
         assert_eq!(named(KeyCode::F(5), none).as_deref(), Some("f5"));
@@ -2211,11 +2207,15 @@ mod tests {
     fn a_key_the_notation_cant_name_has_no_name() {
         assert_eq!(key_notation(&unnamed_key_event()), None);
         for code in [KeyCode::Pause, KeyCode::Menu, KeyCode::Null, KeyCode::F(30)] {
-            assert_eq!(key_notation(&ev(code, KeyModifiers::NONE)), None, "{code:?}");
+            assert_eq!(
+                key_notation(&ev(code, KeyModifiers::NONE)),
+                None,
+                "{code:?}"
+            );
         }
-        // `shift+space` doesn't parse, so it isn't written either.
+        // A control character as a key has no name either.
         assert_eq!(
-            key_notation(&ev(KeyCode::Char(' '), KeyModifiers::SHIFT)),
+            key_notation(&ev(KeyCode::Char('\u{1}'), KeyModifiers::NONE)),
             None
         );
     }

@@ -5,7 +5,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use toml_edit::{Item, TableLike};
+use toml_edit::Item;
 
 use crate::keymap::Keymap;
 use crate::theme::{self, Theme};

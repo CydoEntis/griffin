@@ -33,7 +33,7 @@ use crate::dap::{DapEvent, DapNews, Session, StackFrame, Thread};
 use crate::highlight::languages;
 #[cfg(windows)]
 use crate::keymap::burst_as_paste;
-use crate::keymap::{Action, Input, Keymap, Scope};
+use crate::keymap::{self, Action, Input, Keymap, Scope};
 use crate::lsp::{
     CompletionItem, Diagnostic, FormatRequest, HoverText, Location, Lsp, LspEvent, LspNews,
     Severity, char_index, diagnostic_at, diagnostic_jump,
@@ -1446,6 +1446,14 @@ impl App {
         if self.hover.take().is_some() && input == Input::Action(Action::Cancel) {
             return;
         }
+        // The key after Enter on a keybindings row is the row's new key, whatever
+        // it would otherwise do.
+        if self.prompt.is_none()
+            && let Some(action) = self.keybindings.as_ref().and_then(Keybindings::waiting)
+        {
+            self.capture_key(action, &key, input);
+            return;
+        }
         if let Some(prompt) = self.prompt {
             if let Some(step) = self.confirm(prompt).handle(input, self.prompt_button) {
                 self.prompt_step(prompt, step);
@@ -1467,6 +1475,7 @@ impl App {
         if let Some(card) = &mut self.keybindings {
             match card.handle(input, self.screen) {
                 Some(keybindings::Step::Close) => self.keybindings = None,
+                Some(keybindings::Step::Reset(action)) => self.reset_keys(action),
                 None => {}
             }
             return;
@@ -4197,6 +4206,89 @@ impl App {
         }
     }
 
+    /// The key pressed while the keybindings card waits for `action`'s new
+    /// key: Esc (`input` is Cancel) gives up, a key the keymap can name
+    /// becomes `action`'s only key, and any other key says so and keeps
+    /// waiting.
+    fn capture_key(&mut self, action: Action, key: &KeyEvent, input: Input) {
+        if input == Input::Action(Action::Cancel) {
+            if let Some(card) = &mut self.keybindings {
+                card.stop_waiting();
+            }
+            return;
+        }
+        let Some(notation) = keymap::key_notation(key) else {
+            self.say(Tone::Warn, "can't bind that key");
+            return;
+        };
+        if let Some(card) = &mut self.keybindings {
+            card.stop_waiting();
+        }
+        let label = keymap::notation_label(&notation);
+        self.write_keys(
+            &[(action, Some(vec![notation]))],
+            format!("{} bound to {label}", action.name()),
+        );
+    }
+
+    /// Delete on a keybindings row: takes `action`'s entry out of `[keys]`, so
+    /// its default keys come back.
+    fn reset_keys(&mut self, action: Action) {
+        let done = format!("{} reset to its default keys", action.name());
+        self.write_keys(&[(action, None)], done);
+    }
+
+    /// Writes each `(action, keys)` into `config.toml`'s `[keys]` (`None`
+    /// removes the entry), keeping the rest of the file, then applies the file
+    /// as saving it would and says `done`. The file is created from the
+    /// template when missing. Nothing is written when the result wouldn't
+    /// apply, so a broken file stays as the user left it, with its error
+    /// showing.
+    fn write_keys(&mut self, entries: &[(Action, Option<Vec<String>>)], done: String) {
+        let Some(path) = self.config_path.clone() else {
+            self.say(Tone::Err, "no config folder");
+            return;
+        };
+        let old = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => config::TEMPLATE.to_string(),
+            Err(err) => {
+                self.say(
+                    Tone::Err,
+                    format!("config error: cannot read {}: {err}", path.display()),
+                );
+                return;
+            }
+        };
+        let mut text = old.clone();
+        for (action, keys) in entries {
+            match config::with_keys(&text, action.name(), keys.as_deref()) {
+                Ok(new) => text = new,
+                Err(err) => return self.say(Tone::Err, err),
+            }
+        }
+        if let Err(err) = config::Settings::from_text(&text) {
+            return self.say(Tone::Err, err);
+        }
+        // A reset of a command `[keys]` never named leaves nothing to write.
+        if text != old {
+            let written = path
+                .parent()
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| crate::save::save_atomic(&path, &text));
+            if let Err(err) = written {
+                return self.say(Tone::Err, format!("cannot write {}: {err}", path.display()));
+            }
+        }
+        if self.apply_config_text(&text).is_ok() {
+            self.say(Tone::Ok, done);
+        }
+        if let Some(card) = &mut self.keybindings {
+            card.refresh(&self.keymap);
+        }
+    }
+
     fn save_unformatted(&mut self, id: u64, why: &str) {
         self.save_doc(id, &format!(" unformatted ({why})"));
     }
@@ -5432,6 +5524,122 @@ mod tests {
             .expect("the running session is left alone");
         assert_eq!(running.session.id, 1);
         assert_eq!(running.launch, launch);
+    }
+
+    /// An app with `dir`'s `config.toml` as its config file and the
+    /// keybindings card open on `query`'s first row.
+    fn app_on_card(dir: &Path, query: &str) -> App {
+        let clipboard = FakeClipboard::default();
+        let mut app = app_with("", &clipboard).with_config_path(Some(dir.join("config.toml")));
+        app.handle_action(Action::Keybindings);
+        for c in query.chars() {
+            app.handle_event(AppEvent::Input(Event::Key(key_event(&c.to_string()))));
+        }
+        app
+    }
+
+    fn card_keys(app: &App, action: Action) -> Vec<String> {
+        app.keybindings
+            .as_ref()
+            .and_then(|card| card.rows().iter().find(|r| r.action == action))
+            .map(|row| row.keys.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn enter_then_a_key_rebinds_the_row_in_config_toml_and_applies_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# mine\ntheme = \"nord\"\n").unwrap();
+        let mut app = app_on_card(dir.path(), "save");
+        press(&mut app, &["enter"]);
+        assert_eq!(
+            app.keybindings.as_ref().and_then(Keybindings::waiting),
+            Some(Action::Save)
+        );
+        press(&mut app, &["alt+w"]);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# mine\ntheme = \"nord\"\n\n[keys]\nsave = \"alt+w\"\n"
+        );
+        assert_eq!(app.message.as_deref(), Some("save bound to Alt+W"));
+        assert_eq!(app.keymap.key_labels(Action::Save), ["Alt+W"]);
+        assert_eq!(card_keys(&app, Action::Save), ["Alt+W"]);
+        // The card stays open, no longer waiting, and the key went nowhere else.
+        assert_eq!(
+            app.keybindings.as_ref().and_then(Keybindings::waiting),
+            None
+        );
+        assert_eq!(app.buffer().rope.to_string(), "");
+
+        // Delete brings the default back and leaves the rest of the file.
+        press(&mut app, &["delete"]);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# mine\ntheme = \"nord\"\n\n[keys]\n"
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some("save reset to its default keys")
+        );
+        assert_eq!(app.keymap.key_labels(Action::Save), ["Ctrl+S"]);
+        assert_eq!(card_keys(&app, Action::Save), ["Ctrl+S"]);
+    }
+
+    #[test]
+    fn rebinding_with_no_config_file_creates_it_from_the_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("glyph").join("config.toml");
+        let clipboard = FakeClipboard::default();
+        let mut app = app_with("", &clipboard).with_config_path(Some(path.clone()));
+        // Resetting a command the file never named writes nothing.
+        app.handle_action(Action::Keybindings);
+        press(&mut app, &["delete"]);
+        assert!(!path.exists());
+        press(&mut app, &["enter", "f2"]);
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.starts_with("# Glyph's settings."), "{written}");
+        assert!(written.contains("[keys]\nquit = \"f2\"\n"), "{written}");
+        assert_eq!(app.keymap.key_labels(Action::Quit), ["F2"]);
+    }
+
+    #[test]
+    fn esc_cancels_the_wait_and_an_unnamed_key_keeps_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut app = app_on_card(dir.path(), "save");
+        press(&mut app, &["enter"]);
+        app.handle_event(AppEvent::Input(Event::Key(keymap::unnamed_key_event())));
+        assert_eq!(app.message.as_deref(), Some("can't bind that key"));
+        assert_eq!(app.message_tone, Tone::Warn);
+        assert_eq!(
+            app.keybindings.as_ref().and_then(Keybindings::waiting),
+            Some(Action::Save)
+        );
+        press(&mut app, &["esc"]);
+        // Esc only stopped the wait: the card is open and nothing was written.
+        assert!(app.keybindings.is_some());
+        assert_eq!(
+            app.keybindings.as_ref().and_then(Keybindings::waiting),
+            None
+        );
+        assert!(!path.exists());
+        assert_eq!(app.keymap.key_labels(Action::Save), ["Ctrl+S"]);
+        press(&mut app, &["esc"]);
+        assert!(app.keybindings.is_none());
+    }
+
+    #[test]
+    fn a_broken_config_file_is_not_rewritten_by_a_rebind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[editor\n").unwrap();
+        let mut app = app_on_card(dir.path(), "save");
+        press(&mut app, &["enter", "alt+w"]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[editor\n");
+        let message = app.message.clone().unwrap_or_default();
+        assert!(message.starts_with("config error: "), "{message}");
+        assert_eq!(app.keymap.key_labels(Action::Save), ["Ctrl+S"]);
     }
 
     #[test]
