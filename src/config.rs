@@ -11,7 +11,7 @@ use crate::buffer::LineEnding;
 use crate::keymap::Keymap;
 use crate::theme::{self, Theme};
 
-/// The user's `config.toml`. Sections Glyph doesn't know yet are ignored rather
+/// The user's `config.toml`. Sections Tome doesn't know yet are ignored rather
 /// than rejected, so later tickets can add theirs without breaking old files.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default)]
@@ -105,21 +105,21 @@ pub struct Loaded {
     pub error: Option<String>,
 }
 
-/// Loads `config.toml` from `GLYPH_CONFIG` or the OS config dir.
+/// Loads `config.toml` from `TOME_CONFIG` or the OS config dir.
 pub fn load() -> Loaded {
-    match config_path(std::env::var_os("GLYPH_CONFIG")) {
+    match config_path(std::env::var_os("TOME_CONFIG")) {
         Some(path) => load_from(&path),
         None => Loaded::default(),
     }
 }
 
-/// `GLYPH_CONFIG` wins when set and non-empty; otherwise `%APPDATA%\glyph\` or
-/// `~/.config/glyph/`. `None` only when the OS has no config dir at all.
+/// `TOME_CONFIG` wins when set and non-empty; otherwise `%APPDATA%\tome\` or
+/// `~/.config/tome/`. `None` only when the OS has no config dir at all.
 pub fn config_path(env_override: Option<OsString>) -> Option<PathBuf> {
     if let Some(path) = env_override.filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(path));
     }
-    directories::BaseDirs::new().map(|dirs| dirs.config_dir().join("glyph").join("config.toml"))
+    directories::BaseDirs::new().map(|dirs| dirs.config_dir().join("tome").join("config.toml"))
 }
 
 /// A missing file means defaults; an unreadable or malformed one means defaults
@@ -166,7 +166,7 @@ fn describe(err: &toml::de::Error, text: &str) -> String {
 }
 
 /// What a `config.toml` gives the editor, built from it whole. Startup and
-/// saving the file inside Glyph both come through here, so the two can't read
+/// saving the file inside Tome both come through here, so the two can't read
 /// the same file differently.
 #[derive(Debug, Default)]
 pub struct Settings {
@@ -231,7 +231,7 @@ impl Settings {
 /// What `>settings` writes when there is no `config.toml` yet. Every line is
 /// commented out, so the new file changes nothing until the user says so, and
 /// each `[editor]` line shows the default it would keep.
-pub const TEMPLATE: &str = r#"# Glyph's settings. Remove the `#` in front of a line to change it.
+pub const TEMPLATE: &str = r#"# Tome's settings. Remove the `#` in front of a line to change it.
 
 # One of aurora, moonlit, hydra, papercolor-dark, tango-dark, monokai,
 # tokyo-night, catppuccin-mocha, catppuccin-latte, gruvbox, nord, dracula, mono.
@@ -316,10 +316,10 @@ fn unreadable(text: &str) -> String {
     }
 }
 
-/// The project's `.glyph.toml`, at the project root.
-pub const PROJECT_FILE: &str = ".glyph.toml";
+/// The project's `.tome.toml`, at the project root.
+pub const PROJECT_FILE: &str = ".tome.toml";
 
-/// `.glyph.toml`. Like `config.toml`, unknown sections are ignored.
+/// `.tome.toml`. Like `config.toml`, unknown sections are ignored.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct ProjectConfig {
@@ -327,7 +327,7 @@ pub struct ProjectConfig {
     pub debug: DebugLaunch,
 }
 
-/// `.glyph.toml` `[debug]`: how this project's program is launched under the
+/// `.tome.toml` `[debug]`: how this project's program is launched under the
 /// debugger. Each field set replaces the language's default for it.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
@@ -353,7 +353,7 @@ pub struct RunEntry {
     pub cwd: Option<String>,
 }
 
-/// What loading `.glyph.toml` produced: always a usable (maybe empty) config,
+/// What loading `.tome.toml` produced: always a usable (maybe empty) config,
 /// plus why it fell back to empty, if it did.
 #[derive(Debug, Default)]
 pub struct LoadedProject {
@@ -361,7 +361,7 @@ pub struct LoadedProject {
     pub error: Option<String>,
 }
 
-/// Reads `.glyph.toml` from `root`. A missing file means no entries; an
+/// Reads `.tome.toml` from `root`. A missing file means no entries; an
 /// unreadable or malformed one means no entries plus a one-line error.
 pub fn load_project(root: &Path) -> LoadedProject {
     let path = root.join(PROJECT_FILE);
@@ -514,7 +514,7 @@ save =",
     #[test]
     fn create_template_makes_the_folders_and_keeps_an_existing_file() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("glyph").join("nested").join("config.toml");
+        let path = dir.path().join("tome").join("nested").join("config.toml");
         create_template(&path).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), TEMPLATE);
         fs::write(
@@ -720,9 +720,9 @@ save =",
     }
 
     #[test]
-    fn default_path_is_glyph_config_toml_in_the_os_config_dir() {
+    fn default_path_is_tome_config_toml_in_the_os_config_dir() {
         let path = config_path(None).expect("test machines have a config dir");
-        assert!(path.ends_with(Path::new("glyph").join("config.toml")));
+        assert!(path.ends_with(Path::new("tome").join("config.toml")));
         let base = directories::BaseDirs::new().unwrap();
         assert!(path.starts_with(base.config_dir()));
         assert!(config_path(Some(OsString::new())) == Some(path));
@@ -785,7 +785,7 @@ save =",
         let loaded = parse_project("[[run]]\nname = \"dev\"\ncommand = = 1\n");
         assert!(loaded.config.run.is_empty());
         let error = loaded.error.expect("malformed toml is an error");
-        assert!(error.starts_with(".glyph.toml line 3:"), "{error}");
+        assert!(error.starts_with(".tome.toml line 3:"), "{error}");
         assert!(!error.contains('\n'), "{error}");
     }
 
@@ -885,7 +885,7 @@ save =",
         assert_eq!(out, "[keys]\nsave = \"alt+w\"\n");
         // The template's commented-out lines stay, under the new entry.
         let out = with_keys(TEMPLATE, "save", Some(&keys(&["alt+w"]))).unwrap();
-        assert!(out.starts_with("# Glyph's settings."), "{out}");
+        assert!(out.starts_with("# Tome's settings."), "{out}");
         assert!(out.contains("[keys]\nsave = \"alt+w\"\n"), "{out}");
         assert!(out.contains("# save = \"ctrl+s\"\n"), "{out}");
         assert!(out.contains("# tab_width = 4\n"), "{out}");

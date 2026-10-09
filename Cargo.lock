@@ -758,49 +758,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glyph"
-version = "0.1.0"
-dependencies = [
- "ansi-to-tui",
- "anyhow",
- "arboard",
- "chrono",
- "clap",
- "crossterm",
- "directories",
- "futures-util",
- "ignore",
- "libc",
- "lsp-types",
- "nucleo",
- "portable-pty",
- "ratatui",
- "regex",
- "ropey",
- "serde",
- "serde_json",
- "streaming-iterator",
- "tempfile",
- "tokio",
- "toml",
- "toml_edit",
- "trash",
- "tree-sitter",
- "tree-sitter-css",
- "tree-sitter-go",
- "tree-sitter-highlight",
- "tree-sitter-html",
- "tree-sitter-javascript",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-sequel",
- "tree-sitter-typescript",
- "unicode-width",
- "vt100",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2196,6 +2153,49 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "tome"
+version = "0.1.0"
+dependencies = [
+ "ansi-to-tui",
+ "anyhow",
+ "arboard",
+ "chrono",
+ "clap",
+ "crossterm",
+ "directories",
+ "futures-util",
+ "ignore",
+ "libc",
+ "lsp-types",
+ "nucleo",
+ "portable-pty",
+ "ratatui",
+ "regex",
+ "ropey",
+ "serde",
+ "serde_json",
+ "streaming-iterator",
+ "tempfile",
+ "tokio",
+ "toml",
+ "toml_edit",
+ "trash",
+ "tree-sitter",
+ "tree-sitter-css",
+ "tree-sitter-go",
+ "tree-sitter-highlight",
+ "tree-sitter-html",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-sequel",
+ "tree-sitter-typescript",
+ "unicode-width",
+ "vt100",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

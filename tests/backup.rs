@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use harness::{Glyph, ROWS};
+use harness::{ROWS, Tome};
 use tempfile::TempDir;
 
 const START: Duration = Duration::from_secs(10);
@@ -35,10 +35,10 @@ impl Setup {
         Self { files, data }
     }
 
-    fn launch(&self) -> Glyph {
-        let glyph = Glyph::spawn_in_with_data(self.files.path(), self.data.path(), &["a.txt"]);
-        glyph.wait_for_text("a.txt", START);
-        glyph
+    fn launch(&self) -> Tome {
+        let tome = Tome::spawn_in_with_data(self.files.path(), self.data.path(), &["a.txt"]);
+        tome.wait_for_text("a.txt", START);
+        tome
     }
 
     fn backups(&self) -> PathBuf {
@@ -65,19 +65,19 @@ fn backup_files(dir: &Path) -> Vec<PathBuf> {
     }
 }
 
-fn status_line(glyph: &Glyph) -> String {
-    glyph.screen()[usize::from(ROWS - 1)].clone()
+fn status_line(tome: &Tome) -> String {
+    tome.screen()[usize::from(ROWS - 1)].clone()
 }
 
-/// Edits `a.txt`, waits for its backup to land, then kills glyph without
+/// Edits `a.txt`, waits for its backup to land, then kills tome without
 /// letting it clean up.
 fn edit_and_crash(setup: &Setup) {
-    let mut glyph = setup.launch();
-    glyph.wait_for_text("Ln 1, Col 1", START);
-    glyph.type_text("xy");
-    glyph.wait_for_text("xyhello", WAIT);
+    let mut tome = setup.launch();
+    tome.wait_for_text("Ln 1, Col 1", START);
+    tome.type_text("xy");
+    tome.wait_for_text("xyhello", WAIT);
     let typed = Instant::now();
-    glyph.wait_for_files("a backup file", WAIT, || {
+    tome.wait_for_files("a backup file", WAIT, || {
         setup
             .backup_files()
             .iter()
@@ -98,14 +98,14 @@ fn edit_and_crash(setup: &Setup) {
         name.len() == 20 && name[..16].chars().all(|c| c.is_ascii_hexdigit()),
         "{name}"
     );
-    glyph.kill();
+    tome.kill();
     assert_eq!(setup.read_a(), "hello\n", "nothing was saved");
 }
 
 /// Waits for the recover card and checks its copy, with the backup's time, and
 /// buttons sit where §7.4 puts them.
-fn wait_for_card(setup: &Setup, glyph: &Glyph) {
-    glyph.wait_for_text(QUESTION, START);
+fn wait_for_card(setup: &Setup, tome: &Tome) {
+    tome.wait_for_text(QUESTION, START);
     let backups = setup.backup_files();
     let written = fs::metadata(&backups[0])
         .and_then(|m| m.modified())
@@ -114,29 +114,29 @@ fn wait_for_card(setup: &Setup, glyph: &Glyph) {
         "A backup from {} is newer than the file on disk.",
         chrono::DateTime::<chrono::Local>::from(written).format("%H:%M")
     );
-    let screen = glyph.screen();
+    let screen = tome.screen();
     assert_eq!(
-        glyph.text_col(CARD_Y, &"▀".repeat(59)),
+        tome.text_col(CARD_Y, &"▀".repeat(59)),
         Some(CARD_X),
         "{screen:#?}"
     );
     assert_eq!(
-        glyph.text_col(CARD_Y + 1, QUESTION),
+        tome.text_col(CARD_Y + 1, QUESTION),
         Some(TEXT_X),
         "{screen:#?}"
     );
     assert_eq!(
-        glyph.text_col(CARD_Y + 2, &explanation),
+        tome.text_col(CARD_Y + 2, &explanation),
         Some(TEXT_X),
         "{screen:#?}"
     );
     assert_eq!(
-        glyph.text_col(BUTTON_ROW, "Recover    Discard"),
+        tome.text_col(BUTTON_ROW, "Recover    Discard"),
         Some(TEXT_X + 1),
         "{screen:#?}"
     );
-    assert_eq!(glyph.bg_at(TEXT_X, BUTTON_ROW), ACCENT);
-    assert_eq!(glyph.underlined_text(BUTTON_ROW), "RD");
+    assert_eq!(tome.bg_at(TEXT_X, BUTTON_ROW), ACCENT);
+    assert_eq!(tome.underlined_text(BUTTON_ROW), "RD");
 }
 
 #[test]
@@ -144,22 +144,22 @@ fn recover_after_a_crash_loads_the_backup() {
     let setup = Setup::new("hello\n");
     edit_and_crash(&setup);
 
-    let mut glyph = setup.launch();
-    wait_for_card(&setup, &glyph);
-    glyph.type_text("r");
-    glyph.wait_for_text_gone(QUESTION, WAIT);
-    glyph.wait_for_text("xyhello", WAIT);
-    glyph.wait_for_text("a.txt •", WAIT);
-    assert!(status_line(&glyph).contains("a.txt •"));
+    let mut tome = setup.launch();
+    wait_for_card(&setup, &tome);
+    tome.type_text("r");
+    tome.wait_for_text_gone(QUESTION, WAIT);
+    tome.wait_for_text("xyhello", WAIT);
+    tome.wait_for_text("a.txt •", WAIT);
+    assert!(status_line(&tome).contains("a.txt •"));
     // The backup stays until the recovered text is saved.
     assert_eq!(setup.backup_files().len(), 1);
 
-    glyph.send_keys("ctrl+s");
-    glyph.wait_for_text("saved a.txt", WAIT);
+    tome.send_keys("ctrl+s");
+    tome.wait_for_text("saved a.txt", WAIT);
     assert_eq!(setup.read_a(), "xyhello\n");
-    glyph.wait_for_files("the backup to go", WAIT, || setup.backup_files().is_empty());
-    glyph.send_keys("ctrl+q");
-    assert!(glyph.wait_exit(WAIT).success());
+    tome.wait_for_files("the backup to go", WAIT, || setup.backup_files().is_empty());
+    tome.send_keys("ctrl+q");
+    assert!(tome.wait_exit(WAIT).success());
 }
 
 #[test]
@@ -167,39 +167,39 @@ fn discard_after_a_crash_deletes_the_backup() {
     let setup = Setup::new("hello\n");
     edit_and_crash(&setup);
 
-    let mut glyph = setup.launch();
-    wait_for_card(&setup, &glyph);
-    glyph.type_text("d");
-    glyph.wait_for_text_gone(QUESTION, WAIT);
-    glyph.wait_for_text("hello", WAIT);
-    let status = status_line(&glyph);
+    let mut tome = setup.launch();
+    wait_for_card(&setup, &tome);
+    tome.type_text("d");
+    tome.wait_for_text_gone(QUESTION, WAIT);
+    tome.wait_for_text("hello", WAIT);
+    let status = status_line(&tome);
     assert!(!status.contains('●'), "dirty after discard: {status:?}");
-    assert!(!glyph.screen().iter().any(|l| l.contains("xyhello")));
-    glyph.wait_for_files("the backup to go", WAIT, || setup.backup_files().is_empty());
+    assert!(!tome.screen().iter().any(|l| l.contains("xyhello")));
+    tome.wait_for_files("the backup to go", WAIT, || setup.backup_files().is_empty());
 
     // Nothing is offered the next time.
-    glyph.send_keys("ctrl+q");
-    assert!(glyph.wait_exit(WAIT).success());
-    let mut glyph = setup.launch();
-    glyph.wait_for_text("Ln 1, Col 1", START);
-    glyph.assert_running_for(Duration::from_millis(300));
-    assert!(!glyph.screen().iter().any(|l| l.contains(QUESTION)));
-    glyph.send_keys("ctrl+q");
-    assert!(glyph.wait_exit(WAIT).success());
+    tome.send_keys("ctrl+q");
+    assert!(tome.wait_exit(WAIT).success());
+    let mut tome = setup.launch();
+    tome.wait_for_text("Ln 1, Col 1", START);
+    tome.assert_running_for(Duration::from_millis(300));
+    assert!(!tome.screen().iter().any(|l| l.contains(QUESTION)));
+    tome.send_keys("ctrl+q");
+    assert!(tome.wait_exit(WAIT).success());
 }
 
 #[test]
 fn quitting_cleanly_deletes_the_backup() {
     let setup = Setup::new("hello\n");
-    let mut glyph = setup.launch();
-    glyph.wait_for_text("Ln 1, Col 1", START);
-    glyph.type_text("x");
-    glyph.wait_for_text("a.txt •", WAIT);
-    glyph.wait_for_files("a backup file", WAIT, || !setup.backup_files().is_empty());
-    glyph.send_keys("ctrl+q");
-    glyph.wait_for_text("has unsaved changes", WAIT);
-    glyph.type_text("d");
-    assert!(glyph.wait_exit(WAIT).success());
+    let mut tome = setup.launch();
+    tome.wait_for_text("Ln 1, Col 1", START);
+    tome.type_text("x");
+    tome.wait_for_text("a.txt •", WAIT);
+    tome.wait_for_files("a backup file", WAIT, || !setup.backup_files().is_empty());
+    tome.send_keys("ctrl+q");
+    tome.wait_for_text("has unsaved changes", WAIT);
+    tome.type_text("d");
+    assert!(tome.wait_exit(WAIT).success());
     assert!(setup.backup_files().is_empty());
     assert_eq!(setup.read_a(), "hello\n");
 }
@@ -210,20 +210,20 @@ fn enter_recovers_and_a_click_on_discard_discards() {
     edit_and_crash(&setup);
 
     // Recover is the default: Enter presses it.
-    let mut glyph = setup.launch();
-    wait_for_card(&setup, &glyph);
-    glyph.send_keys("enter");
-    glyph.wait_for_text_gone(QUESTION, WAIT);
-    glyph.wait_for_text("xyhello", WAIT);
-    glyph.kill();
+    let mut tome = setup.launch();
+    wait_for_card(&setup, &tome);
+    tome.send_keys("enter");
+    tome.wait_for_text_gone(QUESTION, WAIT);
+    tome.wait_for_text("xyhello", WAIT);
+    tome.kill();
 
     // The backup is still there, so it's offered again; a click discards it.
-    let mut glyph = setup.launch();
-    wait_for_card(&setup, &glyph);
-    glyph.click(DISCARD_X + 2, BUTTON_ROW);
-    glyph.wait_for_text_gone(QUESTION, WAIT);
-    glyph.wait_for_files("the backup to go", WAIT, || setup.backup_files().is_empty());
-    assert!(!glyph.screen().iter().any(|l| l.contains("xyhello")));
-    glyph.send_keys("ctrl+q");
-    assert!(glyph.wait_exit(WAIT).success());
+    let mut tome = setup.launch();
+    wait_for_card(&setup, &tome);
+    tome.click(DISCARD_X + 2, BUTTON_ROW);
+    tome.wait_for_text_gone(QUESTION, WAIT);
+    tome.wait_for_files("the backup to go", WAIT, || setup.backup_files().is_empty());
+    assert!(!tome.screen().iter().any(|l| l.contains("xyhello")));
+    tome.send_keys("ctrl+q");
+    assert!(tome.wait_exit(WAIT).success());
 }

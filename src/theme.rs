@@ -1,4 +1,4 @@
-//! Glyph's 13 themes and `[theme_overrides]`. A theme paints Glyph's chrome (tab
+//! Tome's 13 themes and `[theme_overrides]`. A theme paints Tome's chrome (tab
 //! bar, tree, status line, popups) and the editor ground, and carries the syntax
 //! colours highlighting will use. `aurora` and `moonlit` are hand-tuned; the pack
 //! palettes are Hydra's, reused under the MIT licence both projects share, with
@@ -756,7 +756,7 @@ impl Theme {
     }
 
     /// The role an override key names. Takes the canonical names, `-` for `_`,
-    /// Hydra's names for the roles Glyph renamed or folded together, and the v1
+    /// Hydra's names for the roles Tome renamed or folded together, and the v1
     /// and Aurora names for one another (README §6): overriding either sets both,
     /// so screens drawn with the v1 fields and restyled ones agree.
     fn slot(&mut self, key: &str) -> Option<Slot<'_>> {

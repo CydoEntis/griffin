@@ -1,5 +1,5 @@
 //! Which server each language uses: the spec's defaults, with `[lsp.<lang>]`
-//! tables laid over them, and the PATH lookup behind `glyph --health`.
+//! tables laid over them, and the PATH lookup behind `tome --health`.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -82,7 +82,7 @@ pub fn with_defaults(mut config: BTreeMap<String, LspServer>) -> BTreeMap<String
     config
 }
 
-/// One line per language for `glyph --health`: the language padded to 11, the
+/// One line per language for `tome --health`: the language padded to 11, the
 /// command line, and whether the program was found. `path` and `pathext` are the
 /// `PATH` and `PATHEXT` values to search.
 pub fn health(
@@ -112,7 +112,7 @@ pub fn health(
     out
 }
 
-/// Whether `install` has to be run by the user rather than by Glyph: the run
+/// Whether `install` has to be run by the user rather than by Tome: the run
 /// panel has no stdin, so a `sudo` password prompt would hang it.
 pub fn copy_only(install: &str) -> bool {
     install.split_whitespace().next() == Some("sudo")

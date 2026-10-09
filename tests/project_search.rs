@@ -3,7 +3,7 @@ mod harness;
 use std::path::Path;
 use std::time::Duration;
 
-use harness::{Glyph, ROWS};
+use harness::{ROWS, Tome};
 use vt100::Color;
 
 const START: Duration = Duration::from_secs(10);
@@ -61,30 +61,30 @@ fn hit_row((place, text): (&str, &str)) -> String {
     format!("{place:<PLACE_WIDTH$}  {text}")
 }
 
-/// Glyph in `dir` with no file open, so the root is that folder.
-fn open_in(dir: &Path) -> Glyph {
-    let glyph = Glyph::spawn_in(dir, &[]);
-    glyph.wait_for_text("Open directory", START);
-    glyph
+/// Tome in `dir` with no file open, so the root is that folder.
+fn open_in(dir: &Path) -> Tome {
+    let tome = Tome::spawn_in(dir, &[]);
+    tome.wait_for_text("Open directory", START);
+    tome
 }
 
 /// Opens the panel, types `query` and presses Enter.
-fn search(glyph: &mut Glyph, query: &str) {
-    glyph.send_keys("alt+f");
-    glyph.wait_for_text(FOOTER, WAIT);
-    glyph.type_text(query);
-    glyph.wait_for_text(&format!("Search   {query}"), WAIT);
-    glyph.send_keys("enter");
+fn search(tome: &mut Tome, query: &str) {
+    tome.send_keys("alt+f");
+    tome.wait_for_text(FOOTER, WAIT);
+    tome.type_text(query);
+    tome.wait_for_text(&format!("Search   {query}"), WAIT);
+    tome.send_keys("enter");
 }
 
-fn row(glyph: &Glyph, row: u16) -> String {
-    glyph.screen()[usize::from(row)].clone()
+fn row(tome: &Tome, row: u16) -> String {
+    tome.screen()[usize::from(row)].clone()
 }
 
 /// Waits for the row under the fields to say exactly `status`, e.g.
 /// `3 matches in 2 files`, and not `searching… 3 matches in 2 files`.
-fn wait_for_status(glyph: &Glyph, status: &str) {
-    glyph.wait_for_screen(&format!("the panel to say {status:?}"), WAIT, |lines| {
+fn wait_for_status(tome: &Tome, status: &str) {
+    tome.wait_for_screen(&format!("the panel to say {status:?}"), WAIT, |lines| {
         let shown: String = lines[usize::from(STATUS_ROW)]
             .chars()
             .skip(usize::from(CARD_X) + 2)
@@ -94,194 +94,191 @@ fn wait_for_status(glyph: &Glyph, status: &str) {
 }
 
 /// The chips on the Search field that are on: `acc_ink` on the accent.
-fn chips_on(glyph: &Glyph) -> String {
-    glyph.bg_text(QUERY_ROW, ACCENT).replace(' ', "")
+fn chips_on(tome: &Tome) -> String {
+    tome.bg_text(QUERY_ROW, ACCENT).replace(' ', "")
 }
 
 /// Waits for `hit` to be the selected row `y`: the glow row.
-fn wait_for_selected(glyph: &Glyph, y: u16, hit: (&str, &str)) {
-    glyph.wait_for_bg(CARD_X, y, glow(), WAIT);
-    assert_eq!(glyph.text_col(y, &hit_row(hit)), Some(LIST_X), "{hit:?}");
+fn wait_for_selected(tome: &Tome, y: u16, hit: (&str, &str)) {
+    tome.wait_for_bg(CARD_X, y, glow(), WAIT);
+    assert_eq!(tome.text_col(y, &hit_row(hit)), Some(LIST_X), "{hit:?}");
 }
 
 /// Waits for the status line to show `Ln <line>, Col <col>` (see `shows_position`).
-fn wait_for_position(glyph: &Glyph, line: usize, col: usize) {
+fn wait_for_position(tome: &Tome, line: usize, col: usize) {
     let position = format!("Ln {line}, Col {col}");
-    glyph.wait_for_screen(&position, WAIT, |lines| {
+    tome.wait_for_screen(&position, WAIT, |lines| {
         harness::shows_position(&lines[usize::from(ROWS - 1)], &position)
     });
 }
 
 #[test]
 fn alt_f_lists_hits_as_path_line_text_respecting_gitignore_and_skipping_binaries() {
-    let mut glyph = open_in(Path::new(PROJECT));
-    search(&mut glyph, "TODO");
-    wait_for_status(&glyph, "3 matches in 2 files");
-    assert_eq!(glyph.text_col(QUERY_ROW, "Search   TODO"), Some(LABEL_X));
-    assert!(row(&glyph, QUERY_ROW).contains(" Aa   .*"));
+    let mut tome = open_in(Path::new(PROJECT));
+    search(&mut tome, "TODO");
+    wait_for_status(&tome, "3 matches in 2 files");
+    assert_eq!(tome.text_col(QUERY_ROW, "Search   TODO"), Some(LABEL_X));
+    assert!(row(&tome, QUERY_ROW).contains(" Aa   .*"));
     // Sorted by path, then line, the text lined up after the widest place.
     for (i, hit) in [LIB_TODO, LIB_FN, MAIN_TODO].into_iter().enumerate() {
         let y = FIRST_ROW + u16::try_from(i).unwrap();
-        assert_eq!(glyph.text_col(y, &hit_row(hit)), Some(LIST_X), "{hit:?}");
+        assert_eq!(tome.text_col(y, &hit_row(hit)), Some(LIST_X), "{hit:?}");
     }
-    let screen = glyph.screen().join("\n");
+    let screen = tome.screen().join("\n");
     assert!(!screen.contains("ignored.log"), "{screen}");
     assert!(!screen.contains("data.bin"), "{screen}");
     // The first hit starts selected; the others show their match on
     // `find_match_bg`.
-    wait_for_selected(&glyph, FIRST_ROW, LIB_TODO);
+    wait_for_selected(&tome, FIRST_ROW, LIB_TODO);
     let match_bg = mix(BG, WARN, 0.3);
-    assert_eq!(glyph.bg_text(FIRST_ROW + 1, match_bg), "todo");
-    assert_eq!(glyph.bg_text(FIRST_ROW + 2, match_bg), "TODO");
+    assert_eq!(tome.bg_text(FIRST_ROW + 1, match_bg), "todo");
+    assert_eq!(tome.bg_text(FIRST_ROW + 2, match_bg), "TODO");
     // The cursor stays in the query.
-    glyph.wait_for_cursor(VALUE_X + "TODO".len() as u16, QUERY_ROW, WAIT);
+    tome.wait_for_cursor(VALUE_X + "TODO".len() as u16, QUERY_ROW, WAIT);
 }
 
 #[test]
 fn the_panel_is_a_lit_card_over_a_dimmed_screen() {
-    let mut glyph = Glyph::spawn_in(Path::new(PROJECT), &["src/lib.rs"]);
-    glyph.wait_for_text("Fixture library", START);
+    let mut tome = Tome::spawn_in(Path::new(PROJECT), &["src/lib.rs"]);
+    tome.wait_for_text("Fixture library", START);
     let y = (0..ROWS)
-        .find(|&y| row(&glyph, y).contains("Fixture library"))
+        .find(|&y| row(&tome, y).contains("Fixture library"))
         .unwrap();
     // Above the card, so it's only dimmed.
     assert!(y < CARD_Y, "the editor's first line is on row {y}");
-    let x = glyph.text_col(y, "Fixture").unwrap();
-    let (fg, bg) = (glyph.fg_at(x, y), glyph.bg_at(x, y));
-    search(&mut glyph, "TODO");
-    wait_for_status(&glyph, "3 matches in 2 files");
-    glyph.wait_for_fg_at(x, y, mix(fg, SCRIM, 0.6), WAIT);
-    glyph.wait_for_bg(x, y, mix(bg, SCRIM, 0.6), WAIT);
+    let x = tome.text_col(y, "Fixture").unwrap();
+    let (fg, bg) = (tome.fg_at(x, y), tome.bg_at(x, y));
+    search(&mut tome, "TODO");
+    wait_for_status(&tome, "3 matches in 2 files");
+    tome.wait_for_fg_at(x, y, mix(fg, SCRIM, 0.6), WAIT);
+    tome.wait_for_bg(x, y, mix(bg, SCRIM, 0.6), WAIT);
 
     // No border: the lit edge across the top, then the card's own rows.
     assert_eq!(
-        glyph.text_col(CARD_Y, &"▀".repeat(80)),
+        tome.text_col(CARD_Y, &"▀".repeat(80)),
         Some(CARD_X),
         "{}",
-        row(&glyph, CARD_Y)
+        row(&tome, CARD_Y)
     );
-    assert_eq!(glyph.fg_at(CARD_X, CARD_Y), ACCENT);
-    let right_edge = row(&glyph, QUERY_ROW).chars().nth(usize::from(CARD_X + 79));
+    assert_eq!(tome.fg_at(CARD_X, CARD_Y), ACCENT);
+    let right_edge = row(&tome, QUERY_ROW).chars().nth(usize::from(CARD_X + 79));
     assert_ne!(right_edge, Some('│'), "no border");
-    assert_eq!(glyph.text_col(QUERY_ROW, "✦ Search"), Some(LABEL_X - 2));
-    assert_eq!(
-        glyph.text_col(QUERY_ROW + 1, "✦ Replace"),
-        Some(LABEL_X - 2)
-    );
-    assert_eq!(glyph.text_col(CARD_Y + 21, FOOTER), Some(CARD_X + 2));
+    assert_eq!(tome.text_col(QUERY_ROW, "✦ Search"), Some(LABEL_X - 2));
+    assert_eq!(tome.text_col(QUERY_ROW + 1, "✦ Replace"), Some(LABEL_X - 2));
+    assert_eq!(tome.text_col(CARD_Y + 21, FOOTER), Some(CARD_X + 2));
     // The selected row ends in `⏎`.
-    assert_eq!(glyph.text_col(FIRST_ROW, "⏎"), Some(CARD_X + 80 - 5));
+    assert_eq!(tome.text_col(FIRST_ROW, "⏎"), Some(CARD_X + 80 - 5));
 }
 
 #[test]
 fn a_click_outside_the_card_closes_it_and_one_inside_does_not() {
-    let mut glyph = open_in(Path::new(PROJECT));
-    glyph.send_keys("alt+f");
-    glyph.wait_for_text(FOOTER, WAIT);
-    glyph.click(50, 15);
+    let mut tome = open_in(Path::new(PROJECT));
+    tome.send_keys("alt+f");
+    tome.wait_for_text(FOOTER, WAIT);
+    tome.click(50, 15);
     // Still open: typing goes to the query.
-    glyph.type_text("x");
-    glyph.wait_for_text("Search   x", WAIT);
-    glyph.click(2, 2);
-    glyph.wait_for_text_gone(FOOTER, WAIT);
+    tome.type_text("x");
+    tome.wait_for_text("Search   x", WAIT);
+    tome.click(2, 2);
+    tome.wait_for_text_gone(FOOTER, WAIT);
 }
 
 #[test]
 fn mono_dims_with_the_modifier_and_reverses_the_selected_row() {
-    let mut glyph = Glyph::spawn_in_with_config(Path::new(PROJECT), "theme = \"mono\"\n", &[]);
-    glyph.wait_for_text("Open directory", START);
-    search(&mut glyph, "TODO");
-    wait_for_status(&glyph, "3 matches in 2 files");
+    let mut tome = Tome::spawn_in_with_config(Path::new(PROJECT), "theme = \"mono\"\n", &[]);
+    tome.wait_for_text("Open directory", START);
+    search(&mut tome, "TODO");
+    wait_for_status(&tome, "3 matches in 2 files");
     // The frame with the count has the selection and the dim too.
     assert!(
-        glyph.reversed_text(FIRST_ROW).contains(&hit_row(LIB_TODO)),
+        tome.reversed_text(FIRST_ROW).contains(&hit_row(LIB_TODO)),
         "{:?}",
-        glyph.reversed_text(FIRST_ROW)
+        tome.reversed_text(FIRST_ROW)
     );
     let status = ROWS - 1;
     // The splash is still up under the card, so its keys are in the status line.
-    let position = glyph.text_col(status, "quit").unwrap();
-    assert!(glyph.dim_at(position, status), "the status line is dimmed");
-    assert!(!glyph.dim_at(CARD_X + 2, STATUS_ROW), "the card isn't");
+    let position = tome.text_col(status, "quit").unwrap();
+    assert!(tome.dim_at(position, status), "the status line is dimmed");
+    assert!(!tome.dim_at(CARD_X + 2, STATUS_ROW), "the card isn't");
 }
 
 #[test]
 fn alt_c_and_alt_r_toggle_case_and_regex_and_search_again() {
-    let mut glyph = open_in(Path::new(PROJECT));
-    search(&mut glyph, "T.DO");
-    wait_for_status(&glyph, "no matches");
+    let mut tome = open_in(Path::new(PROJECT));
+    search(&mut tome, "T.DO");
+    wait_for_status(&tome, "no matches");
     // As a regex `.` matches the `O`; case still ignored, so `todo_free` too.
-    glyph.send_keys("alt+r");
-    wait_for_status(&glyph, "3 matches in 2 files");
-    assert_eq!(chips_on(&glyph), ".*");
-    glyph.send_keys("alt+c");
-    wait_for_status(&glyph, "2 matches in 2 files");
-    assert_eq!(chips_on(&glyph), "Aa.*");
-    glyph.wait_for_text_gone("todo_free", WAIT);
-    assert_eq!(glyph.text_col(FIRST_ROW, &hit_row(LIB_TODO)), Some(LIST_X));
+    tome.send_keys("alt+r");
+    wait_for_status(&tome, "3 matches in 2 files");
+    assert_eq!(chips_on(&tome), ".*");
+    tome.send_keys("alt+c");
+    wait_for_status(&tome, "2 matches in 2 files");
+    assert_eq!(chips_on(&tome), "Aa.*");
+    tome.wait_for_text_gone("todo_free", WAIT);
+    assert_eq!(tome.text_col(FIRST_ROW, &hit_row(LIB_TODO)), Some(LIST_X));
     assert_eq!(
-        glyph.text_col(FIRST_ROW + 1, &hit_row(MAIN_TODO)),
+        tome.text_col(FIRST_ROW + 1, &hit_row(MAIN_TODO)),
         Some(LIST_X)
     );
 
     // A bad regex says so instead of listing anything.
-    glyph.type_text("(");
-    glyph.send_keys("enter");
-    wait_for_status(&glyph, "invalid regex");
-    glyph.wait_for_text_gone("src/lib.rs", WAIT);
+    tome.type_text("(");
+    tome.send_keys("enter");
+    wait_for_status(&tome, "invalid regex");
+    tome.wait_for_text_gone("src/lib.rs", WAIT);
 
-    glyph.send_keys("esc");
-    glyph.wait_for_text_gone(FOOTER, WAIT);
+    tome.send_keys("esc");
+    tome.wait_for_text_gone(FOOTER, WAIT);
 }
 
 #[test]
 fn arrows_move_through_hits_and_enter_opens_the_file_at_the_match() {
-    let mut glyph = open_in(Path::new(PROJECT));
-    search(&mut glyph, "TODO");
-    wait_for_status(&glyph, "3 matches in 2 files");
-    glyph.send_keys("down");
-    glyph.send_keys("down");
-    wait_for_selected(&glyph, FIRST_ROW + 2, MAIN_TODO);
-    glyph.send_keys("up");
-    wait_for_selected(&glyph, FIRST_ROW + 1, LIB_FN);
-    glyph.send_keys("down");
-    wait_for_selected(&glyph, FIRST_ROW + 2, MAIN_TODO);
-    glyph.send_keys("enter");
-    glyph.wait_for_text_gone(FOOTER, WAIT);
-    glyph.wait_for_text("1  fn main() {", WAIT);
+    let mut tome = open_in(Path::new(PROJECT));
+    search(&mut tome, "TODO");
+    wait_for_status(&tome, "3 matches in 2 files");
+    tome.send_keys("down");
+    tome.send_keys("down");
+    wait_for_selected(&tome, FIRST_ROW + 2, MAIN_TODO);
+    tome.send_keys("up");
+    wait_for_selected(&tome, FIRST_ROW + 1, LIB_FN);
+    tome.send_keys("down");
+    wait_for_selected(&tome, FIRST_ROW + 2, MAIN_TODO);
+    tome.send_keys("enter");
+    tome.wait_for_text_gone(FOOTER, WAIT);
+    tome.wait_for_text("1  fn main() {", WAIT);
     // `    // TODO`: the match starts in column 8.
-    wait_for_position(&glyph, 2, 8);
-    glyph.wait_for_screen("main.rs in the tab bar", WAIT, |screen| {
+    wait_for_position(&tome, 2, 8);
+    tome.wait_for_screen("main.rs in the tab bar", WAIT, |screen| {
         screen[1].contains("main.rs")
     });
 
     // Another hit opens beside it in a second tab.
-    search(&mut glyph, "TODO");
-    wait_for_status(&glyph, "3 matches in 2 files");
-    glyph.send_keys("enter");
-    glyph.wait_for_text_gone(FOOTER, WAIT);
-    glyph.wait_for_text("1  //! Fixture library.", WAIT);
-    wait_for_position(&glyph, 3, 4);
-    glyph.wait_for_screen("both files in the tab bar", WAIT, |screen| {
+    search(&mut tome, "TODO");
+    wait_for_status(&tome, "3 matches in 2 files");
+    tome.send_keys("enter");
+    tome.wait_for_text_gone(FOOTER, WAIT);
+    tome.wait_for_text("1  //! Fixture library.", WAIT);
+    wait_for_position(&tome, 3, 4);
+    tome.wait_for_screen("both files in the tab bar", WAIT, |screen| {
         screen[1].contains("main.rs") && screen[1].contains("lib.rs")
     });
 }
 
 #[test]
 fn unsaved_edits_in_open_buffers_are_searched_from_memory() {
-    let mut glyph = open_in(Path::new(PROJECT));
-    search(&mut glyph, "tidy");
-    wait_for_status(&glyph, "1 match in 1 file");
-    glyph.send_keys("enter");
-    wait_for_position(&glyph, 2, 13);
+    let mut tome = open_in(Path::new(PROJECT));
+    search(&mut tome, "tidy");
+    wait_for_status(&tome, "1 match in 1 file");
+    tome.send_keys("enter");
+    wait_for_position(&tome, 2, 13);
     // Unsaved, so only the buffer has it.
-    glyph.type_text("XYZZY");
-    glyph.wait_for_text("// TODO XYZZYtidy", WAIT);
-    search(&mut glyph, "xyzzy");
-    wait_for_status(&glyph, "1 match in 1 file");
-    glyph.wait_for_bg(CARD_X, FIRST_ROW, glow(), WAIT);
+    tome.type_text("XYZZY");
+    tome.wait_for_text("// TODO XYZZYtidy", WAIT);
+    search(&mut tome, "xyzzy");
+    wait_for_status(&tome, "1 match in 1 file");
+    tome.wait_for_bg(CARD_X, FIRST_ROW, glow(), WAIT);
     assert_eq!(
-        glyph.text_col(FIRST_ROW, "src/main.rs:2  // TODO XYZZYtidy"),
+        tome.text_col(FIRST_ROW, "src/main.rs:2  // TODO XYZZYtidy"),
         Some(LIST_X)
     );
 }
@@ -295,20 +292,20 @@ fn many_files_stream_in_and_the_panel_keeps_taking_keys() -> std::io::Result<()>
             "nothing\nneedle here\n",
         )?;
     }
-    let mut glyph = open_in(dir.path());
-    search(&mut glyph, "needle");
+    let mut tome = open_in(dir.path());
+    search(&mut tome, "needle");
     // Keys reach the panel straight away, while the search may still be going.
-    glyph.send_keys("down");
-    wait_for_status(&glyph, "3000 matches in 3000 files");
+    tome.send_keys("down");
+    wait_for_status(&tome, "3000 matches in 3000 files");
     // The frame with the final count has the selection drawn too.
     assert!(
         (FIRST_ROW..ROWS)
-            .any(|y| glyph.bg_at(CARD_X, y) == glow()
-                && row(&glyph, y).contains(".txt:2  needle here")),
+            .any(|y| tome.bg_at(CARD_X, y) == glow()
+                && row(&tome, y).contains(".txt:2  needle here")),
         "{}",
-        glyph.screen().join("\n")
+        tome.screen().join("\n")
     );
-    glyph.send_keys("esc");
-    glyph.wait_for_text_gone(FOOTER, WAIT);
+    tome.send_keys("esc");
+    tome.wait_for_text_gone(FOOTER, WAIT);
     Ok(())
 }

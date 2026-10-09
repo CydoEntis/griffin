@@ -1,5 +1,5 @@
 //! The key list the editor area shows whenever no file is open and the splash
-//! isn't up (glyph-splash spec S11, as in `design/no-file-open.png`): the
+//! isn't up (tome-splash spec S11, as in `design/no-file-open.png`): the
 //! project folder and `no file open`, then a few keys to get going.
 
 use ratatui::Frame;
@@ -127,7 +127,7 @@ mod tests {
     fn draw(theme: &Theme, keymap: &Keymap, w: u16, h: u16) -> anyhow::Result<Buffer> {
         let mut terminal = Terminal::new(TestBackend::new(w, h))?;
         let rows = rows(keymap);
-        terminal.draw(|frame| render(theme, "glyph", &rows, frame, Rect::new(0, 0, w, h)))?;
+        terminal.draw(|frame| render(theme, "tome", &rows, frame, Rect::new(0, 0, w, h)))?;
         Ok(terminal.backend().buffer().clone())
     }
 
@@ -151,7 +151,7 @@ mod tests {
     fn the_list_is_left_aligned_rows_two_apart_with_labels_at_plus_ten() -> anyhow::Result<()> {
         let theme = Theme::default();
         let buf = draw(&theme, &Keymap::default(), 100, 30)?;
-        assert_eq!(col(&buf, TOP, "glyph/  no file open"), Some(X));
+        assert_eq!(col(&buf, TOP, "tome/  no file open"), Some(X));
         for (i, (key, label)) in [
             ("Ctrl+P", "cast · files and commands"),
             ("Ctrl+N", "new file"),
@@ -178,9 +178,9 @@ mod tests {
         let folder = &buf[(X, TOP)];
         assert_eq!(folder.fg, theme.strong);
         assert!(folder.modifier.contains(Modifier::BOLD));
-        let slash = &buf[(X + 5, TOP)];
+        let slash = &buf[(X + 4, TOP)];
         assert_eq!((slash.symbol(), slash.fg), ("/", theme.strong));
-        let note = &buf[(X + 8, TOP)];
+        let note = &buf[(X + 7, TOP)];
         assert_eq!(note.fg, theme.muted);
         assert!(!note.modifier.contains(Modifier::BOLD));
         for y in [TOP + 2, TOP + 4, TOP + 6, TOP + 8] {
@@ -224,7 +224,7 @@ mod tests {
     fn mono_is_plain_text() -> anyhow::Result<()> {
         let mono = Theme::named("mono").expect("mono exists");
         let buf = draw(&mono, &Keymap::default(), 100, 30)?;
-        assert_eq!(col(&buf, TOP, "glyph/  no file open"), Some(X));
+        assert_eq!(col(&buf, TOP, "tome/  no file open"), Some(X));
         for y in [TOP, TOP + 2, TOP + 4, TOP + 6, TOP + 8] {
             for x in 0..100 {
                 let cell = &buf[(x, y)];
@@ -241,7 +241,7 @@ mod tests {
         // 9 rows high: a third down would push the last row out, so it starts
         // at the top.
         let buf = draw(&theme, &Keymap::default(), 100, 9)?;
-        assert_eq!(col(&buf, 0, "glyph/"), Some(X));
+        assert_eq!(col(&buf, 0, "tome/"), Some(X));
         assert_eq!(col(&buf, 8, "Ctrl+Q"), Some(X));
         let buf = draw(&theme, &Keymap::default(), 20, 30)?;
         assert_eq!(line(&buf, TOP + 2), "Ctrl+P    cast · fil");

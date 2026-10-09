@@ -1,4 +1,4 @@
-//! A scripted debug adapter for Glyph's DAP tests. It speaks the Debug Adapter
+//! A scripted debug adapter for Tome's DAP tests. It speaks the Debug Adapter
 //! Protocol over stdio with `Content-Length` framing, like a real adapter, and:
 //!
 //! - appends every message it receives to the file named by `FAKE_DAP_LOG`, one

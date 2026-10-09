@@ -1,5 +1,5 @@
 //! The key list the editor area shows whenever no file is open and the splash
-//! isn't up (glyph-splash spec S11): after the last tab closes and after
+//! isn't up (tome-splash spec S11): after the last tab closes and after
 //! another folder is opened. Where it's drawn, that typing doesn't reach the
 //! untitled buffer under it, and what replaces it.
 
@@ -8,7 +8,7 @@ mod harness;
 use std::fs;
 use std::time::Duration;
 
-use harness::{Glyph, ROWS};
+use harness::{ROWS, Tome};
 use tempfile::TempDir;
 
 const START: Duration = Duration::from_secs(10);
@@ -35,33 +35,33 @@ const KEYS: [(&str, &str); 4] = [
 ];
 
 /// A temp folder holding `proj/a.txt` ("alpha") and `proj/b.txt` ("bravo"),
-/// with glyph started on `a.txt` inside `proj`, so the project is `proj` and
+/// with tome started on `a.txt` inside `proj`, so the project is `proj` and
 /// the tree is hidden.
-fn open_file() -> (TempDir, Glyph) {
+fn open_file() -> (TempDir, Tome) {
     let dir = tempfile::tempdir().expect("create temp dir");
     let proj = dir.path().join("proj");
     fs::create_dir(&proj).expect("create proj");
     fs::write(proj.join("a.txt"), "alpha\n").expect("write a.txt");
     fs::write(proj.join("b.txt"), "bravo\n").expect("write b.txt");
-    let glyph = Glyph::spawn_in(&proj, &["a.txt"]);
-    glyph.wait_for_text("1  alpha", START);
-    (dir, glyph)
+    let tome = Tome::spawn_in(&proj, &["a.txt"]);
+    tome.wait_for_text("1  alpha", START);
+    (dir, tome)
 }
 
 /// Waits for the key list, then checks every line of it is where the design
 /// puts it, starting from column `x` with its header on `header`.
-fn assert_key_list(glyph: &Glyph, folder: &str, x: u16, header: u16) {
-    glyph.wait_for_text("no file open", WAIT);
-    let screen = glyph.screen();
+fn assert_key_list(tome: &Tome, folder: &str, x: u16, header: u16) {
+    tome.wait_for_text("no file open", WAIT);
+    let screen = tome.screen();
     assert_eq!(
-        glyph.text_col(header, &format!("{folder}/  no file open")),
+        tome.text_col(header, &format!("{folder}/  no file open")),
         Some(x),
         "{screen:#?}"
     );
     for (i, (key, label)) in (0u16..).zip(KEYS) {
         let row = header + 2 + 2 * i;
-        assert_eq!(glyph.text_col(row, key), Some(x), "{screen:#?}");
-        assert_eq!(glyph.text_col(row, label), Some(x + 10), "{screen:#?}");
+        assert_eq!(tome.text_col(row, key), Some(x), "{screen:#?}");
+        assert_eq!(tome.text_col(row, label), Some(x + 10), "{screen:#?}");
         // The rows are two apart, with nothing between.
         assert_eq!(
             screen[usize::from(row - 1)]
@@ -76,8 +76,8 @@ fn assert_key_list(glyph: &Glyph, folder: &str, x: u16, header: u16) {
 }
 
 /// The pill row shows no tab.
-fn assert_no_tabs(glyph: &Glyph) {
-    let screen = glyph.screen();
+fn assert_no_tabs(tome: &Tome) {
+    let screen = tome.screen();
     let pills = &screen[usize::from(PILL_ROW)];
     assert!(!pills.contains('▐'), "{screen:#?}");
     assert!(!pills.contains("untitled"), "{screen:#?}");
@@ -85,61 +85,61 @@ fn assert_no_tabs(glyph: &Glyph) {
 
 #[test]
 fn closing_the_last_tab_shows_the_key_list_under_an_empty_tab_bar() {
-    let (_dir, mut glyph) = open_file();
-    glyph.send_keys("ctrl+w");
-    glyph.wait_for_text_gone("alpha", WAIT);
-    assert_key_list(&glyph, "proj", X, HEADER_ROW);
+    let (_dir, mut tome) = open_file();
+    tome.send_keys("ctrl+w");
+    tome.wait_for_text_gone("alpha", WAIT);
+    assert_key_list(&tome, "proj", X, HEADER_ROW);
     for (row, (key, _)) in KEY_ROWS.into_iter().zip(KEYS) {
-        assert_eq!(glyph.text_col(row, key), Some(X));
+        assert_eq!(tome.text_col(row, key), Some(X));
     }
-    assert_eq!(glyph.text_col(KEY_ROWS[0], "cast"), Some(LABEL_X));
-    assert_no_tabs(&glyph);
+    assert_eq!(tome.text_col(KEY_ROWS[0], "cast"), Some(LABEL_X));
+    assert_no_tabs(&tome);
     // The status bar names the project, not an untitled buffer.
-    let status = glyph.screen()[usize::from(STATUS)].clone();
+    let status = tome.screen()[usize::from(STATUS)].clone();
     assert!(status.contains("proj"), "{status:?}");
     assert!(!status.contains("untitled"), "{status:?}");
 }
 
 #[test]
 fn typing_on_the_key_list_does_nothing_and_ctrl_n_replaces_it() {
-    let (_dir, mut glyph) = open_file();
-    glyph.send_keys("ctrl+w");
-    glyph.wait_for_text("no file open", WAIT);
-    glyph.type_text("zq");
-    glyph.send_keys("enter");
-    glyph.send_keys("backspace");
+    let (_dir, mut tome) = open_file();
+    tome.send_keys("ctrl+w");
+    tome.wait_for_text("no file open", WAIT);
+    tome.type_text("zq");
+    tome.send_keys("enter");
+    tome.send_keys("backspace");
     // Ctrl+B shows the tree beside it; the tree's update proves the keys
     // above were handled first.
-    glyph.send_keys("ctrl+b");
-    glyph.wait_for_text("b.txt", WAIT);
-    let screen = glyph.screen().join("\n");
+    tome.send_keys("ctrl+b");
+    tome.wait_for_text("b.txt", WAIT);
+    let screen = tome.screen().join("\n");
     assert!(screen.contains("no file open"), "{screen}");
     assert!(!screen.contains("zq"), "{screen}");
     assert!(!screen.contains("untitled"), "{screen}");
 
     // Ctrl+N gives one empty untitled tab, which takes the typing.
-    glyph.send_keys("ctrl+n");
-    glyph.wait_for_text_gone("no file open", WAIT);
-    glyph.wait_for_text("▐ untitled ▌", WAIT);
-    glyph.type_text("hi");
-    glyph.wait_for_text("1  hi", WAIT);
-    let pills = glyph.screen()[usize::from(PILL_ROW)].clone();
+    tome.send_keys("ctrl+n");
+    tome.wait_for_text_gone("no file open", WAIT);
+    tome.wait_for_text("▐ untitled ▌", WAIT);
+    tome.type_text("hi");
+    tome.wait_for_text("1  hi", WAIT);
+    let pills = tome.screen()[usize::from(PILL_ROW)].clone();
     assert_eq!(pills.matches("untitled").count(), 1, "{pills:?}");
 }
 
 #[test]
 fn opening_a_file_from_ctrl_p_replaces_the_key_list() {
-    let (_dir, mut glyph) = open_file();
-    glyph.send_keys("ctrl+w");
-    glyph.wait_for_text("no file open", WAIT);
-    glyph.send_keys("ctrl+p");
-    glyph.wait_for_text("cast", WAIT);
-    glyph.type_text("b.txt");
-    glyph.wait_for_text("✦ b.txt", WAIT);
-    glyph.send_keys("enter");
-    glyph.wait_for_text("1  bravo", WAIT);
-    glyph.wait_for_text_gone("no file open", WAIT);
-    let pills = glyph.screen()[usize::from(PILL_ROW)].clone();
+    let (_dir, mut tome) = open_file();
+    tome.send_keys("ctrl+w");
+    tome.wait_for_text("no file open", WAIT);
+    tome.send_keys("ctrl+p");
+    tome.wait_for_text("cast", WAIT);
+    tome.type_text("b.txt");
+    tome.wait_for_text("✦ b.txt", WAIT);
+    tome.send_keys("enter");
+    tome.wait_for_text("1  bravo", WAIT);
+    tome.wait_for_text_gone("no file open", WAIT);
+    let pills = tome.screen()[usize::from(PILL_ROW)].clone();
     assert!(pills.contains("▐ b.txt ▌"), "{pills:?}");
     assert!(!pills.contains("untitled"), "{pills:?}");
 }
@@ -150,42 +150,42 @@ fn opening_a_folder_shows_the_key_list_beside_its_tree() {
     let other = dir.path().join("other");
     fs::create_dir(&other).expect("create other");
     fs::write(other.join("inside.txt"), "inside\n").expect("write inside.txt");
-    let mut glyph = Glyph::spawn_in(dir.path(), &["."]);
-    glyph.wait_for_text("Open directory", START);
-    open_other(&mut glyph);
+    let mut tome = Tome::spawn_in(dir.path(), &["."]);
+    tome.wait_for_text("Open directory", START);
+    open_other(&mut tome);
 
     // With the tree, the list sits in the editor area right of it; its lines
     // still start in one column, two rows apart.
-    glyph.wait_for_text("inside.txt", WAIT);
-    glyph.wait_for_text("no file open", WAIT);
+    tome.wait_for_text("inside.txt", WAIT);
+    tome.wait_for_text("no file open", WAIT);
     let header = (0..ROWS)
-        .find(|&row| glyph.text_col(row, "no file open").is_some())
+        .find(|&row| tome.text_col(row, "no file open").is_some())
         .expect("the header is on screen");
-    let x = glyph
+    let x = tome
         .text_col(header, "other/")
         .expect("the folder heads the list");
-    assert_key_list(&glyph, "other", x, header);
-    assert_no_tabs(&glyph);
+    assert_key_list(&tome, "other", x, header);
+    assert_no_tabs(&tome);
 
     // The tree has the keys: Enter opens the file it selects in place of the
     // list.
-    glyph.send_keys("enter");
-    glyph.wait_for_text("1  inside", WAIT);
-    glyph.wait_for_text_gone("no file open", WAIT);
+    tome.send_keys("enter");
+    tome.wait_for_text("1  inside", WAIT);
+    tome.wait_for_text_gone("no file open", WAIT);
 }
 
 /// Opens `other`, the one folder in the project, through the splash's folder
 /// browser: `o`, ↓ to `other`, Enter into it, Enter on its open row. The
 /// browser's header is row 6 and its folders start on row 9.
-fn open_other(glyph: &mut Glyph) {
-    glyph.type_text("o");
-    glyph.wait_for_text("open · folders", WAIT);
-    glyph.wait_for_screen("other in the browser", WAIT, |screen| {
+fn open_other(tome: &mut Tome) {
+    tome.type_text("o");
+    tome.wait_for_text("open · folders", WAIT);
+    tome.wait_for_screen("other in the browser", WAIT, |screen| {
         screen[9].contains("▸ other")
     });
-    glyph.send_keys("down");
-    glyph.send_keys("enter");
-    glyph.wait_for_screen("inside other", WAIT, |screen| screen[6].contains("other"));
-    glyph.send_keys("enter");
-    glyph.wait_for_text_gone("open · folders", WAIT);
+    tome.send_keys("down");
+    tome.send_keys("enter");
+    tome.wait_for_screen("inside other", WAIT, |screen| screen[6].contains("other"));
+    tome.send_keys("enter");
+    tome.wait_for_text_gone("open · folders", WAIT);
 }

@@ -95,7 +95,7 @@ static LANGUAGES: &[&Language] = &[
     &sql::SQL,
 ];
 
-/// The language for `path`'s extension, if Glyph highlights it.
+/// The language for `path`'s extension, if Tome highlights it.
 pub fn for_path(path: &Path) -> Option<&'static Language> {
     let ext = path.extension()?.to_str()?;
     LANGUAGES

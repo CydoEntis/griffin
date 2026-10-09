@@ -53,7 +53,7 @@ impl Default for Box<dyn Clipboard> {
 
 /// A clipboard kept in a file. The PTY tests run the real binary, where the OS
 /// clipboard is missing on a headless runner and is the user's own elsewhere;
-/// `GLYPH_CLIPBOARD_FILE` points Glyph here instead, and the test reads it.
+/// `TOME_CLIPBOARD_FILE` points Tome here instead, and the test reads it.
 #[derive(Debug)]
 pub struct FileClipboard {
     path: std::path::PathBuf,
@@ -69,7 +69,7 @@ impl Clipboard for FileClipboard {
     }
 }
 
-/// The clipboard to use: the file `GLYPH_CLIPBOARD_FILE` names when it's set
+/// The clipboard to use: the file `TOME_CLIPBOARD_FILE` names when it's set
 /// and non-empty, otherwise the OS one.
 pub fn from_env(file: Option<std::ffi::OsString>) -> Box<dyn Clipboard> {
     match file.filter(|f| !f.is_empty()) {

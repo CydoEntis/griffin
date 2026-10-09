@@ -1,4 +1,4 @@
-//! One language server, seen from Glyph: its lifecycle, request ids, and the
+//! One language server, seen from Tome: its lifecycle, request ids, and the
 //! document notifications it is sent. Nothing here waits on the server; replies
 //! arrive later through `handle` (ADR-0001).
 
@@ -45,7 +45,7 @@ pub struct Client {
     next_id: i64,
     /// Requests sent and not yet answered, by id, with their method.
     pending: HashMap<i64, String>,
-    /// Glyph asked it to stop, so its exit is no news.
+    /// Tome asked it to stop, so its exit is no news.
     shutting_down: bool,
     /// The characters that open completion when typed, from the server's
     /// `completionProvider`; empty until it's initialized, or when it has none.
@@ -125,7 +125,7 @@ impl Client {
                         content_format: Some(vec![MarkupKind::PlainText, MarkupKind::Markdown]),
                     }),
                     // No snippets: tab stops aren't supported, so plain insert
-                    // text is what Glyph wants (snippets sent anyway are
+                    // text is what Tome wants (snippets sent anyway are
                     // flattened).
                     completion: Some(CompletionClientCapabilities {
                         completion_item: Some(CompletionItemCapability {
@@ -148,7 +148,7 @@ impl Client {
                 }]
             }),
             client_info: Some(ClientInfo {
-                name: "glyph".into(),
+                name: "tome".into(),
                 version: Some(env!("CARGO_PKG_VERSION").into()),
             }),
             ..Default::default()
@@ -264,7 +264,7 @@ impl Client {
     }
 
     /// The process is gone, having written `stderr` (its last lines, oldest
-    /// first). Unless Glyph stopped it, that's a crash worth a status line, named
+    /// first). Unless Tome stopped it, that's a crash worth a status line, named
     /// by the last thing it said, else its exit code. One that had already failed
     /// keeps its first reason: an `initialize` error says more than the exit after
     /// it.

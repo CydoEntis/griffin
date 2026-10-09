@@ -1,5 +1,5 @@
-//! The catalog `>language servers` opens (glyph-catalog spec C1, C2;
-//! glyph-debugger spec D8): a card in the cast's style listing each language
+//! The catalog `>language servers` opens (tome-catalog spec C1, C2;
+//! tome-debugger spec D8): a card in the cast's style listing each language
 //! server, then each debug adapter under a `debuggers` heading, with its command
 //! and whether it's installed, missing, waiting on its install tool, running, or
 //! failed this session and why.
@@ -150,7 +150,7 @@ pub struct Row {
     pub reason: Option<String>,
     /// The command that installs it, if one is known.
     pub install: Option<String>,
-    /// The languages it serves, whose failed starts an install makes Glyph
+    /// The languages it serves, whose failed starts an install makes Tome
     /// forget. None for an adapter: nothing remembers a failed debug session.
     pub langs: &'static [&'static str],
     /// The install command has to be run by the user (see `servers::copy_only`).
@@ -287,7 +287,7 @@ impl Catalog {
 
     /// ↑ and ↓ move the selection, stopping at either end; `c` copies the
     /// selected row's install command; Enter retries a `failed` server, installs
-    /// a `missing` one, or copies the command when Glyph can't run it; Esc
+    /// a `missing` one, or copies the command when Tome can't run it; Esc
     /// closes.
     pub fn handle(&mut self, input: Input) -> Option<Step> {
         match input {
