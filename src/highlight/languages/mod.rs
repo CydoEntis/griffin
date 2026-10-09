@@ -55,6 +55,9 @@ pub struct Language {
     /// What Ctrl+/ puts before a line to comment it out, followed by a space.
     /// `None` where the language has no line comment.
     pub line_comment: Option<&'static str>,
+    /// The opening and closing markers Ctrl+/ wraps each line in, for a language
+    /// with no line comment (HTML, CSS).
+    pub wrap_comment: Option<(&'static str, &'static str)>,
     pub(super) compiled: OnceLock<Option<Compiled>>,
 }
 
@@ -272,6 +275,19 @@ mod tests {
         for lang in LANGUAGES {
             let wraps = matches!(lang.name, "html" | "css");
             assert_eq!(lang.line_comment.is_none(), wraps, "{}", lang.name);
+        }
+    }
+
+    #[test]
+    fn html_and_css_wrap_lines_in_block_comments() {
+        let wrap = |name: &str| for_name(name).and_then(|lang| lang.wrap_comment);
+        assert_eq!(wrap("html"), Some(("<!--", "-->")));
+        assert_eq!(wrap("css"), Some(("/*", "*/")));
+        for lang in LANGUAGES {
+            // Exactly one way to comment, so Ctrl+/ never has to choose.
+            let ways =
+                usize::from(lang.line_comment.is_some()) + usize::from(lang.wrap_comment.is_some());
+            assert_eq!(ways, 1, "{}", lang.name);
         }
     }
 

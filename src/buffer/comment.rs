@@ -43,6 +43,51 @@ impl Buffer {
         self.edit_lines(&edits);
     }
 
+    /// `toggle_comment` for a language with only block comments (HTML, CSS): wraps
+    /// each non-blank line in `open` and `close`, as `open line close`, or, when
+    /// every one is wrapped already, unwraps them, taking one space inside each
+    /// marker along. One undo step.
+    pub fn toggle_wrap_comment(&mut self, open: &str, close: &str) {
+        let lines = self.non_blank_lines();
+        if lines.is_empty() {
+            return;
+        }
+        let wrapped = lines
+            .iter()
+            .all(|(_, text)| wrapped_body(text, open, close).is_some());
+        let mut edits = Vec::new();
+        if wrapped {
+            for (start, text) in &lines {
+                let Some(inner) = wrapped_body(text, open, close) else {
+                    continue;
+                };
+                let lead = inner.starts_with(' ');
+                // A lone space between the markers is the opening one's.
+                let trail = inner.ends_with(' ') && inner.len() > usize::from(lead);
+                let at = start + indent(text);
+                let opened = at + open.chars().count();
+                let closed = opened + inner.chars().count();
+                edits.push((at..opened + usize::from(lead), String::new()));
+                edits.push((
+                    closed - usize::from(trail)..closed + close.chars().count(),
+                    String::new(),
+                ));
+            }
+        } else {
+            let col = lines
+                .iter()
+                .map(|(_, text)| indent(text))
+                .min()
+                .unwrap_or(0);
+            for (start, text) in &lines {
+                let end = start + text.chars().count();
+                edits.push((start + col..start + col, format!("{open} ")));
+                edits.push((end..end, format!(" {close}")));
+            }
+        }
+        self.edit_lines(&edits);
+    }
+
     /// The lines Ctrl+/ acts on: the cursor's, or every line the selection
     /// touches. A selection ending at a line's very start doesn't take that line,
     /// since selecting whole lines with Shift+Down ends there.
@@ -120,6 +165,13 @@ fn indent(text: &str) -> usize {
 
 fn unindented(text: &str) -> &str {
     text.trim_start_matches([' ', '\t'])
+}
+
+/// What sits between `open` and `close` when `text`, past its indent and before
+/// any trailing whitespace, is wrapped in them; `None` when it isn't.
+fn wrapped_body<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let body = unindented(text).trim_end_matches([' ', '\t']);
+    body.strip_prefix(open)?.strip_suffix(close)
 }
 
 #[cfg(test)]
@@ -249,5 +301,95 @@ mod tests {
         assert_eq!(show(&b), "  # a|b\n  # c^d\n");
         b.toggle_comment("#");
         assert_eq!(show(&b), "  a|b\n  c^d\n");
+    }
+
+    #[test]
+    fn html_lines_are_wrapped_and_unwrapped() {
+        let mut b = buf("<p>|hi</p>
+");
+        b.toggle_wrap_comment("<!--", "-->");
+        assert_eq!(
+            show(&b),
+            "<!-- <p>|hi</p> -->
+"
+        );
+        b.toggle_wrap_comment("<!--", "-->");
+        assert_eq!(
+            show(&b),
+            "<p>|hi</p>
+"
+        );
+    }
+
+    #[test]
+    fn wrapping_starts_at_the_least_indented_column_and_keeps_the_text() {
+        let mut b = buf("^  a {
+
+    color: red;
+  }|");
+        b.toggle_wrap_comment("/*", "*/");
+        assert_eq!(
+            b.rope.to_string(),
+            "  /* a { */
+
+  /*   color: red; */
+  /* } */"
+        );
+        b.toggle_wrap_comment("/*", "*/");
+        assert_eq!(
+            b.rope.to_string(),
+            "  a {
+
+    color: red;
+  }"
+        );
+    }
+
+    #[test]
+    fn a_line_not_wrapped_gets_wrapped_with_the_rest() {
+        let mut b = buf("^/* a */
+b|");
+        b.toggle_wrap_comment("/*", "*/");
+        assert_eq!(
+            b.rope.to_string(),
+            "/* /* a */ */
+/* b */"
+        );
+    }
+
+    #[test]
+    fn markers_without_spaces_inside_still_unwrap() {
+        let mut b = buf("^<!--a-->
+<!-- -->
+<!---->  |");
+        b.toggle_wrap_comment("<!--", "-->");
+        assert_eq!(
+            b.rope.to_string(),
+            "a
+
+  "
+        );
+    }
+
+    #[test]
+    fn a_wrap_is_one_undo_step_and_keeps_the_selection() {
+        let mut b = buf("^<p>a</p>
+<p>b</p>|
+");
+        b.toggle_wrap_comment("<!--", "-->");
+        assert_eq!(
+            show(&b),
+            "^<!-- <p>a</p> -->
+<!-- <p>b</p>| -->
+"
+        );
+        assert!(b.undo());
+        assert_eq!(
+            show(&b),
+            "^<p>a</p>
+<p>b</p>|
+"
+        );
+        assert!(!b.undo(), "the whole wrap was one step");
     }
 }

@@ -57,3 +57,25 @@ fn a_file_with_no_language_has_no_comments() {
         "{screen:#?}"
     );
 }
+
+#[test]
+fn ctrl_slash_wraps_an_html_line_and_unwraps_it() {
+    let (_dir, mut glyph) = open("a.html", "<p>hi</p>\n");
+    glyph.wait_for_text("1  <p>hi</p>", WAIT);
+    glyph.send_keys("ctrl+/");
+    glyph.wait_for_text("1  <!-- <p>hi</p> -->", WAIT);
+    glyph.send_keys("ctrl+/");
+    glyph.wait_for_text_gone("<!--", WAIT);
+    glyph.wait_for_text("1  <p>hi</p>", WAIT);
+}
+
+#[test]
+fn ctrl_slash_wraps_a_css_line_and_unwraps_it() {
+    let (_dir, mut glyph) = open("a.css", "p { color: red; }\n");
+    glyph.wait_for_text("1  p { color: red; }", WAIT);
+    glyph.send_keys("ctrl+/");
+    glyph.wait_for_text("1  /* p { color: red; } */", WAIT);
+    glyph.send_keys("ctrl+/");
+    glyph.wait_for_text_gone("/*", WAIT);
+    glyph.wait_for_text("1  p { color: red; }", WAIT);
+}

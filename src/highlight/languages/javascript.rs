@@ -50,5 +50,6 @@ pub static JAVASCRIPT: Language = Language {
     embeds: &[],
     roles: ROLES,
     line_comment: Some("//"),
+    wrap_comment: None,
     compiled: OnceLock::new(),
 };

@@ -33,5 +33,6 @@ pub static PYTHON: Language = Language {
     embeds: &[],
     roles: &[("constructor", Role::Type), ("escape", Role::Constant)],
     line_comment: Some("#"),
+    wrap_comment: None,
     compiled: OnceLock::new(),
 };
