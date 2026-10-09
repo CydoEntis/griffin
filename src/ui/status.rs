@@ -1,4 +1,4 @@
-//! The status bar on the last row (design README §2.5): the glyph block, the
+//! The status bar on the last row (design README §2.5): the brand block, the
 //! path slot at x = 20, and on the right the debug session's state, the cursor
 //! position, the language, its server's state and the diagnostic counts — or, while the splash is up, its
 //! keys and Tome's version.
@@ -12,7 +12,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::lsp::ServerState;
 use crate::theme::{Theme, grad, mix};
 
-/// Cells the glyph block covers: ten on the accent ramp, then eight fading into
+/// Cells the brand block covers: ten on the accent ramp, then eight fading into
 /// the bar.
 const BLOCK_WIDTH: u16 = 18;
 /// Where the path (or a message in its place) starts.

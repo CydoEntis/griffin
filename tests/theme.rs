@@ -16,10 +16,10 @@ const HYDRA_SIDEBAR: Color = Color::Rgb(0x0c, 0x13, 0x1b);
 /// nord's `bg`, the editor ground.
 const NORD_BG: Color = Color::Rgb(0x2e, 0x34, 0x40);
 
-/// The status bar's glyph block covers columns 0..18; the bar is past it.
+/// The status bar's brand block covers columns 0..18; the bar is past it.
 const BLOCK_END: u16 = 18;
 
-/// Every cell of the status line past the glyph block has background `color`.
+/// Every cell of the status line past the brand block has background `color`.
 fn assert_status_bg(tome: &Tome, color: Color) {
     tome.wait_for_bg(BLOCK_END, STATUS_ROW, color, WAIT);
     for col in BLOCK_END..COLS {
@@ -77,7 +77,7 @@ fn a_bad_override_falls_back_to_hydra_and_says_so() {
 }
 
 #[test]
-fn mono_draws_the_glyph_block_on_flat_accent() {
+fn mono_draws_the_brand_block_on_flat_accent() {
     let tome = Tome::spawn_with_config("theme = \"mono\"\n", &[]);
     tome.wait_for_text("Open directory", START);
     // mono has no ramps: every block cell is its accent, the terminal's white.

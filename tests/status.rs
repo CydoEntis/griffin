@@ -40,7 +40,7 @@ fn open_guide() -> Tome {
 }
 
 #[test]
-fn the_glyph_block_ramps_from_accent_to_accent2_then_fades_into_the_bar() {
+fn the_brand_block_ramps_from_accent_to_accent2_then_fades_into_the_bar() {
     let tome = Tome::spawn_with_config(AURORA, &[]);
     tome.wait_for_text("Open directory", START);
     let status = &tome.screen()[usize::from(STATUS_ROW)];
