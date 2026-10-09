@@ -5,7 +5,7 @@ mod harness;
 
 use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use harness::{Glyph, ROWS};
@@ -1678,4 +1678,137 @@ fn without_format_on_save_saving_sends_no_formatting_request() {
     glyph.send_keys("ctrl+s");
     project.wait_for(&glyph, "textDocument/didSave", "a.rs");
     assert!(format_requests(&project).is_empty(), "{:#?}", project.log());
+}
+
+/// Glyph on `a.rs` with its config file at `config`, holding `text`, so
+/// `>settings` opens and saves that file.
+fn open_with_config_file(project: &Project, config: &Path, text: &str) -> Glyph {
+    fs::write(config, text).expect("write config");
+    let mut env = project.env();
+    env.push(("GLYPH_CONFIG", config.as_os_str().to_owned()));
+    let glyph = Glyph::spawn_in_with_env(project.dir.path(), &env, &["a.rs"]);
+    glyph.wait_for_text("Ln 1, Col 1", START);
+    glyph
+}
+
+/// Ctrl+P, `query`, and Enter once `first_row` shows.
+fn cast(glyph: &mut Glyph, query: &str, first_row: &str) {
+    glyph.send_keys("ctrl+p");
+    glyph.wait_for_text("cast · files · commands", WAIT);
+    glyph.type_text(query);
+    glyph.wait_for_text(first_row, WAIT);
+    glyph.send_keys("enter");
+    glyph.wait_for_text_gone("cast ·", WAIT);
+}
+
+/// The pids of the servers sent `didOpen` for `file`, newest first.
+fn servers_of(project: &Project, file: &str) -> Vec<u64> {
+    let mut pids: Vec<u64> = project
+        .log()
+        .iter()
+        .filter(|(_, m)| is(m, "textDocument/didOpen", file))
+        .map(|(pid, _)| *pid)
+        .collect();
+    pids.reverse();
+    pids
+}
+
+/// How many messages named `name` server `pid` received.
+fn received_by(project: &Project, pid: u64, name: &str) -> usize {
+    project
+        .log()
+        .iter()
+        .filter(|(p, m)| *p == pid && method(m) == name)
+        .count()
+}
+
+#[test]
+fn saving_the_config_restarts_only_the_servers_whose_table_changed() {
+    let project = Project::new(None);
+    fs::write(project.dir.path().join("c.py"), "x = 1\n").expect("write c.py");
+    let config = project.files.path().join("config.toml");
+    let fake = fake();
+    let text = format!(
+        "[lsp.rust]\ncommand = '{fake}'\nargs = ['--xy']\n[lsp.python]\ncommand = '{fake}'\n"
+    );
+    let mut glyph = open_with_config_file(&project, &config, &text);
+    project.wait_for(&glyph, "textDocument/didOpen", "a.rs");
+    cast(&mut glyph, "c.py", "✦ c.py");
+    project.wait_for(&glyph, "textDocument/didOpen", "c.py");
+    let rust = servers_of(&project, "a.rs")[0];
+    let python = servers_of(&project, "c.py")[0];
+    assert_ne!(rust, python);
+
+    // `--xy` becomes `--x`: Rust's table changed, Python's didn't.
+    cast(&mut glyph, ">settings", "Settings");
+    glyph.wait_for_text("args = ['--xy']", WAIT);
+    glyph.send_keys("ctrl+home");
+    glyph.send_keys("down");
+    glyph.send_keys("down");
+    glyph.send_keys("end");
+    glyph.send_keys("left");
+    glyph.send_keys("left");
+    glyph.send_keys("backspace");
+    glyph.wait_for_text("args = ['--x']", WAIT);
+    glyph.send_keys("ctrl+s");
+    glyph.wait_for_text("settings applied", WAIT);
+
+    glyph.wait_for_files("a.rs opened in a second Rust server", WAIT, || {
+        servers_of(&project, "a.rs").first() != Some(&rust)
+    });
+    let restarted = servers_of(&project, "a.rs")[0];
+    assert_eq!(received_by(&project, restarted, "initialize"), 1);
+    glyph.wait_for_files("the old Rust server told to exit", WAIT, || {
+        received_by(&project, rust, "exit") == 1
+    });
+    // Python's server is the one it started with, and was never stopped.
+    assert_eq!(servers_of(&project, "c.py"), [python]);
+    assert_eq!(received_by(&project, python, "initialize"), 1);
+    assert_eq!(
+        received_by(&project, python, "shutdown"),
+        0,
+        "{:#?}",
+        project.log()
+    );
+}
+
+#[test]
+fn a_config_naming_a_missing_server_shows_no_server_and_editing_carries_on() {
+    let script = format!(r#"{{"notify": {{"textDocument/didOpen": [{}]}}}}"#, both());
+    let project = Project::new(Some(&script));
+    fs::write(project.dir.path().join("a.rs"), DIAG_FILE).expect("write a.rs");
+    let config = project.files.path().join("config.toml");
+    let mut glyph = open_with_config_file(&project, &config, &rust_server(fake()));
+    glyph.wait_for_text("● fake_lsp", WAIT);
+    glyph.wait_for_text("✕ 1  ⚠ 1", WAIT);
+    glyph.wait_for_underlined(Y_ROW, "y", WAIT);
+    let first = servers_of(&project, "a.rs");
+
+    // The command's closing quote ends line 2; type just before it.
+    cast(&mut glyph, ">settings", "Settings");
+    glyph.wait_for_text("[lsp.rust]", WAIT);
+    glyph.send_keys("ctrl+home");
+    glyph.send_keys("down");
+    glyph.send_keys("end");
+    glyph.send_keys("left");
+    glyph.type_text("-missing");
+    glyph.wait_for_text("-missing'", WAIT);
+    glyph.send_keys("ctrl+s");
+    glyph.wait_for_text("server not found", WAIT);
+
+    glyph.send_keys("alt+,");
+    glyph.wait_for_text("○ no server", WAIT);
+    // The stopped server's diagnostics went with it: no underlines, no
+    // counts, and F8 has nowhere to go, so `abc` lands where the cursor was.
+    glyph.wait_for_underlined(Y_ROW, "", WAIT);
+    assert_eq!(glyph.underlined_text(X_ROW), "");
+    let status = status_line(&glyph);
+    assert!(!status.contains("✕ 1"), "{status:?}");
+    glyph.send_keys("f8");
+    glyph.type_text("abc");
+    glyph.wait_for_text("a.rs •", WAIT);
+    glyph.send_keys("ctrl+s");
+    glyph.wait_for_text("saved a.rs", WAIT);
+    assert_eq!(project.read("a.rs"), format!("abc{DIAG_FILE}"));
+    assert_eq!(servers_of(&project, "a.rs"), first);
 }
