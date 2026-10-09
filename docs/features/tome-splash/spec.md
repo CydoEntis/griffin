@@ -33,7 +33,7 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
   opens the file with no splash — checked by PTY tests.
 - **S2.** The splash fills the editor area with no card, as in
   [design/splash.png](design/splash.png), centred as one block: the `tome` wordmark in
-  block letters 5 rows tall (half-block pixels), each column coloured along the theme's
+  block letters 4 rows tall (half-block pixels), each column coloured along the theme's
   accent → accent2 ramp (`theme::grad`), on a soft glow (background cells blended toward
   `accent2`, fading with distance); a one-row rule in the same ramp, fading at both ends; a
   blank row; the project path with the home folder as `~`, its last folder in `strong` bold
