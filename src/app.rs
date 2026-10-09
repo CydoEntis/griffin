@@ -47,6 +47,7 @@ use crate::ui::debug::{self as debug_panel, DebugPanel, DebugView, render_debug_
 use crate::ui::dirpicker::{Browsed, DirPicker};
 use crate::ui::find::{FindBar, Step};
 use crate::ui::hover::render_hover;
+use crate::ui::keybindings::{self, Keybindings};
 use crate::ui::nofile;
 use crate::ui::picker::{self, Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
@@ -887,6 +888,8 @@ pub struct App {
     folders: Option<DirPicker>,
     /// The language server catalog, while it's open; it takes every key.
     catalog: Option<Catalog>,
+    /// The keybindings card, while it's open; it takes every key.
+    keybindings: Option<Keybindings>,
     /// The latest run, whose output the run panel shows.
     run: Option<RunView>,
     /// The latest run's entry, for Ctrl+F5 to start again.
@@ -1154,6 +1157,10 @@ impl App {
                 if self.catalog.is_some() {
                     return;
                 }
+                if let Some(card) = &mut self.keybindings {
+                    card.paste(&text);
+                    return;
+                }
                 if let Some(picker) = &mut self.picker {
                     if let Some(picked) = picker.paste(&text) {
                         self.finish_picker(picked);
@@ -1227,6 +1234,18 @@ impl App {
                 });
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left) && outside {
                     self.catalog = None;
+                }
+            }
+            // The keybindings card closes on a click outside it, as the catalog
+            // does.
+            AppEvent::Input(Event::Mouse(mouse)) if self.keybindings.is_some() => {
+                let outside = self.keybindings.as_ref().is_some_and(|card| {
+                    !card
+                        .card(self.screen)
+                        .contains(Position::new(mouse.column, mouse.row))
+                });
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) && outside {
+                    self.keybindings = None;
                 }
             }
             // The cast palette closes on a click outside it, as a dialog does.
@@ -1369,6 +1388,9 @@ impl App {
             Scope::Folders
         } else if self.catalog.is_some() && self.prompt.is_none() {
             Scope::Catalog
+        } else if self.keybindings.is_some() && self.prompt.is_none() {
+            // Its query is typed, so letters are text, whatever has focus.
+            Scope::Global
         } else if self.project_search.is_some() && self.prompt.is_none() {
             Scope::Search
         } else if self.find.is_some() && self.prompt.is_none() {
@@ -1420,6 +1442,13 @@ impl App {
         if let Some(catalog) = &mut self.catalog {
             if let Some(step) = catalog.handle(input) {
                 self.catalog_step(step);
+            }
+            return;
+        }
+        if let Some(card) = &mut self.keybindings {
+            match card.handle(input, self.screen) {
+                Some(keybindings::Step::Close) => self.keybindings = None,
+                None => {}
             }
             return;
         }
@@ -1950,10 +1979,11 @@ impl App {
                 }
                 // What makes sense with nothing open: quitting, the tree, going
                 // to a file or a search hit (which replaces the splash or the
-                // key list), runs, opening another folder.
+                // key list), runs, opening another folder, the cards.
                 Action::Quit
                 | Action::OpenDirectory
                 | Action::LanguageServers
+                | Action::Keybindings
                 | Action::ToggleTree
                 | Action::FocusTree
                 | Action::CycleFocus
@@ -2092,6 +2122,7 @@ impl App {
             Action::Complete => self.request_completion(),
             Action::OpenDirectory => self.open_folders(),
             Action::LanguageServers => self.open_catalog(),
+            Action::Keybindings => self.keybindings = Some(Keybindings::new(&self.keymap)),
             // Bound only in tree, find bar, folder browser, catalog or splash scope,
             // so they never reach the editor.
             Action::TreeNewFile
@@ -4199,6 +4230,7 @@ impl App {
             || self.picker.is_some()
             || self.folders.is_some()
             || self.catalog.is_some()
+            || self.keybindings.is_some()
             || self.project_search.is_some()
             || self.find.is_some()
     }
@@ -4520,6 +4552,10 @@ impl App {
         // Nothing is typed into the catalog, so it shows no cursor.
         if let Some(catalog) = &self.catalog {
             catalog.render(theme, frame, frame.area());
+        }
+        if let Some(card) = &self.keybindings {
+            let at = card.render(theme, frame, frame.area());
+            frame.set_cursor_position(at);
         }
         if let Some(panel) = &self.project_search {
             let at = panel.render(theme, frame, frame.area());
