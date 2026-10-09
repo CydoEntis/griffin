@@ -872,6 +872,31 @@ fn a_failed_server_says_why_and_enter_retries_it() {
 }
 
 #[test]
+fn retrying_with_no_file_open_waits_for_one_and_stops_saying_failed() {
+    let project = tempfile::tempdir().expect("create project");
+    let files = tempfile::tempdir().expect("create server dir");
+    let mut glyph = with_failing_rust(project.path(), files.path(), "");
+    glyph.send_keys("ctrl+w");
+    glyph.wait_for_screen("a.rs closed", WAIT, |screen| !screen[1].contains("a.rs"));
+    open_catalog(&mut glyph);
+    glyph.wait_for_screen("Rust failed", WAIT, |screen| {
+        screen[usize::from(FIRST_ROW)].contains("failed")
+    });
+    glyph.send_keys("enter");
+    glyph.wait_for_text("Rust will start when you open a file", WAIT);
+    assert!(!glyph.screen().iter().any(|l| l.contains("retrying")));
+    assert_eq!(starts(files.path()), 1);
+
+    // The reason is gone with nothing left to retry.
+    open_catalog(&mut glyph);
+    glyph.wait_for_screen("Rust no longer failed", WAIT, |screen| {
+        let rust = &screen[usize::from(FIRST_ROW)];
+        rust.contains("Rust") && !rust.contains("failed")
+    });
+    assert_eq!(glyph.text_col(FOOTER_ROW, FOOTER), Some(CARD_X + 2));
+}
+
+#[test]
 fn c_on_a_failed_row_copies_its_install_and_mono_reverses_it() {
     let project = tempfile::tempdir().expect("create project");
     let files = tempfile::tempdir().expect("create server dir");

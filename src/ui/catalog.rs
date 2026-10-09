@@ -236,12 +236,13 @@ impl Catalog {
                 let install = servers::install_state(&server, lookup.path, lookup.pathext);
                 let running = langs.iter().any(|lang| running(lang));
                 let reason = langs.iter().find_map(|lang| failure(lang));
+                let state = state(running, reason.is_some(), install.command_found, &install);
                 Row {
                     name,
                     command: server.command.unwrap_or_default(),
                     args: &[],
-                    state: state(running, reason.is_some(), install.command_found, &install),
-                    reason: reason.filter(|_| !running),
+                    reason: reason.filter(|_| state == State::Failed),
+                    state,
                     install: install.install,
                     langs,
                     copy_only: install.copy_only,
@@ -508,20 +509,22 @@ impl Catalog {
     }
 }
 
-/// A row's state: `running` beats having failed, which beats being found (a
-/// server can be on PATH and still not work), and a missing row whose install
-/// tool isn't on PATH needs that tool.
+/// A row's state: `running` beats everything. A server no longer found is
+/// missing (or needs its install tool) whatever it did before, so the row
+/// offers the install again; one that is found but failed this session is
+/// failed rather than installed, since being on PATH didn't make it work.
 fn state(running: bool, failed: bool, found: bool, install: &servers::InstallState) -> State {
     if running {
         State::Running
+    } else if !found {
+        match install.tool.clone().filter(|_| !install.tool_found) {
+            Some(tool) => State::Needs(tool),
+            None => State::Missing,
+        }
     } else if failed {
         State::Failed
-    } else if found {
-        State::Installed
-    } else if let Some(tool) = install.tool.clone().filter(|_| !install.tool_found) {
-        State::Needs(tool)
     } else {
-        State::Missing
+        State::Installed
     }
 }
 
@@ -680,27 +683,59 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_server_is_failed_over_installed_but_not_over_running() -> anyhow::Result<()> {
+    fn a_failed_server_is_failed_over_installed_but_not_over_running_or_missing()
+    -> anyhow::Result<()> {
         // Rust is installed and failed; TypeScript failed for one of its
-        // languages; Go failed but is running again elsewhere.
+        // languages; Go failed but is running again elsewhere; Python and SQL
+        // failed but are gone from PATH since, Python's npm still there and
+        // SQL's go not.
         let c = failing(
-            &["rust-analyzer", "gopls", "npm"],
+            &[
+                "rust-analyzer",
+                "gopls",
+                "typescript-language-server",
+                "npm",
+            ],
             &["go"],
-            &["rust", "go", "tsx"],
+            &["rust", "go", "tsx", "python", "sql"],
         )?;
         let states: Vec<String> = states(&c).into_iter().map(|(_, s)| s).collect();
-        assert_eq!(states[..3], ["failed", "running", "failed"]);
-        assert_eq!(states[3], "missing");
-        assert_eq!(c.rows()[0].reason.as_deref(), Some("rust said no"));
-        assert_eq!(c.rows()[1].reason, None);
-        assert_eq!(c.rows()[2].reason.as_deref(), Some("tsx said no"));
-        assert_eq!(c.rows()[3].reason, None);
+        assert_eq!(states[..4], ["failed", "running", "failed", "missing"]);
+        assert_eq!(states[6], "needs go");
+        let reasons: Vec<Option<&str>> = c.rows()[..c.servers]
+            .iter()
+            .map(|r| r.reason.as_deref())
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                Some("rust said no"),
+                None,
+                Some("tsx said no"),
+                None,
+                None,
+                None,
+                None
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn enter_on_a_server_failed_and_gone_installs_it_again() -> anyhow::Result<()> {
+        let mut c = failing(&["npm"], &[], &["python"])?;
+        c.selected = 3;
+        assert!(matches!(
+            c.handle(Input::Action(Action::Newline)),
+            Some(Step::Install(Install { name: "Python", .. }))
+        ));
         Ok(())
     }
 
     #[test]
     fn enter_on_a_failed_row_retries_it_and_c_still_copies() -> anyhow::Result<()> {
-        let mut c = failing(&["rust-analyzer", "npm"], &[], &["javascript"])?;
+        let programs = ["typescript-language-server", "npm"];
+        let mut c = failing(&programs, &[], &["javascript"])?;
         c.selected = 2;
         assert_eq!(
             c.handle(Input::Action(Action::Newline)),

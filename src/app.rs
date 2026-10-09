@@ -2551,12 +2551,30 @@ impl App {
             catalog::Step::Retry { name, langs } => {
                 // Forgotten, the failed servers are started afresh by the
                 // `sync_lsp` after this event, as after an install; whether it
-                // works this time comes to the status line.
+                // works this time comes to the status line. Every language is
+                // forgotten, so no short-circuiting `any`.
                 self.catalog = None;
+                let mut forgot = false;
                 for lang in langs {
-                    self.lsp.forget_failed(lang);
+                    forgot |= self.lsp.forget_failed(lang);
                 }
-                self.say(Tone::Ok, format!("retrying {name}"));
+                let open = self.tabs.docs.iter().any(|doc| {
+                    doc.buffer
+                        .path
+                        .as_deref()
+                        .and_then(crate::lsp::language_for)
+                        .is_some_and(|lang| langs.contains(&lang))
+                });
+                if forgot && open {
+                    self.say(Tone::Ok, format!("retrying {name}"));
+                } else {
+                    // Nothing starts until a file of the language is opened, so
+                    // the row shouldn't go on calling it failed meanwhile.
+                    for lang in langs {
+                        self.lsp.clear_failure(lang);
+                    }
+                    self.say(Tone::Ok, format!("{name} will start when you open a file"));
+                }
             }
         }
     }
