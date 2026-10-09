@@ -30,17 +30,18 @@ const STRONG: Color = Color::Rgb(0xf2, 0xf6, 0xf8);
 const BG: Color = Color::Rgb(0x07, 0x0b, 0x10);
 
 /// Without the tree the editor area is the full width from row 3 (below the
-/// tab header) to the status line: 100 × 26. The 14-row splash is centred in
-/// it: the wordmark on rows 9–13, the rule on 14, the path on 16 and the
-/// actions on 18, 20 and 22.
+/// tab header) to the status line: 100 × 26. The 13-row splash is centred in
+/// it: the wordmark on rows 9–12, the rule on 13, the path on 15 and the
+/// actions on 17, 19 and 21.
 const WORD_ROW: u16 = 9;
-const RULE_ROW: u16 = 14;
-const PATH_ROW: u16 = 16;
-const NEW_FILE_ROW: u16 = 18;
-const NEW_DIR_ROW: u16 = 20;
-const OPEN_DIR_ROW: u16 = 22;
-/// The 31-wide wordmark and 63-wide rule, centred.
-const WORD_X: u16 = 34;
+const RULE_ROW: u16 = 13;
+const PATH_ROW: u16 = 15;
+const NEW_FILE_ROW: u16 = 17;
+const NEW_DIR_ROW: u16 = 19;
+const OPEN_DIR_ROW: u16 = 21;
+/// The 24-wide wordmark and 63-wide rule, centred.
+const WORD_W: u16 = 24;
+const WORD_X: u16 = 38;
 const RULE_X: u16 = 18;
 /// The 56-wide action rows, centred: `✦` two cells in, the label four, the
 /// hint 22, and the key two short of the row's right edge.
@@ -132,24 +133,24 @@ fn the_splash_has_the_wordmark_rule_path_and_actions_with_no_card() {
         assert_eq!(screen[row].trim(), "", "header row {row}: {screen:#?}");
     }
 
-    // The block-letter wordmark, five rows of half blocks, accent at its left
-    // and accent2 at its right, on a glow that's gone by the screen's edge.
-    let wordmark: Vec<String> = (WORD_ROW..WORD_ROW + 5)
-        .map(|row| cells(&tome, row, WORD_X, 31))
+    // The block-letter wordmark `tome`, four rows of half blocks (no
+    // descender row: the rule comes straight after), accent at its left and
+    // accent2 at its right, on a glow that's gone by the screen's edge.
+    let wordmark: Vec<String> = (WORD_ROW..WORD_ROW + 4)
+        .map(|row| cells(&tome, row, WORD_X, WORD_W))
         .collect();
     assert_eq!(
         wordmark,
         [
-            "       ▀█                 █",
-            "▄▀▀▀█   █   █   █  █▀▀▀▄  █▀▀▀▄",
-            "█   █   █   █   █  █   █  █   █",
-            "▀▄▄▄█   █▄  ▀▄▄▄█  █▄▄▄▀  █   █",
-            "▄▄▄▄▀       ▄▄▄▄▀  █",
+            " ▄",
+            "▀█▀  ▄▀▀▀▄  █▀▄▀▄  ▄▀▀▀▄",
+            " █   █   █  █ █ █  █▀▀▀▀",
+            " █▄  ▀▄▄▄▀  █ █ █  ▀▄▄▄▄",
         ]
     );
-    assert_eq!(tome.text_col(WORD_ROW + 1, "▄▀▀▀█"), Some(WORD_X));
+    assert_eq!(tome.text_col(WORD_ROW + 1, "▀█▀"), Some(WORD_X));
     assert_eq!(tome.fg_at(WORD_X, WORD_ROW + 1), ACCENT);
-    assert_eq!(tome.fg_at(WORD_X + 30, WORD_ROW + 1), ACCENT2);
+    assert_eq!(tome.fg_at(WORD_X + WORD_W - 1, WORD_ROW + 1), ACCENT2);
     assert_ne!(tome.bg_at(WORD_X + 15, WORD_ROW + 2), BG);
     assert_eq!(tome.bg_at(0, WORD_ROW + 2), BG);
 
