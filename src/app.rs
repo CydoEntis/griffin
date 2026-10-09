@@ -2579,8 +2579,14 @@ impl App {
     /// server installed outside Glyph shows once the catalog is opened again.
     fn open_catalog(&mut self) {
         let lsp = &self.lsp;
-        let catalog =
-            with_lookup(|lookup| Catalog::new(lsp.config(), |lang| lsp.is_running(lang), lookup));
+        let catalog = with_lookup(|lookup| {
+            Catalog::new(
+                lsp.config(),
+                |lang| lsp.is_running(lang),
+                |lang| lsp.failure(lang).map(str::to_owned),
+                lookup,
+            )
+        });
         self.catalog = Some(catalog);
     }
 
@@ -2613,6 +2619,34 @@ impl App {
                 self.say(Tone::Warn, format!("no install command for {name}"));
             }
             catalog::Step::Install(install) => self.start_install(install),
+            catalog::Step::Retry { name, langs } => {
+                // Forgotten, the failed servers are started afresh by the
+                // `sync_lsp` after this event, as after an install; whether it
+                // works this time comes to the status line. Every language is
+                // forgotten, so no short-circuiting `any`.
+                self.catalog = None;
+                let mut forgot = false;
+                for lang in langs {
+                    forgot |= self.lsp.forget_failed(lang);
+                }
+                let open = self.tabs.docs.iter().any(|doc| {
+                    doc.buffer
+                        .path
+                        .as_deref()
+                        .and_then(crate::lsp::language_for)
+                        .is_some_and(|lang| langs.contains(&lang))
+                });
+                if forgot && open {
+                    self.say(Tone::Ok, format!("retrying {name}"));
+                } else {
+                    // Nothing starts until a file of the language is opened, so
+                    // the row shouldn't go on calling it failed meanwhile.
+                    for lang in langs {
+                        self.lsp.clear_failure(lang);
+                    }
+                    self.say(Tone::Ok, format!("{name} will start when you open a file"));
+                }
+            }
         }
     }
 

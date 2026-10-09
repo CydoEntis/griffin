@@ -772,3 +772,157 @@ fn debugpy_is_installed_once_python_can_import_it() {
         screen[usize::from(debugpy)].contains("installed")
     });
 }
+
+/// Why the fake server below refuses to initialize: longer than the card is
+/// wide, as a real server's error often is.
+const REASON: &str = "Could not find a TypeScript install: typescript@7 ships no tsserver.js; \
+                      install typescript 5 next to the project and try again";
+/// The cells the reason gets: from two in under the names to where the states end.
+const REASON_X: u16 = TEXT_X + 2;
+const REASON_WIDTH: usize = (RIGHT - REASON_X) as usize;
+const RUST_INSTALL: &str = "rustup component add rust-analyzer";
+const FOOTER_RETRY: &str = "⏎ retry  c copy command  esc close";
+
+/// The default theme's `err` and `muted`.
+const ERR: Color = Color::Rgb(0xff, 0x6b, 0x6b);
+const MUTED: Color = Color::Rgb(0x71, 0x80, 0x8f);
+
+/// Glyph editing `a.rs` in `project`, its Rust server the fake one refusing
+/// `initialize` with `REASON` and logging to `files/log.jsonl`, its clipboard
+/// `files/clip`, and `top` (a theme, say) at the top of its config. Waits for
+/// the failure to reach the status line.
+fn with_failing_rust(project: &Path, files: &Path, top: &str) -> Glyph {
+    fs::write(project.join("a.rs"), "fn a() {}\n").expect("write a.rs");
+    let script = files.join("script.json");
+    let error = serde_json::json!({"errors": {"initialize": {"code": -32603, "message": REASON}}});
+    fs::write(&script, error.to_string()).expect("write script");
+    let config = format!(
+        "{top}[lsp.rust]\ncommand = '''{}'''\nargs = ['--log', '''{}''', '--script', '''{}''']\n\
+         install = '''{RUST_INSTALL}'''\n",
+        env!("CARGO_BIN_EXE_fake_lsp"),
+        files.join("log.jsonl").display(),
+        script.display(),
+    );
+    let env = [("GLYPH_CLIPBOARD_FILE", files.join("clip").into_os_string())];
+    let glyph = Glyph::spawn_in_with_config_and_env(project, &config, &env, &["a.rs"]);
+    glyph.wait_for_text("rust: server failed to start", START);
+    glyph
+}
+
+/// How many `initialize` requests the fake servers logged: one per start.
+fn starts(files: &Path) -> usize {
+    fs::read_to_string(files.join("log.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains(r#""method":"initialize""#))
+        .count()
+}
+
+#[test]
+fn a_failed_server_says_why_and_enter_retries_it() {
+    let project = tempfile::tempdir().expect("create project");
+    let files = tempfile::tempdir().expect("create server dir");
+    let mut glyph = with_failing_rust(project.path(), files.path(), "");
+    open_catalog(&mut glyph);
+    glyph.wait_for_screen("Rust failed", WAIT, |screen| {
+        screen[usize::from(FIRST_ROW)].contains("failed")
+    });
+    assert_eq!(glyph.text_col(FIRST_ROW, "failed"), Some(state_x("failed")));
+    assert_eq!(glyph.fg_at(state_x("failed"), FIRST_ROW), ERR);
+
+    // The reason on the line below, in `muted`, cut where the states end.
+    let shown: String = REASON.chars().take(REASON_WIDTH).collect();
+    let line = row(&glyph, FIRST_ROW + 1);
+    assert_eq!(
+        glyph.text_col(FIRST_ROW + 1, &shown),
+        Some(REASON_X),
+        "{line:?}"
+    );
+    assert_eq!(
+        line.chars()
+            .skip(usize::from(RIGHT))
+            .collect::<String>()
+            .trim(),
+        "",
+        "{line:?}"
+    );
+    assert_eq!(glyph.fg_at(REASON_X, FIRST_ROW + 1), MUTED);
+    // The rows below make room for it, and the footer offers a retry.
+    assert_eq!(glyph.text_col(FIRST_ROW + 2, "Go"), Some(TEXT_X));
+    assert_eq!(
+        glyph.text_col(FOOTER_ROW + 1, FOOTER_RETRY),
+        Some(CARD_X + 2)
+    );
+
+    // Off the failed row, the reason and the retry go.
+    glyph.send_keys("down");
+    glyph.wait_for_text_gone(&shown, WAIT);
+    assert_eq!(glyph.text_col(FIRST_ROW + 1, "Go"), Some(TEXT_X));
+    assert_eq!(glyph.text_col(FOOTER_ROW, FOOTER), Some(CARD_X + 2));
+    glyph.send_keys("up");
+    glyph.wait_for_text(FOOTER_RETRY, WAIT);
+
+    assert_eq!(starts(files.path()), 1);
+    glyph.send_keys("enter");
+    glyph.wait_for_text_gone(HEADER, WAIT);
+    // Started again for the open file, without reopening it.
+    glyph.wait_for_files("a second start", WAIT, || starts(files.path()) == 2);
+    glyph.send_keys("ctrl+q");
+    glyph.wait_exit(WAIT);
+}
+
+#[test]
+fn retrying_with_no_file_open_waits_for_one_and_stops_saying_failed() {
+    let project = tempfile::tempdir().expect("create project");
+    let files = tempfile::tempdir().expect("create server dir");
+    let mut glyph = with_failing_rust(project.path(), files.path(), "");
+    glyph.send_keys("ctrl+w");
+    glyph.wait_for_screen("a.rs closed", WAIT, |screen| !screen[1].contains("a.rs"));
+    open_catalog(&mut glyph);
+    glyph.wait_for_screen("Rust failed", WAIT, |screen| {
+        screen[usize::from(FIRST_ROW)].contains("failed")
+    });
+    glyph.send_keys("enter");
+    glyph.wait_for_text("Rust will start when you open a file", WAIT);
+    assert!(!glyph.screen().iter().any(|l| l.contains("retrying")));
+    assert_eq!(starts(files.path()), 1);
+
+    // The reason is gone with nothing left to retry.
+    open_catalog(&mut glyph);
+    glyph.wait_for_screen("Rust no longer failed", WAIT, |screen| {
+        let rust = &screen[usize::from(FIRST_ROW)];
+        rust.contains("Rust") && !rust.contains("failed")
+    });
+    assert_eq!(glyph.text_col(FOOTER_ROW, FOOTER), Some(CARD_X + 2));
+}
+
+#[test]
+fn c_on_a_failed_row_copies_its_install_and_mono_reverses_it() {
+    let project = tempfile::tempdir().expect("create project");
+    let files = tempfile::tempdir().expect("create server dir");
+    let mut glyph = with_failing_rust(project.path(), files.path(), "theme = \"mono\"\n");
+    open_catalog(&mut glyph);
+    glyph.wait_for_screen("Rust failed", WAIT, |screen| {
+        screen[usize::from(FIRST_ROW)].contains("failed")
+    });
+    // The whole row across the card, not the reason under it.
+    let selected = glyph.reversed_text(FIRST_ROW);
+    assert!(selected.starts_with("    Rust "), "{selected:?}");
+    assert!(selected.ends_with(" failed    "), "{selected:?}");
+    assert_eq!(selected.chars().count(), 86, "{selected:?}");
+    assert_eq!(glyph.reversed_text(FIRST_ROW + 1), "");
+
+    glyph.send_keys("c");
+    glyph.wait_for_text(&format!("copied: {RUST_INSTALL}"), WAIT);
+    assert_eq!(
+        fs::read_to_string(files.path().join("clip")).expect("read clipboard"),
+        RUST_INSTALL
+    );
+    // Still open, still failed: copying isn't retrying.
+    assert_eq!(glyph.text_col(HEADER_ROW, HEADER), Some(TEXT_X));
+    assert_eq!(starts(files.path()), 1);
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(HEADER, WAIT);
+    glyph.send_keys("ctrl+q");
+    glyph.wait_exit(WAIT);
+}

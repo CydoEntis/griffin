@@ -754,12 +754,14 @@ impl Lsp {
     /// Why the server for `lang` last failed: its `initialize` error, the last
     /// line it wrote to stderr before crashing, or its exit code. `None` when it
     /// hasn't failed, or has started since.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the catalog is to show it beside a failed server")
-    )]
     pub fn failure(&self, lang: &str) -> Option<&str> {
         self.failures.get(lang).map(String::as_str)
+    }
+
+    /// Drops the remembered reason `lang`'s server failed, for a retry that has
+    /// nothing to start yet: the next file opened tries it afresh.
+    pub fn clear_failure(&mut self, lang: &str) {
+        self.failures.remove(lang);
     }
 
     /// The server table for every language, as configured.
@@ -1207,6 +1209,16 @@ mod tests {
             path: Some(dir.join(name)),
             ..Buffer::empty()
         }
+    }
+
+    #[test]
+    fn clearing_a_failure_forgets_only_that_languages_reason() {
+        let mut lsp = Lsp::new(config("glyph-no-such-server"));
+        lsp.failures.insert("rust".into(), "exit code 3".into());
+        lsp.failures.insert("go".into(), "no gopls".into());
+        lsp.clear_failure("rust");
+        assert_eq!(lsp.failure("rust"), None);
+        assert_eq!(lsp.failure("go"), Some("no gopls"));
     }
 
     #[test]

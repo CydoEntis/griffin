@@ -1,7 +1,8 @@
 //! The catalog `>language servers` opens (glyph-catalog spec C1, C2;
 //! glyph-debugger spec D8): a card in the cast's style listing each language
 //! server, then each debug adapter under a `debuggers` heading, with its command
-//! and whether it's installed, missing, waiting on its install tool, or running.
+//! and whether it's installed, missing, waiting on its install tool, running, or
+//! failed this session and why.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -33,13 +34,16 @@ const GAP: u16 = 2;
 const HEADER: &str = "language servers";
 const DEBUGGERS: &str = "debuggers";
 const FOOTER: &str = "⏎ install  c copy command  esc close";
+/// The footer on a failed row, where Enter starts the server again.
+const FOOTER_RETRY: &str = "⏎ retry  c copy command  esc close";
 /// Cells for the row's name, so the commands line up: the longest name and two
 /// blanks.
 const NAME_WIDTH: u16 = 25;
 
 /// One row per server, in the spec's order: its name and the languages it
 /// serves. The first language's table gives the command and install; any of
-/// them having a server up makes the row `running`.
+/// them having a server up makes the row `running`, and any of them having a
+/// failed server makes it `failed`.
 const ENTRIES: [(&str, &[&str]); 7] = [
     ("Rust", &["rust"]),
     ("Go", &["go"]),
@@ -66,6 +70,9 @@ const ADAPTERS: [(&str, &str, Probe); 3] = [
 pub enum State {
     /// A server for it is up in some root.
     Running,
+    /// A server for it was spawned this session and then crashed or refused to
+    /// initialize; the row's `reason` says why.
+    Failed,
     /// Its command is on PATH.
     Installed,
     /// Not on PATH, and neither is the program that installs it.
@@ -79,6 +86,7 @@ impl State {
     pub fn label(&self) -> String {
         match self {
             State::Running => "running".into(),
+            State::Failed => "failed".into(),
             State::Installed => "installed".into(),
             State::Needs(tool) => format!("needs {tool}"),
             State::Missing => "missing".into(),
@@ -89,6 +97,7 @@ impl State {
     pub fn color(&self, theme: &Theme) -> Color {
         match self {
             State::Running | State::Installed => theme.ok,
+            State::Failed => theme.err,
             State::Needs(_) => theme.warn,
             State::Missing => theme.muted,
         }
@@ -137,6 +146,8 @@ pub struct Row {
     /// what runs. Servers show their command only.
     pub args: &'static [&'static str],
     pub state: State,
+    /// Why its server failed, when `state` is `Failed`.
+    pub reason: Option<String>,
     /// The command that installs it, if one is known.
     pub install: Option<String>,
     /// The languages it serves, whose failed starts an install makes Glyph
@@ -158,6 +169,12 @@ pub enum Step {
     NoInstall(&'static str),
     /// Enter on a `missing` row: run its install command in the run panel.
     Install(Install),
+    /// Enter on a `failed` row: try starting its server again for the open
+    /// files.
+    Retry {
+        name: &'static str,
+        langs: &'static [&'static str],
+    },
 }
 
 /// An install Enter asked for: what to run, and what to check once it's done.
@@ -201,10 +218,12 @@ pub struct Catalog {
 
 impl Catalog {
     /// The catalog for the server tables `config`, with `running` saying which
-    /// languages have a server up, and programs looked up through `lookup`.
+    /// languages have a server up, `failure` why a language's server failed this
+    /// session, and programs looked up through `lookup`.
     pub fn new(
         config: &BTreeMap<String, LspServer>,
         running: impl Fn(&str) -> bool,
+        failure: impl Fn(&str) -> Option<String>,
         lookup: &Lookup,
     ) -> Self {
         // Fills in any language the tables leave out; ones already filled in
@@ -216,11 +235,14 @@ impl Catalog {
                 let server = config.get(langs[0]).cloned().unwrap_or_default();
                 let install = servers::install_state(&server, lookup.path, lookup.pathext);
                 let running = langs.iter().any(|lang| running(lang));
+                let reason = langs.iter().find_map(|lang| failure(lang));
+                let state = state(running, reason.is_some(), install.command_found, &install);
                 Row {
                     name,
                     command: server.command.unwrap_or_default(),
                     args: &[],
-                    state: state(running, install.command_found, &install),
+                    reason: reason.filter(|_| state == State::Failed),
+                    state,
                     install: install.install,
                     langs,
                     copy_only: install.copy_only,
@@ -243,7 +265,8 @@ impl Catalog {
                 name,
                 command: command.to_string(),
                 args,
-                state: state(false, lookup.found(command, probe), &install),
+                state: state(false, false, lookup.found(command, probe), &install),
+                reason: None,
                 install: install.install,
                 langs: &[],
                 copy_only: install.copy_only,
@@ -263,8 +286,9 @@ impl Catalog {
     }
 
     /// ↑ and ↓ move the selection, stopping at either end; `c` copies the
-    /// selected row's install command; Enter installs a `missing` server, or
-    /// copies the command when Glyph can't run it; Esc closes.
+    /// selected row's install command; Enter retries a `failed` server, installs
+    /// a `missing` one, or copies the command when Glyph can't run it; Esc
+    /// closes.
     pub fn handle(&mut self, input: Input) -> Option<Step> {
         match input {
             Input::Action(Action::Move(Motion::Up)) => {
@@ -284,6 +308,14 @@ impl Catalog {
             }
             Input::Action(Action::Newline) => {
                 let row = self.rows.get(self.selected)?;
+                // Installing again wouldn't change what made it fail; starting
+                // it again might, once whatever it lacked is fixed.
+                if row.state == State::Failed {
+                    return Some(Step::Retry {
+                        name: row.name,
+                        langs: row.langs,
+                    });
+                }
                 // Nothing to do for a server that's already there.
                 if matches!(row.state, State::Installed | State::Running) {
                     return None;
@@ -309,8 +341,17 @@ impl Catalog {
         }
     }
 
-    /// The rows the card's body takes: every row, and the gap before the
-    /// adapters when there are any.
+    /// The selected row's failure reason, which takes the line below it.
+    fn reason(&self) -> Option<&str> {
+        self.rows
+            .get(self.selected)
+            .filter(|row| row.state == State::Failed)?
+            .reason
+            .as_deref()
+    }
+
+    /// The rows the card's body takes: every row, the selected row's reason,
+    /// and the gap before the adapters when there are any.
     fn body_height(&self) -> u16 {
         let rows = u16::try_from(self.rows.len()).unwrap_or(u16::MAX);
         let gap = if self.rows.len() > self.servers {
@@ -318,14 +359,19 @@ impl Catalog {
         } else {
             0
         };
-        rows.saturating_add(gap)
+        let reason = u16::from(self.reason().is_some());
+        rows.saturating_add(gap).saturating_add(reason)
     }
 
     /// The row `i` is drawn on, below the card's top: past the heading for an
-    /// adapter.
+    /// adapter, and past the selected row's reason for a row below it.
     fn row_offset(&self, i: usize) -> u16 {
         let gap = if i >= self.servers { GAP } else { 0 };
-        4 + u16::try_from(i).unwrap_or(u16::MAX).saturating_add(gap)
+        let reason = u16::from(i > self.selected && self.reason().is_some());
+        4 + u16::try_from(i)
+            .unwrap_or(u16::MAX)
+            .saturating_add(gap)
+            .saturating_add(reason)
     }
 
     /// Where the card goes in `area`: the cast's width, centred, from row 4, as
@@ -346,7 +392,8 @@ impl Catalog {
 
     /// Dims `area` and draws the card over it: the lit edge; `✦ language
     /// servers`; a rule; a row per server, a blank, `debuggers` and a row per
-    /// adapter, the selected one on the glow row; the footer.
+    /// adapter, the selected one on the glow row with its failure reason, if
+    /// any, below it; the footer.
     pub fn render(&self, theme: &Theme, frame: &mut Frame, area: Rect) {
         dim(theme, frame.buffer_mut(), area);
         let card = self.card(area);
@@ -375,6 +422,19 @@ impl Catalog {
             let y = card.y + self.row_offset(i);
             self.render_row(theme, out, card, y, row, i == self.selected);
         }
+        if let Some(reason) = self.reason() {
+            // Under the name, as far as the states reach: a reason is often a
+            // long error, and the card doesn't grow for it.
+            let x = left + 2;
+            let y = card.y + self.row_offset(self.selected) + 1;
+            out.set_stringn(
+                x,
+                y,
+                reason,
+                usize::from((card.right() - 4).saturating_sub(x)),
+                Style::new().fg(theme.muted),
+            );
+        }
         if self.rows.len() > self.servers {
             // As the cast labels its sections.
             let y = card.y + self.row_offset(self.servers) - 1;
@@ -386,7 +446,12 @@ impl Catalog {
             );
         }
 
-        footer(theme, out, card, FOOTER);
+        let hints = if self.reason().is_some() {
+            FOOTER_RETRY
+        } else {
+            FOOTER
+        };
+        footer(theme, out, card, hints);
     }
 
     /// The name, the command in `muted`, and the state at the right in its
@@ -444,17 +509,22 @@ impl Catalog {
     }
 }
 
-/// A row's state: `running` beats being found, and a missing row whose install
-/// tool isn't on PATH needs that tool.
-fn state(running: bool, found: bool, install: &servers::InstallState) -> State {
+/// A row's state: `running` beats everything. A server no longer found is
+/// missing (or needs its install tool) whatever it did before, so the row
+/// offers the install again; one that is found but failed this session is
+/// failed rather than installed, since being on PATH didn't make it work.
+fn state(running: bool, failed: bool, found: bool, install: &servers::InstallState) -> State {
     if running {
         State::Running
-    } else if found {
-        State::Installed
-    } else if let Some(tool) = install.tool.clone().filter(|_| !install.tool_found) {
-        State::Needs(tool)
+    } else if !found {
+        match install.tool.clone().filter(|_| !install.tool_found) {
+            Some(tool) => State::Needs(tool),
+            None => State::Missing,
+        }
+    } else if failed {
+        State::Failed
     } else {
-        State::Missing
+        State::Installed
     }
 }
 
@@ -501,6 +571,7 @@ mod tests {
         Ok(Catalog::new(
             &BTreeMap::new(),
             |lang| running.contains(&lang),
+            |_| None,
             &on(Some(dir.path())),
         ))
     }
@@ -574,7 +645,7 @@ mod tests {
                 ..LspServer::default()
             },
         )]);
-        let c = Catalog::new(&config, |_| false, &on(Some(dir.path())));
+        let c = Catalog::new(&config, |_| false, |_| None, &on(Some(dir.path())));
         let python = &c.rows()[3];
         assert_eq!(python.command, "pylsp");
         assert_eq!(python.state, State::Missing);
@@ -592,6 +663,141 @@ mod tests {
         assert_eq!(State::Running.color(&theme), theme.ok);
         assert_eq!(State::Missing.color(&theme), theme.muted);
         assert_eq!(State::Needs("npm".into()).color(&theme), theme.warn);
+        assert_eq!(State::Failed.color(&theme), theme.err);
+        assert_eq!(State::Failed.label(), "failed");
+    }
+
+    /// A catalog with `programs` on its PATH, `running` languages up and
+    /// `failed` ones having failed with a reason naming the language.
+    fn failing(programs: &[&str], running: &[&str], failed: &[&str]) -> anyhow::Result<Catalog> {
+        let dir = tempfile::tempdir()?;
+        for program in programs {
+            touch(&dir.path().join(exe(program)))?;
+        }
+        Ok(Catalog::new(
+            &BTreeMap::new(),
+            |lang| running.contains(&lang),
+            |lang| failed.contains(&lang).then(|| format!("{lang} said no")),
+            &on(Some(dir.path())),
+        ))
+    }
+
+    #[test]
+    fn a_failed_server_is_failed_over_installed_but_not_over_running_or_missing()
+    -> anyhow::Result<()> {
+        // Rust is installed and failed; TypeScript failed for one of its
+        // languages; Go failed but is running again elsewhere; Python and SQL
+        // failed but are gone from PATH since, Python's npm still there and
+        // SQL's go not.
+        let c = failing(
+            &[
+                "rust-analyzer",
+                "gopls",
+                "typescript-language-server",
+                "npm",
+            ],
+            &["go"],
+            &["rust", "go", "tsx", "python", "sql"],
+        )?;
+        let states: Vec<String> = states(&c).into_iter().map(|(_, s)| s).collect();
+        assert_eq!(states[..4], ["failed", "running", "failed", "missing"]);
+        assert_eq!(states[6], "needs go");
+        let reasons: Vec<Option<&str>> = c.rows()[..c.servers]
+            .iter()
+            .map(|r| r.reason.as_deref())
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                Some("rust said no"),
+                None,
+                Some("tsx said no"),
+                None,
+                None,
+                None,
+                None
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn enter_on_a_server_failed_and_gone_installs_it_again() -> anyhow::Result<()> {
+        let mut c = failing(&["npm"], &[], &["python"])?;
+        c.selected = 3;
+        assert!(matches!(
+            c.handle(Input::Action(Action::Newline)),
+            Some(Step::Install(Install { name: "Python", .. }))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn enter_on_a_failed_row_retries_it_and_c_still_copies() -> anyhow::Result<()> {
+        let programs = ["typescript-language-server", "npm"];
+        let mut c = failing(&programs, &[], &["javascript"])?;
+        c.selected = 2;
+        assert_eq!(
+            c.handle(Input::Action(Action::Newline)),
+            Some(Step::Retry {
+                name: "TypeScript / JavaScript",
+                langs: &["typescript", "tsx", "javascript", "jsx"],
+            })
+        );
+        assert_eq!(
+            c.handle(Input::Action(Action::CatalogCopy)),
+            Some(Step::Copy(
+                "npm install -g typescript-language-server typescript".into()
+            ))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_selected_failed_row_has_its_reason_below_and_a_retry_footer() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        touch(&dir.path().join(exe("rust-analyzer")))?;
+        let long = format!("Cannot start: {}", "x".repeat(100));
+        let mut c = Catalog::new(
+            &BTreeMap::new(),
+            |_| false,
+            |lang| (lang == "rust").then(|| long.clone()),
+            &on(Some(dir.path())),
+        );
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 100, 30);
+        let card = c.card(area);
+        // One line taller than without a reason.
+        assert_eq!(card, Rect::new(7, 4, 86, 19));
+        let buffer = draw(&c, &theme)?;
+        let rust = card_row(&buffer, card, card.y + 4);
+        assert!(rust.ends_with("failed    "), "{rust:?}");
+        assert_eq!(buffer[(card.right() - 10, card.y + 4)].fg, theme.err);
+
+        // Under the name, in `muted`, cut where the states end.
+        let reason = card_row(&buffer, card, card.y + 5);
+        let shown = &long[..usize::from(card.width - 10)];
+        assert_eq!(reason, format!("      {shown}    "));
+        assert_eq!(buffer[(card.x + 6, card.y + 5)].fg, theme.muted);
+        assert_ne!(
+            buffer[(card.x, card.y + 5)].bg,
+            mix(theme.raised, theme.accent, 0.3)
+        );
+        // The rows below move down for it.
+        let go = card_row(&buffer, card, card.y + 6);
+        assert!(go.starts_with("    Go "), "{go:?}");
+        let foot = card_row(&buffer, card, card.bottom() - 1);
+        assert!(foot.starts_with(&format!("  {FOOTER_RETRY}")), "{foot:?}");
+
+        // Off the failed row: no reason, the usual footer.
+        c.handle(Input::Action(Action::Move(Motion::Down)));
+        assert_eq!(c.card(area).height, 18);
+        let buffer = draw(&c, &theme)?;
+        let go = card_row(&buffer, card, card.y + 5);
+        assert!(go.starts_with("    Go "), "{go:?}");
+        let foot = card_row(&buffer, card, card.y + 17);
+        assert!(foot.starts_with(&format!("  {FOOTER}")), "{foot:?}");
+        Ok(())
     }
 
     #[test]
@@ -630,7 +836,7 @@ mod tests {
                 ..LspServer::default()
             },
         )]);
-        let mut c = Catalog::new(&config, |_| false, &on(None));
+        let mut c = Catalog::new(&config, |_| false, |_| None, &on(None));
         assert_eq!(
             c.handle(Input::Action(Action::CatalogCopy)),
             Some(Step::NoInstall("Rust"))
@@ -654,7 +860,12 @@ mod tests {
                 ..LspServer::default()
             },
         )]);
-        let mut c = Catalog::new(&config, |lang| lang == "tsx", &on(Some(dir.path())));
+        let mut c = Catalog::new(
+            &config,
+            |lang| lang == "tsx",
+            |_| None,
+            &on(Some(dir.path())),
+        );
         let mut enter_on = |row: usize| {
             c.selected = row;
             c.handle(Input::Action(Action::Newline))
@@ -781,7 +992,7 @@ mod tests {
             llvm_bin: llvm.then_some(llvm_dir.path()),
             imports: if debugpy { &yes } else { &never },
         };
-        Ok(Catalog::new(&BTreeMap::new(), |_| false, &lookup))
+        Ok(Catalog::new(&BTreeMap::new(), |_| false, |_| None, &lookup))
     }
 
     /// The adapter rows' names, commands with args, states and installs.
