@@ -5,6 +5,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use toml_edit::{Item, TableLike};
 
 use crate::keymap::Keymap;
 use crate::theme::{self, Theme};
@@ -260,6 +261,52 @@ pub fn create_template(path: &Path) -> std::io::Result<()> {
         Ok(mut file) => std::io::Write::write_all(&mut file, TEMPLATE.as_bytes()),
         Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(()),
         Err(err) => Err(err),
+    }
+}
+
+/// `text`, a whole `config.toml`, with `name` under `[keys]` bound to exactly
+/// `keys`, or with its entry gone when `keys` is `None` so the command's
+/// defaults come back. Everything else, comments and order included, is kept
+/// as written; `[keys]` is added when there's none. One key is written as a
+/// string, any other number as a list. The `Err` is the status line's
+/// `config error: …`.
+pub fn with_keys(text: &str, name: &str, keys: Option<&[String]>) -> Result<String, String> {
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|_| unreadable(text))?;
+    let root = doc.as_table_mut();
+    if !root.contains_key("keys") {
+        if keys.is_none() {
+            return Ok(text.to_string());
+        }
+        root.insert("keys", Item::Table(toml_edit::Table::new()));
+    }
+    let table = root
+        .get_mut("keys")
+        .and_then(Item::as_table_like_mut)
+        .ok_or_else(|| "config error: keys is not a table".to_string())?;
+    match keys {
+        None => {
+            table.remove(name);
+        }
+        Some(keys) => {
+            let mut value = match keys {
+                [one] => toml_edit::Value::from(one.as_str()),
+                many => toml_edit::Value::Array(many.iter().map(String::as_str).collect()),
+            };
+            // A comment after the old value stays with the new one.
+            if let Some(old) = table.get(name).and_then(Item::as_value) {
+                *value.decor_mut() = old.decor().clone();
+            }
+            table.insert(name, Item::Value(value));
+        }
+    }
+    Ok(doc.to_string())
+}
+
+/// Why `text` isn't TOML, in the words `Settings::from_text` would use.
+fn unreadable(text: &str) -> String {
+    match toml::from_str::<toml::Table>(text) {
+        Err(err) => format!("config error: {}", describe(&err, text)),
+        Ok(_) => "config error: config.toml is not valid TOML".to_string(),
     }
 }
 
@@ -790,5 +837,72 @@ save =",
         let loaded = parse_project("[[run]]\nname = \"dev\"\n");
         assert!(loaded.config.run.is_empty());
         assert!(loaded.error.is_some());
+    }
+
+    fn keys(list: &[&str]) -> Vec<String> {
+        list.iter().map(|k| k.to_string()).collect()
+    }
+
+    #[test]
+    fn with_keys_writes_one_entry_and_keeps_the_rest_of_the_file() {
+        let text = "# my settings\ntheme = \"nord\" # dark\n\n[editor]\ntab_width = 2\n\n\
+                    [keys]\n# the palette\ngo_to_file = \"alt+p\"\nsave = \"f2\" # mine\n\n\
+                    [lsp.rust]\ncommand = \"ra\"\n";
+        let out = with_keys(text, "save", Some(&keys(&["alt+w"]))).unwrap();
+        assert_eq!(
+            out,
+            "# my settings\ntheme = \"nord\" # dark\n\n[editor]\ntab_width = 2\n\n\
+             [keys]\n# the palette\ngo_to_file = \"alt+p\"\nsave = \"alt+w\" # mine\n\n\
+             [lsp.rust]\ncommand = \"ra\"\n"
+        );
+        // A new entry goes at the end of `[keys]`, before the next table.
+        let out = with_keys(&out, "close_tab", Some(&keys(&["ctrl+k", "alt+q"]))).unwrap();
+        assert!(
+            out.contains(
+                "save = \"alt+w\" # mine\nclose_tab = [\"ctrl+k\", \"alt+q\"]\n\n[lsp.rust]"
+            ),
+            "{out}"
+        );
+        // No keys at all is an empty list, which takes the defaults away too.
+        let out = with_keys(&out, "close_tab", Some(&[])).unwrap();
+        assert!(out.contains("close_tab = []\n"), "{out}");
+        let config: Config = toml::from_str(&out).unwrap();
+        assert_eq!(config.keys["close_tab"], KeyBinding::Many(Vec::new()));
+        assert_eq!(config.lsp["rust"].command.as_deref(), Some("ra"));
+    }
+
+    #[test]
+    fn with_keys_adds_keys_to_a_file_without_them() {
+        let out = with_keys("theme = \"nord\"\n", "save", Some(&keys(&["alt+w"]))).unwrap();
+        assert_eq!(out, "theme = \"nord\"\n\n[keys]\nsave = \"alt+w\"\n");
+        let out = with_keys("", "save", Some(&keys(&["alt+w"]))).unwrap();
+        assert_eq!(out, "[keys]\nsave = \"alt+w\"\n");
+        // The template's commented-out lines stay, under the new entry.
+        let out = with_keys(TEMPLATE, "save", Some(&keys(&["alt+w"]))).unwrap();
+        assert!(out.starts_with("# Glyph's settings."), "{out}");
+        assert!(out.contains("[keys]\nsave = \"alt+w\"\n"), "{out}");
+        assert!(out.contains("# save = \"ctrl+s\"\n"), "{out}");
+        assert!(out.contains("# tab_width = 4\n"), "{out}");
+    }
+
+    #[test]
+    fn with_keys_none_removes_the_entry_only() {
+        let text = "[keys]\nsave = \"alt+w\"\n# the palette\ngo_to_file = \"alt+p\"\n";
+        let out = with_keys(text, "save", None).unwrap();
+        assert_eq!(out, "[keys]\n# the palette\ngo_to_file = \"alt+p\"\n");
+        // Nothing to remove changes nothing, and adds no `[keys]`.
+        assert_eq!(with_keys(&out, "save", None).unwrap(), out);
+        assert_eq!(
+            with_keys("theme = \"nord\"\n", "save", None).unwrap(),
+            "theme = \"nord\"\n"
+        );
+    }
+
+    #[test]
+    fn with_keys_refuses_a_file_that_isnt_toml() {
+        let err = with_keys("theme = \"nord\"\n[keys\n", "save", Some(&keys(&["f2"]))).unwrap_err();
+        assert!(err.starts_with("config error: line 2"), "{err}");
+        let err = with_keys("keys = 3\n", "save", Some(&keys(&["f2"]))).unwrap_err();
+        assert_eq!(err, "config error: keys is not a table");
     }
 }

@@ -1076,6 +1076,66 @@ fn key_label(key: Key) -> String {
     label
 }
 
+/// How `[keys]` names the key `event` is, e.g. `alt+w`, `ctrl+shift+left`,
+/// `f5`: what the keybindings card writes when a key is pressed to rebind a
+/// command. `None` for a key the notation has no name for (Caps Lock, a media
+/// key, Shift+Space), so nothing unreadable reaches `config.toml`.
+pub fn key_notation(event: &KeyEvent) -> Option<String> {
+    let key = normalize(event.code, event.modifiers);
+    let text = notation(key)?;
+    // Only a name that reads back as this very key is any use in the file.
+    (parse_key(&text) == Ok(key)).then_some(text)
+}
+
+/// The palette's label for a key in `[keys]` notation (`alt+w` is `Alt+W`),
+/// or the notation itself if it doesn't parse.
+pub fn notation_label(notation: &str) -> String {
+    parse_key(notation).map_or_else(|_| notation.to_string(), key_label)
+}
+
+/// `key` in `[keys]` notation, modifiers first, all lower case.
+fn notation(key: Key) -> Option<String> {
+    let mut text = String::new();
+    for (modifier, name) in [
+        (KeyModifiers::CONTROL, "ctrl+"),
+        (KeyModifiers::ALT, "alt+"),
+        (KeyModifiers::SHIFT, "shift+"),
+    ] {
+        if key.mods.contains(modifier) {
+            text.push_str(name);
+        }
+    }
+    let name = match key.code {
+        KeyCode::Char(' ') => "space".to_string(),
+        KeyCode::Char(c) if !c.is_control() => c.to_string(),
+        KeyCode::F(n) => format!("f{n}"),
+        KeyCode::Left => "left".to_string(),
+        KeyCode::Right => "right".to_string(),
+        KeyCode::Up => "up".to_string(),
+        KeyCode::Down => "down".to_string(),
+        KeyCode::Home => "home".to_string(),
+        KeyCode::End => "end".to_string(),
+        KeyCode::PageUp => "pageup".to_string(),
+        KeyCode::PageDown => "pagedown".to_string(),
+        KeyCode::Insert => "insert".to_string(),
+        KeyCode::Delete => "delete".to_string(),
+        KeyCode::Enter => "enter".to_string(),
+        KeyCode::Esc => "esc".to_string(),
+        KeyCode::Backspace => "backspace".to_string(),
+        KeyCode::Tab => "tab".to_string(),
+        _ => return None,
+    };
+    text.push_str(&name);
+    Some(text)
+}
+
+/// A key `key_notation` has no name for, so tests outside this module can
+/// press one without naming `KeyCode`.
+#[cfg(test)]
+pub fn unnamed_key_event() -> KeyEvent {
+    KeyEvent::new(KeyCode::CapsLock, KeyModifiers::NONE)
+}
+
 fn function_key(name: &str) -> Option<u8> {
     let n: u8 = name.strip_prefix('f')?.parse().ok()?;
     (1..=24).contains(&n).then_some(n)
@@ -2098,5 +2158,65 @@ mod tests {
             Input::Action(Action::Quit)
         );
         assert_eq!(map.resolve(&key_event("q")), Input::Text('q'));
+    }
+
+    #[test]
+    fn a_pressed_key_is_named_in_the_notation_it_reads_back_as() {
+        let none = KeyModifiers::NONE;
+        let named = |code, mods| key_notation(&ev(code, mods));
+        assert_eq!(
+            named(KeyCode::Char('w'), KeyModifiers::ALT).as_deref(),
+            Some("alt+w")
+        );
+        // Shift+letter comes as the capital, with or without SHIFT.
+        assert_eq!(
+            named(KeyCode::Char('W'), KeyModifiers::ALT).as_deref(),
+            Some("alt+shift+w")
+        );
+        assert_eq!(
+            named(
+                KeyCode::Left,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )
+            .as_deref(),
+            Some("ctrl+shift+left")
+        );
+        assert_eq!(named(KeyCode::F(5), none).as_deref(), Some("f5"));
+        assert_eq!(named(KeyCode::BackTab, none).as_deref(), Some("shift+tab"));
+        assert_eq!(named(KeyCode::Char(' '), none).as_deref(), Some("space"));
+        assert_eq!(
+            named(KeyCode::Char('+'), KeyModifiers::CONTROL).as_deref(),
+            Some("ctrl++")
+        );
+        // A shifted symbol is the symbol itself.
+        assert_eq!(
+            named(KeyCode::Char('!'), KeyModifiers::SHIFT).as_deref(),
+            Some("!")
+        );
+        // Every name reads back as the key it names.
+        for (code, mods) in [
+            (KeyCode::Char('k'), KeyModifiers::CONTROL),
+            (KeyCode::PageDown, KeyModifiers::ALT),
+            (KeyCode::Delete, none),
+            (KeyCode::Enter, KeyModifiers::SHIFT),
+        ] {
+            let text = named(code, mods).unwrap();
+            assert_eq!(parse_key(&text), Ok(normalize(code, mods)), "{text}");
+        }
+        assert_eq!(notation_label("alt+w"), "Alt+W");
+        assert_eq!(notation_label("ctrl+shift+left"), "Ctrl+Shift+Left");
+    }
+
+    #[test]
+    fn a_key_the_notation_cant_name_has_no_name() {
+        assert_eq!(key_notation(&unnamed_key_event()), None);
+        for code in [KeyCode::Pause, KeyCode::Menu, KeyCode::Null, KeyCode::F(30)] {
+            assert_eq!(key_notation(&ev(code, KeyModifiers::NONE)), None, "{code:?}");
+        }
+        // `shift+space` doesn't parse, so it isn't written either.
+        assert_eq!(
+            key_notation(&ev(KeyCode::Char(' '), KeyModifiers::SHIFT)),
+            None
+        );
     }
 }
