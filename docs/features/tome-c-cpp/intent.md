@@ -2,18 +2,18 @@
 
 Type: feature
 Author: Cody · Status: accepted
-Date: 2026-10-09 · Plan: [Phase 15](../../PLANNING.md)
+Date: 2026-10-09 · Plan: [Phase 16](../../PLANNING.md)
 
 ## Problem
 
-"add C and C++ i wanna learn those." Glyph knows 8 languages and C and C++ aren't among
+"add C and C++ i wanna learn those." Tome knows 8 languages and C and C++ aren't among
 them: a `.c` or `.cpp` file opens as plain text, with no colours, no completion, no
-Ctrl+/, nothing on F5 and no debugger. Learning C in Glyph today means compiling and
+Ctrl+/, nothing on F5 and no debugger. Learning C in Tome today means compiling and
 running every program by hand in another terminal.
 
 ## Proposed outcome
 
-Open `hello.c` or `hello.cpp` and Glyph treats it like Rust or Go: it's highlighted,
+Open `hello.c` or `hello.cpp` and Tome treats it like Rust or Go: it's highlighted,
 clangd gives completion and errors (installed from the catalog), Ctrl+/ comments lines,
 F5 compiles and runs it in the run panel, where a prompt shows at once and you can type
 the program's input, and Alt+F5 debugs it, stopping at F9 breakpoints.
@@ -39,12 +39,12 @@ the program's input, and Alt+F5 debugs it, stopping at F9 breakpoints.
   that aren't on PATH are found in `%ProgramFiles%\LLVM\bin`, as `lldb-dap` already is.
 - Compiler: clang (`clang` for C, `clang++` for C++), flags `-Wall -g`, clang's default
   standard. On Windows clang uses the MSVC Build Tools for headers and linking.
-- F5, when `.glyph.toml` has no `[[run]]` and the open file is a `.c`, `.cpp`, `.cc` or
+- F5, when `.tome.toml` has no `[[run]]` and the open file is a `.c`, `.cpp`, `.cc` or
   `.cxx`, offers first: compile that file to a program next to it (`hello.exe` on
   Windows, `hello` elsewhere, decided 2026-10-09) and run it. A project with a
   `Makefile` also gets `make`; one with `CMakeLists.txt` gets
   `cmake -B build && cmake --build build`, which builds only — running or debugging a
-  CMake program means naming it in `.glyph.toml`. Configured `[[run]]` entries still
+  CMake program means naming it in `.tome.toml`. Configured `[[run]]` entries still
   replace detection outright.
 - The open-file run gets a pseudo-terminal (decided 2026-10-09), so the program's stdout
   is a terminal and prompts printed without a newline show at once. Other detected
@@ -55,7 +55,7 @@ the program's input, and Alt+F5 debugs it, stopping at F9 breakpoints.
   way a terminal echoes it.
 - Debugging (F9 breakpoints, Alt+F5 start) uses `lldb-dap` for both languages; the build
   step compiles the open file with the same command as Run, and the program is the same
-  output. `.glyph.toml` `[debug]` overrides it, as for Rust.
+  output. `.tome.toml` `[debug]` overrides it, as for Rust.
 - Adds C and C++ to the language lists in the v1 spec (R24, R35); the v1 spec stays as
   shipped, this intent is the record of the addition.
 
