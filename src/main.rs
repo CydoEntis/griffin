@@ -16,7 +16,6 @@ mod ui;
 mod view;
 mod workspace;
 
-use std::collections::BTreeMap;
 use std::io::{self, Stdout};
 use std::panic;
 use std::path::PathBuf;
@@ -34,10 +33,7 @@ use ratatui::Terminal;
 
 use crate::app::App;
 use crate::backup::Backups;
-use crate::config::{DebugAdapter, EditorConfig};
-use crate::keymap::Keymap;
 use crate::lsp::Lsp;
-use crate::theme::Theme;
 use crate::view::UndercurlBackend;
 
 pub type Tui = Terminal<UndercurlBackend<Stdout>>;
@@ -63,7 +59,7 @@ async fn main() -> Result<()> {
     let path = cli.path;
 
     // Loaded before the terminal switches screens; a bad config never stops startup.
-    let (keymap, editor, theme, lsp, debug, config_error) = load_config();
+    let (settings, config_error) = config::Settings::startup(config::load());
 
     install_panic_hook(|| {
         // Best effort: the process is already panicking, so a failed restore can
@@ -80,10 +76,10 @@ async fn main() -> Result<()> {
     };
 
     let backups = Backups::new(backup::data_dir(std::env::var_os("GLYPH_DATA_DIR")));
-    let result = App::new(keymap, editor, path, config_error)
-        .with_theme(theme)
-        .with_lsp(lsp)
-        .with_debug_adapters(debug)
+    let result = App::new(settings.keymap, settings.editor, path, config_error)
+        .with_theme(settings.theme)
+        .with_lsp(Lsp::new(lsp::servers::with_defaults(settings.lsp)))
+        .with_debug_adapters(settings.debug)
         .with_config_path(config::config_path(std::env::var_os("GLYPH_CONFIG")))
         .with_backups(backups)
         .with_clipboard(clipboard::from_env(std::env::var_os(
@@ -94,47 +90,6 @@ async fn main() -> Result<()> {
     let restored = restore_terminal();
     result?;
     restored
-}
-
-/// Reads `config.toml` and builds the keymap, theme, language servers and debug
-/// adapters from it, falling back to the
-/// defaults (and saying why in the status line) when the file is malformed or names
-/// a bad key, theme or colour.
-fn load_config() -> (
-    Keymap,
-    EditorConfig,
-    Theme,
-    Lsp,
-    BTreeMap<String, DebugAdapter>,
-    Option<String>,
-) {
-    let loaded = config::load();
-    if let Some(err) = loaded.error {
-        return (
-            Keymap::default(),
-            EditorConfig::default(),
-            Theme::default(),
-            Lsp::new(lsp::servers::with_defaults(Default::default())),
-            BTreeMap::new(),
-            Some(format!("config error: {err}")),
-        );
-    }
-    let config = loaded.config;
-    let (theme, theme_error) = theme::load(config.theme.as_deref(), &config.theme_overrides);
-    let (keymap, keys_error) = match Keymap::new(&config.keys) {
-        Ok(keymap) => (keymap, None),
-        Err(err) => (Keymap::default(), Some(format!("config error: {err}"))),
-    };
-    let errors: Vec<String> = keys_error.into_iter().chain(theme_error).collect();
-    let message = (!errors.is_empty()).then(|| errors.join(" · "));
-    (
-        keymap,
-        config.editor,
-        theme,
-        Lsp::new(lsp::servers::with_defaults(config.lsp)),
-        config.debug,
-        message,
-    )
 }
 
 /// The `--health` report. A config that fails to load is reported by the editor

@@ -853,17 +853,24 @@ pub fn load(
     name: Option<&str>,
     overrides: &BTreeMap<String, toml::Value>,
 ) -> (Theme, Option<String>) {
-    let name = name.unwrap_or("hydra");
-    let Some(mut theme) = Theme::named(name) else {
-        return (
-            Theme::hydra(),
-            Some(format!("theme: unknown theme \"{name}\", using hydra")),
-        );
-    };
-    match theme.apply(overrides) {
-        Ok(()) => (theme, None),
-        Err(err) => (Theme::hydra(), Some(format!("theme: {err}, using hydra"))),
+    match resolve(name, overrides) {
+        Ok(theme) => (theme, None),
+        Err(err) => (Theme::hydra(), Some(format!("{err}, using hydra"))),
     }
+}
+
+/// The theme `config.toml` asks for, or why it can't be had. Applying a saved
+/// config keeps the theme in use on an error, so it mustn't fall back itself.
+pub fn resolve(
+    name: Option<&str>,
+    overrides: &BTreeMap<String, toml::Value>,
+) -> Result<Theme, String> {
+    let name = name.unwrap_or("hydra");
+    let mut theme = Theme::named(name).ok_or_else(|| format!("theme: unknown theme \"{name}\""))?;
+    theme
+        .apply(overrides)
+        .map_err(|err| format!("theme: {err}"))?;
+    Ok(theme)
 }
 
 #[cfg(test)]
