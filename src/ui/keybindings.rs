@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::buffer::movement::Motion;
 use crate::keymap::{Action, Input, Keymap, Scope};
@@ -28,6 +28,9 @@ const NO_KEY: &str = "—";
 /// Cells for the title, so the config names line up: the longest title and two
 /// blanks.
 const TITLE_WIDTH: u16 = 35;
+/// The fewest cells a title keeps when the keys are wide (all of a shorter
+/// title), so a row still says what it's for on a narrow screen.
+const TITLE_MIN: u16 = 12;
 
 /// The places with keys of their own, in the order the card lists them, and
 /// the heading each is listed under.
@@ -103,6 +106,9 @@ pub struct Keybindings {
     shown: Vec<usize>,
     /// Index into `shown`.
     selected: usize,
+    /// The first line of the list in view. It moves only when the selection
+    /// would leave the view, so ↑ moves the glow rather than the list.
+    top: usize,
 }
 
 impl Keybindings {
@@ -128,6 +134,7 @@ impl Keybindings {
             query: PromptBar::new("Keybindings", ""),
             shown,
             selected: 0,
+            top: 0,
         }
     }
 
@@ -144,15 +151,18 @@ impl Keybindings {
         Some(self.rows[row].action)
     }
 
-    /// ↑ and ↓ move the selection, stopping at either end; Esc closes; Enter
-    /// does nothing yet; anything else edits the query.
-    pub fn handle(&mut self, input: Input) -> Option<Step> {
+    /// ↑ and ↓ move the selection, stopping at either end, and scroll the
+    /// list as the card drawn in `area` needs; Esc closes; Enter does nothing
+    /// yet; anything else edits the query.
+    pub fn handle(&mut self, input: Input, area: Rect) -> Option<Step> {
         match input {
             Input::Action(Action::Move(Motion::Up)) => {
                 self.selected = self.selected.saturating_sub(1);
+                self.top = self.first_line(self.room(area));
             }
             Input::Action(Action::Move(Motion::Down)) => {
                 self.selected = (self.selected + 1).min(self.shown.len().saturating_sub(1));
+                self.top = self.first_line(self.room(area));
             }
             Input::Action(Action::Cancel) => return Some(Step::Close),
             // Rebinding the selected row (#170) goes here.
@@ -187,6 +197,29 @@ impl Keybindings {
             .filter(|&i| self.rows[i].matches(query))
             .collect();
         self.selected = 0;
+        self.top = 0;
+    }
+
+    /// How many lines of the list the card drawn in `area` shows.
+    fn room(&self, area: Rect) -> usize {
+        usize::from(self.card(area).height.saturating_sub(CHROME))
+    }
+
+    /// The first line to draw in a list `room` lines tall: `top`, moved just
+    /// far enough to bring the selected row into view, along with the heading
+    /// and blank above it when scrolling up to it.
+    fn first_line(&self, room: usize) -> usize {
+        let lines = self.lines();
+        let at = lines
+            .iter()
+            .position(|&line| line == Line::Row(self.selected))
+            .unwrap_or(0);
+        let lead = lines[..at]
+            .iter()
+            .rposition(|line| matches!(line, Line::Row(_)))
+            .map_or(0, |row| row + 1);
+        let top = if at < self.top { lead } else { self.top };
+        top.max((at + 1).saturating_sub(room.max(1)))
     }
 
     /// The list as drawn: the rows shown, each scope's after a blank and its
@@ -273,11 +306,9 @@ impl Keybindings {
                 Style::new().fg(theme.muted),
             );
         }
-        let at = lines
-            .iter()
-            .position(|&line| line == Line::Row(self.selected))
-            .unwrap_or(0);
-        let first = at.saturating_sub(room - 1);
+        // `top` was set for this screen; clamping again keeps the selection
+        // in view after a resize.
+        let first = self.first_line(room);
         for (offset, line) in lines.iter().skip(first).take(room).enumerate() {
             let y = top + u16::try_from(offset).unwrap_or(u16::MAX);
             match *line {
@@ -314,15 +345,13 @@ fn render_row(theme: &Theme, out: &mut Buffer, card: Rect, y: u16, row: &Row, se
     let plain = selected && !theme.ramps();
     let pick = |style: Style| if plain { Style::new() } else { style };
 
-    let keys = row.keys_label();
-    let keys_x = right.saturating_sub(width_of(&keys)).max(left);
-    out.set_stringn(
-        keys_x,
-        y,
-        &keys,
-        usize::from(right - keys_x),
-        pick(Style::new().fg(theme.text)),
-    );
+    // The keys get what the title's minimum and two blanks leave, cut with
+    // `…` beyond that.
+    let title_min = width_of(row.title).min(TITLE_MIN);
+    let keys_room = right.saturating_sub(left + title_min + 2);
+    let keys = cut(&row.keys_label(), keys_room);
+    let keys_x = right.saturating_sub(width_of(&keys));
+    out.set_string(keys_x, y, &keys, pick(Style::new().fg(theme.text)));
 
     let title = pick(Style::new().fg(if selected { theme.strong } else { theme.fg }));
     out.set_stringn(
@@ -350,6 +379,27 @@ fn width_of(text: &str) -> u16 {
     u16::try_from(text.width()).unwrap_or(u16::MAX)
 }
 
+/// `text` if it fits in `room` cells, else as much as fits followed by `…`.
+fn cut(text: &str, room: u16) -> String {
+    if width_of(text) <= room {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = u16::try_from(c.width().unwrap_or(0)).unwrap_or(u16::MAX);
+        if used + w + 1 > room {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    if room > 0 {
+        out.push('…');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,9 +421,12 @@ mod tests {
             .unwrap_or_else(|| panic!("no row for {action:?}"))
     }
 
+    /// The screen the unit tests draw on.
+    const SCREEN: Rect = Rect::new(0, 0, 100, 30);
+
     fn type_text(k: &mut Keybindings, text: &str) {
         for c in text.chars() {
-            k.handle(Input::Text(c));
+            k.handle(Input::Text(c), SCREEN);
         }
     }
 
@@ -471,8 +524,8 @@ mod tests {
         type_text(&mut k, "SPLASH_Q");
         assert_eq!(shown(&k), ["splash_quit"]);
         // Backspace corrects the query; the selection starts over.
-        k.handle(Input::Action(Action::Backspace));
-        k.handle(Input::Action(Action::Backspace));
+        k.handle(Input::Action(Action::Backspace), SCREEN);
+        k.handle(Input::Action(Action::Backspace), SCREEN);
         assert!(shown(&k).len() > 1);
         assert_eq!(k.selected, 0);
         let mut k = fresh();
@@ -484,7 +537,7 @@ mod tests {
     #[test]
     fn arrows_stop_at_the_ends_enter_and_backspace_do_nothing_and_esc_closes() {
         let mut k = fresh();
-        let press = |k: &mut Keybindings, a: Action| k.handle(Input::Action(a));
+        let press = |k: &mut Keybindings, a: Action| k.handle(Input::Action(a), SCREEN);
         assert_eq!(press(&mut k, Action::Move(Motion::Up)), None);
         assert_eq!(k.selected_action(), Some(Action::Quit));
         press(&mut k, Action::Move(Motion::Down));
@@ -591,7 +644,7 @@ mod tests {
     fn the_list_scrolls_to_keep_the_selected_row_in_view() -> anyhow::Result<()> {
         let mut k = fresh();
         for _ in 0..500 {
-            k.handle(Input::Action(Action::Move(Motion::Down)));
+            k.handle(Input::Action(Action::Move(Motion::Down)), SCREEN);
         }
         let theme = Theme::default();
         let card = k.card(Rect::new(0, 0, 100, 30));
@@ -609,6 +662,64 @@ mod tests {
     }
 
     #[test]
+    fn up_moves_the_selection_within_the_view_without_scrolling() -> anyhow::Result<()> {
+        let mut k = fresh();
+        let theme = Theme::default();
+        let card = k.card(SCREEN);
+        for _ in 0..25 {
+            k.handle(Input::Action(Action::Move(Motion::Down)), SCREEN);
+        }
+        let scrolled = card_row(&draw(&k, &theme)?, card, card.y + 4);
+        let bottom = card.bottom() - 3;
+        let lit = mix(theme.raised, theme.accent, 0.3);
+        assert_eq!(draw(&k, &theme)?[(card.x, bottom)].bg, lit);
+        for _ in 0..3 {
+            k.handle(Input::Action(Action::Move(Motion::Up)), SCREEN);
+        }
+        let buffer = draw(&k, &theme)?;
+        assert_eq!(card_row(&buffer, card, card.y + 4), scrolled);
+        assert_eq!(buffer[(card.x, bottom - 3)].bg, lit);
+        assert_eq!(buffer[(card.x, bottom)].bg, theme.raised);
+        // Going on up past the top scrolls back a line at a time.
+        for _ in 0..22 {
+            k.handle(Input::Action(Action::Move(Motion::Up)), SCREEN);
+        }
+        let buffer = draw(&k, &theme)?;
+        assert!(card_row(&buffer, card, card.y + 4).starts_with("    Quit"));
+        Ok(())
+    }
+
+    #[test]
+    fn wide_keys_are_cut_with_an_ellipsis_and_the_title_keeps_its_room() -> anyhow::Result<()> {
+        let keys: KeysConfig = [(
+            "doc_start".to_string(),
+            KeyBinding::Many(vec![
+                "ctrl+shift+alt+pageup".into(),
+                "ctrl+alt+shift+home".into(),
+                "ctrl+alt+f12".into(),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        let mut k = Keybindings::new(&Keymap::new(&keys)?);
+        type_text(&mut k, "doc_start");
+        let screen = Rect::new(0, 0, 45, 30);
+        let card = k.card(screen);
+        assert_eq!(card.width, 41);
+        let mut terminal = Terminal::new(TestBackend::new(45, 30))?;
+        terminal.draw(|frame| {
+            k.render(&Theme::default(), frame, frame.area());
+        })?;
+        let row = card_row(terminal.backend().buffer(), card, card.y + 4);
+        // Twelve cells of the title, two blanks, then the keys cut to fit.
+        assert_eq!(row, "    Go to start   Ctrl+Alt+F12, Ctrl…    ");
+        assert!(row.ends_with("…    "), "{row:?}");
+        assert_eq!(cut("abcdef", 4), "abc…");
+        assert_eq!(cut("abc", 4), "abc");
+        Ok(())
+    }
+
+    #[test]
     fn mono_reverses_the_selected_row() -> anyhow::Result<()> {
         let mut k = fresh();
         let mono = Theme::named("mono").expect("mono exists");
@@ -622,7 +733,7 @@ mod tests {
                 "{x}"
             );
         }
-        k.handle(Input::Action(Action::Move(Motion::Down)));
+        k.handle(Input::Action(Action::Move(Motion::Down)), SCREEN);
         let buffer = draw(&k, &mono)?;
         assert!(
             buffer[(card.x + 4, card.y + 5)]

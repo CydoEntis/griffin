@@ -227,8 +227,25 @@ fn arrows_move_the_selection_and_esc_or_a_click_outside_close() {
     // A click outside the card closes it too; one inside doesn't.
     open_card(&mut glyph);
     glyph.click(CARD_X + 10, FIRST_ROW + 2);
+    // Events are handled in order, so the card filtering what's typed after
+    // the click shows the click left it open.
+    filter(&mut glyph, "save as", "Save as…");
+    assert_eq!(glyph.text_col(HEADER_ROW, HEADER), Some(TEXT_X));
     glyph.click(2, ROWS - 3);
     glyph.wait_for_text_gone(HEADER, WAIT);
+}
+
+#[test]
+fn a_paste_goes_into_the_filter() {
+    let mut glyph = glyph_with("");
+    open_card(&mut glyph);
+    // A bracketed paste with a line break, which the filter leaves out.
+    glyph.write(b"\x1b[200~toggle tree\r\x1b[201~");
+    glyph.wait_for_screen("the paste filtered", WAIT, |screen| {
+        starts(screen, FIRST_ROW, "Toggle file tree")
+    });
+    assert!(row(&glyph, HEADER_ROW).contains("✦ keybindings  toggle tree"));
+    assert_eq!(row(&glyph, FIRST_ROW + 1).trim(), "");
 }
 
 #[test]

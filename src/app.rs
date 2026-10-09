@@ -1446,7 +1446,7 @@ impl App {
             return;
         }
         if let Some(card) = &mut self.keybindings {
-            match card.handle(input) {
+            match card.handle(input, self.screen) {
                 Some(keybindings::Step::Close) => self.keybindings = None,
                 None => {}
             }
