@@ -101,6 +101,7 @@ flipping above or shifting left near the screen edges), with no dimming
 | tab n | Alt+1..9 | toggle run panel | F4 |
 | definition / back | F12 / Alt+Left | next / prev diagnostic | F8 / Shift+F8 |
 | hover | Alt+K | complete | Alt+/ |
+| toggle comment | Ctrl+/ (or Ctrl+7) | | |
 
 **Config** at the OS config dir (`%APPDATA%\glyph\config.toml`,
 `~/.config/glyph/config.toml`; `GLYPH_CONFIG` overrides):
