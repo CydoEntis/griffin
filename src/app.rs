@@ -2091,6 +2091,7 @@ impl App {
                 Ok(text) => self.edit(|buffer| buffer.paste(&text)),
                 Err(err) => self.say(Tone::Err, format!("cannot paste: {err}")),
             },
+            Action::ToggleComment => self.toggle_comment(),
             Action::ToggleTree => self.toggle_tree(),
             Action::FocusTree => self.switch_focus(),
             Action::PrevTab => self.cycle_tab(-1),
@@ -4252,6 +4253,20 @@ impl App {
             self.follow_cursor();
         }
         self.save_doc(id, "");
+    }
+
+    /// Comments or uncomments the active buffer's lines with its language's marker.
+    fn toggle_comment(&mut self) {
+        let marker = self
+            .buffer()
+            .path
+            .as_deref()
+            .and_then(languages::for_path)
+            .and_then(|lang| lang.line_comment);
+        match marker {
+            Some(marker) => self.edit(|buffer| buffer.toggle_comment(marker)),
+            None => self.say(Tone::Warn, "no comments for this file"),
+        }
     }
 
     fn edit(&mut self, edit: impl FnOnce(&mut Buffer)) {

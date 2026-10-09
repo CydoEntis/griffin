@@ -32,5 +32,6 @@ pub static RUST: Language = Language {
         ("label", Role::Constant),
         ("escape", Role::Constant),
     ],
+    line_comment: Some("//"),
     compiled: OnceLock::new(),
 };

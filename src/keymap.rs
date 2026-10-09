@@ -30,6 +30,9 @@ pub enum Action {
     Copy,
     Cut,
     Paste,
+    /// Comments out the cursor's line or the selected lines, or uncomments them
+    /// when they're all commented already.
+    ToggleComment,
     /// Shows or hides the file tree.
     ToggleTree,
     /// Moves focus between the file tree and the editor.
@@ -220,6 +223,7 @@ impl Action {
         Action::Copy,
         Action::Cut,
         Action::Paste,
+        Action::ToggleComment,
         Action::ToggleTree,
         Action::FocusTree,
         Action::TreeNewFile,
@@ -368,6 +372,7 @@ impl Action {
             Action::Copy => "copy",
             Action::Cut => "cut",
             Action::Paste => "paste",
+            Action::ToggleComment => "toggle_comment",
             Action::ToggleTree => "toggle_tree",
             Action::FocusTree => "focus_tree",
             Action::TreeNewFile => "tree_new_file",
@@ -488,6 +493,7 @@ impl Action {
             Action::Copy => "Copy",
             Action::Cut => "Cut",
             Action::Paste => "Paste",
+            Action::ToggleComment => "Toggle comment",
             Action::ToggleTree => "Toggle file tree",
             Action::FocusTree => "Focus file tree",
             Action::TreeNewFile => "New file in tree",
@@ -627,6 +633,10 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Copy, "ctrl+c"),
     (Action::Cut, "ctrl+x"),
     (Action::Paste, "ctrl+v"),
+    // Unix terminals send Ctrl+/ as the same byte as Ctrl+7, which crossterm
+    // reads back as Ctrl+7, so both are bound.
+    (Action::ToggleComment, "ctrl+/"),
+    (Action::ToggleComment, "ctrl+7"),
     (Action::ToggleTree, "ctrl+b"),
     (Action::FocusTree, "ctrl+e"),
     (Action::TreeNewFile, "a"),
@@ -1166,6 +1176,21 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_slash_and_ctrl_7_toggle_comments_by_default() {
+        let map = Keymap::default();
+        for c in ['/', '7'] {
+            let event = ev(KeyCode::Char(c), KeyModifiers::CONTROL);
+            assert_eq!(map.resolve(&event), Input::Action(Action::ToggleComment));
+        }
+        assert_eq!(
+            Action::from_name("toggle_comment"),
+            Some(Action::ToggleComment)
+        );
+        assert_eq!(Action::ToggleComment.title(), "Toggle comment");
+        assert!(Action::commands().any(|a| a == Action::ToggleComment));
+    }
+
+    #[test]
     fn f5_runs_and_f4_toggles_the_run_panel_by_default() {
         let map = Keymap::default();
         assert_eq!(
@@ -1350,7 +1375,12 @@ mod tests {
 
     #[test]
     fn default_bindings_cover_every_action_once() {
-        let mut bound: Vec<Action> = DEFAULT_BINDINGS.iter().map(|&(a, _)| a).collect();
+        // Ctrl+7 is Ctrl+/ as Unix terminals send it, a second key on purpose.
+        let mut bound: Vec<Action> = DEFAULT_BINDINGS
+            .iter()
+            .filter(|&&binding| binding != (Action::ToggleComment, "ctrl+7"))
+            .map(|&(a, _)| a)
+            .collect();
         bound.extend_from_slice(UNBOUND);
         bound.sort_by_key(|a| a.name());
         let mut all = Action::ALL.to_vec();

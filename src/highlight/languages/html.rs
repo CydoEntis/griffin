@@ -12,5 +12,6 @@ pub static HTML: Language = Language {
     injections: tree_sitter_html::INJECTIONS_QUERY,
     embeds: &["css", "javascript"],
     roles: &[],
+    line_comment: None,
     compiled: OnceLock::new(),
 };

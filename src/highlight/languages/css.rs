@@ -13,5 +13,6 @@ pub static CSS: Language = Language {
     injections: "",
     embeds: &[],
     roles: &[],
+    line_comment: None,
     compiled: OnceLock::new(),
 };
