@@ -842,6 +842,16 @@ fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Whether `a` and `b` name one file. Canonical paths see through symlinked
+/// folders and Windows letter case; a path that doesn't exist can't be
+/// canonicalized, so the absolute spellings are compared instead.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => absolute(a) == absolute(b),
+    }
+}
+
 /// All editor state, owned by the main task.
 #[derive(Debug, Default)]
 pub struct App {
@@ -4065,7 +4075,7 @@ impl App {
     fn is_config(&self, path: &Path) -> bool {
         self.config_path
             .as_deref()
-            .is_some_and(|config| absolute(config) == absolute(path))
+            .is_some_and(|config| same_file(config, path))
     }
 
     /// The config file was just written: re-reads it from disk, as the next
@@ -5330,6 +5340,30 @@ mod tests {
             .expect("the running session is left alone");
         assert_eq!(running.session.id, 1);
         assert_eq!(running.launch, launch);
+    }
+
+    #[test]
+    fn same_file_sees_through_other_spellings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "").unwrap();
+        assert!(same_file(&config, &dir.path().join("sub/../config.toml")));
+        assert!(!same_file(&config, &dir.path().join("other.toml")));
+        // Missing files fall back to comparing absolute paths.
+        let missing = dir.path().join("missing.toml");
+        assert!(same_file(&missing, &missing));
+        #[cfg(windows)]
+        {
+            let upper = PathBuf::from(config.to_string_lossy().to_uppercase());
+            assert!(same_file(&config, &upper));
+        }
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+            assert!(same_file(&config, &link.join("config.toml")));
+        }
     }
 
     #[test]
