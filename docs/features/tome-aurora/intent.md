@@ -1,20 +1,20 @@
-# Intent: Glyph Aurora
+# Intent: Tome Aurora
 
 Type: change
 Author: Cody · Status: accepted
-Date: 2026-10-07 · Plan: [Phase 7](../../PLANNING.md#7--glyph-wears-the-aurora-look)
+Date: 2026-10-07 · Plan: [Phase 7](../../PLANNING.md#7--tome-wears-the-aurora-look)
 
 ## Problem
 
-Glyph v1 copies Hydra's look ([v1 spec, Design](../glyph-v1/spec.md#design): "Hydra's
-look: no boxes, `│` dividers, chrome on `sidebar_bg`"). Now that it's Glyph, not Griffin,
+Tome v1 copies Hydra's look ([v1 spec, Design](../tome-v1/spec.md#design): "Hydra's
+look: no boxes, `│` dividers, chrome on `sidebar_bg`"). Now that it's Tome, not Griffin,
 it should have its own look. The chosen direction is "2a Aurora · Float": "obsidian-dark
 chrome with a two-colour aurora light (accent → accent2), drawn with per-cell 24-bit colour
 ramps", with 2b's solid status bar ([design README](design/README.md#overview)).
 
 ## Proposed outcome
 
-Every screen Glyph draws matches the Aurora design: the main frame and the "cast" command
+Every screen Tome draws matches the Aurora design: the main frame and the "cast" command
 palette match the design cell for cell, and every other screen keeps its current behaviour
 restyled by the design's rules. Two signature themes (`aurora`, `moonlit`) ship alongside
 Hydra's ten, and those ten render in the Aurora style too.
@@ -50,4 +50,4 @@ Hydra's ten, and those ten render in the Aurora style too.
 
 ## Tickets
 
-#80–#95, in the order and with the blockers in [the plan](../../PLANNING.md#7--glyph-wears-the-aurora-look).
+#80–#95, in the order and with the blockers in [the plan](../../PLANNING.md#7--tome-wears-the-aurora-look).

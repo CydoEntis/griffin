@@ -1046,7 +1046,7 @@ mod tests {
     /// README §4.1 and §4.2 as (theme, role, colour) triples, read from the
     /// design doc itself so the test can't drift from it.
     fn readme_tables() -> Vec<(String, String, Color)> {
-        const README: &str = include_str!("../docs/features/glyph-aurora/design/README.md");
+        const README: &str = include_str!("../docs/features/tome-aurora/design/README.md");
         let start = README
             .find("### 4.1")
             .expect("README has the chrome roles table");

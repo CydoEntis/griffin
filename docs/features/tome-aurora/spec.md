@@ -1,4 +1,4 @@
-# Spec: Glyph Aurora
+# Spec: Tome Aurora
 
 Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-07
 
@@ -13,7 +13,7 @@ needs is Phase 11, not this spec.
   brand row vs header row, no dividers vs `│`). Decided: README wins (2026-10-07).
 - **Ctrl+Shift+P** (README §3) is taken by Windows Terminal (v1 spec Concerns). Decided:
   Ctrl+P only.
-- **Alt+Enter never reaches Glyph in Windows Terminal** (SPEC_V1_LAYOUT §14.1). Decided:
+- **Alt+Enter never reaches Tome in Windows Terminal** (SPEC_V1_LAYOUT §14.1). Decided:
   project replace all → Alt+A; R23 of the v1 spec changes.
 - **Selected rows stop using reverse video.** v1 draws selection with `Theme::highlight`
   (REVERSED) and PTY tests detect it with `reversed_text`. Glow rows are bg colours, so
@@ -36,13 +36,13 @@ needs is Phase 11, not this spec.
   `accent2`) and the v1 names as aliases (README §6). — unit tests in `src/theme.rs`.
 - **R2.** `mix` (per-channel lerp, rounded) and `grad` (piecewise `mix`, `t` clamped) from
   README §1 are available to renderers. — unit tests in `src/theme.rs`.
-- **R3.** Tree per README §2.1: 28 cols on `surface`, `✦ glyph` brand + project dir on row 1,
+- **R3.** Tree per README §2.1: 28 cols on `surface`, `✦ tome` brand + project dir on row 1,
   rows from 3, indent guides, active-file glow row, dirty `•`, no divider. — PTY `tests/tree.rs`.
 - **R4.** Tabs per README §2.2–2.3: row 0 blank, pills on row 1, aurora thread on row 2
   following the active pill, editor from row 3. Split per README §5.6: one `│` in `guide`,
   each split with its own pills and thread, unfocused thread at 35 %. — PTY `tests/tabs.rs`,
   `tests/split.rs`.
-- **R5.** Status bar per README §2.5: glyph block (gradient bg, `✦ glyph` in `acc_ink`),
+- **R5.** Status bar per README §2.5: brand block (gradient bg, `✦ tome` in `acc_ink`),
   path at x=20 (dir `muted`, name `strong`, ` •` `warn` when dirty), `Ln l, Col c` and
   diagnostic counts right-aligned; transient messages and the diagnostic under the cursor
   take the path slot until the next key. — PTY tests.
