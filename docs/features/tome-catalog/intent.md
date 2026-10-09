@@ -7,10 +7,10 @@ Date: 2026-10-08 · Plan: [Phase 9](../../PLANNING.md)
 ## Problem
 
 Completion, hover, diagnostics and go-to-definition only work for a language once its
-server is installed, and Glyph only says a server is missing (R29) or lists what it found
-(`glyph --health`, R35). Installing one means knowing the right command and leaving Glyph
+server is installed, and Tome only says a server is missing (R29) or lists what it found
+(`tome --health`, R35). Installing one means knowing the right command and leaving Tome
 to run it. Cody asked for "a catalog that you open and u can press buttons to add them and
-it runs the commands in glyphs terminal".
+it runs the commands in [Tome's] terminal".
 
 ## Proposed outcome
 
@@ -18,7 +18,7 @@ it runs the commands in glyphs terminal".
 server and whether it is installed. Choosing a missing one runs its official install
 command in the run panel, where the output streams; when it succeeds the server starts for
 the files already open. The same catalog later lists debug adapters
-([debugger](../glyph-debugger/intent.md)).
+([debugger](../tome-debugger/intent.md)).
 
 ## Affected users and systems
 
@@ -29,7 +29,7 @@ the files already open. The same catalog later lists debug adapters
 
 ## Constraints
 
-- Install commands run as child processes in the run panel; Glyph bundles no server
+- Install commands run as child processes in the run panel; Tome bundles no server
   ([ADR-0001](../../adr/0001-single-binary-core.md)).
 - Defaults use each server's documented install command; `[lsp.<lang>] install` overrides
   it (decided 2026-10-08).
@@ -44,7 +44,7 @@ the files already open. The same catalog later lists debug adapters
 - Updating or uninstalling servers.
 - Installing the toolchains themselves (npm, go, rustup, pip): the catalog says which one is
   missing.
-- Servers for languages Glyph doesn't highlight.
+- Servers for languages Tome doesn't highlight.
 
 ## Open questions
 

@@ -6,7 +6,7 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
 
 - **Overrides the design handoff**: SPEC_V1_LAYOUT §4 (9a) says "No launch splash" and
   draws a key-list screen instead. The handoff is kept as delivered. Recommend: record the
-  override here, in the note on v1 [R1](../glyph-v1/spec.md), and drop "empty-editor key
+  override here, in the note on v1 [R1](../tome-v1/spec.md), and drop "empty-editor key
   list" from the layout phase. Done in this change.
 - **Ctrl+Enter is unreliable**: many Unix terminals send Ctrl+Enter as plain Enter.
   Recommend: "open this folder" is the browser's first row, reached with Enter; Ctrl+Enter
@@ -29,10 +29,10 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
 
 ## Requirements
 
-- **S1.** `glyph` and `glyph <folder>` show the splash in the editor area; `glyph <file>`
+- **S1.** `tome` and `tome <folder>` show the splash in the editor area; `tome <file>`
   opens the file with no splash — checked by PTY tests.
 - **S2.** The splash fills the editor area with no card, as in
-  [design/splash.png](design/splash.png), centred as one block: the `glyph` wordmark in
+  [design/splash.png](design/splash.png), centred as one block: the `tome` wordmark in
   block letters 5 rows tall (half-block pixels), each column coloured along the theme's
   accent → accent2 ramp (`theme::grad`), on a soft glow (background cells blended toward
   `accent2`, fading with distance); a one-row rule in the same ramp, fading at both ends; a
@@ -41,7 +41,7 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
   — *New file* · `in <path>` · `n`, *New directory* · `in <path>` · `d`, *Open directory* ·
   `choose a folder` · `o` (label in `text`, hint in `muted`, key right-aligned in `muted`).
   The selected row lies on the dialog glow with `✦` in `accent2`, its label `strong` bold
-  and its key `accent` bold. With too little room the wordmark becomes `✦ glyph` on one
+  and its key `accent` bold. With too little room the wordmark becomes `✦ tome` on one
   row; with less, the hints go, then the path. In `mono` there's no glow, the wordmark and
   rule are plain and the selected row is reverse video — checked by PTY tests (text,
   positions, colours, mono) and unit tests of each size step.
@@ -51,7 +51,7 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
   splash has focus at launch; Ctrl+E moves focus to the tree as usual. While the splash is
   up the tree is hidden (Ctrl+B or Ctrl+E shows it), the status bar shows the project path
   where it would say `untitled` and, on the right, `↑↓ select  ⏎ choose  q quit` and
-  Glyph's version in place of the cursor position and language, and `q` quits as Ctrl+Q
+  Tome's version in place of the cursor position and language, and `q` quits as Ctrl+Q
   does — checked by PTY tests.
 - **S4.** *New file* opens the name prompt the tree's `a` uses, creates the file in the
   project folder, and opens it in a tab; Esc in the prompt returns to the splash; an
@@ -73,10 +73,10 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
   tests and unit tests of the listing.
 - **S7.** Opening a folder makes it the project: every tab closes, the run panel's command
   is stopped, the old folder's language servers are shut down; the tree, the brand label,
-  the Ctrl+P file list, project search, F5's `.glyph.toml` and newly started language
-  servers all use the new folder; Glyph then shows the tree and an empty untitled pane,
+  the Ctrl+P file list, project search, F5's `.tome.toml` and newly started language
+  servers all use the new folder; Tome then shows the tree and an empty untitled pane,
   with the tree focused (no splash; changed 2026-10-08 after Cody tried it, #124) — checked by PTY tests (tree and brand show the new folder, Ctrl+P
-  lists its files, F5 uses its `.glyph.toml`) and a fake-server test (old server gets
+  lists its files, F5 uses its `.tome.toml`) and a fake-server test (old server gets
   shutdown/exit, a file in the new folder starts a new one).
 - **S8.** `>open directory` (title "Open directory") in the cast palette opens the same
   browser at any time; it has no default key and can be bound in `[keys]` as
@@ -135,7 +135,7 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
 ## Verification
 
 Every requirement's PTY or unit test passes in `cargo test` on Windows and Ubuntu CI.
-Person check: at 160×45 in Windows Terminal, `glyph` in an empty folder shows the splash
+Person check: at 160×45 in Windows Terminal, `tome` in an empty folder shows the splash
 as the chosen mockup in `aurora` and `mono`; New file, New directory and Open directory
 each work by key and by click; `>open directory` switches a project with an unsaved tab
 through the card.

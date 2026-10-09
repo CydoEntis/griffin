@@ -6,9 +6,9 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
 
 - **A missing server is never retried.** `Lsp::server_for` remembers a server that failed
   to start as `Client::failed` in `by_root` and never tries again (`src/lsp/mod.rs:748-790`);
-  only `stop_root` clears it. An install must make Glyph forget the failure for that
+  only `stop_root` clears it. An install must make Tome forget the failure for that
   language, or the new server won't start until the project is reopened.
-- **PATH is read once, from Glyph's own environment** (`servers::program`,
+- **PATH is read once, from Tome's own environment** (`servers::program`,
   `src/lsp/servers.rs:95-118`). A server installed into a folder that isn't on that PATH
   (a fresh `~/go/bin`) can't be found until the terminal is restarted. The catalog says so
   instead of claiming success.
@@ -41,7 +41,7 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
   on `installed` or `running` rows. On `needs <tool>` rows and copy-only commands, Enter
   (and `c` on any row) copies the command and the status line says `copied: <command>` —
   checked by PTY tests with a fake install command.
-- **C5.** When the install exits 0 and the server is now on PATH, Glyph forgets the failed
+- **C5.** When the install exits 0 and the server is now on PATH, Tome forgets the failed
   start for that language in every root, starts the server for the open files of that
   language, and the status line says `<server> installed`. Exit 0 but still not on PATH:
   `installed, but <command> isn't on PATH; restart your terminal`. Non-zero exit: `install
@@ -59,7 +59,7 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
   Option<String>`.
 - **Interfaces**: `Action::LanguageServers`; `Lsp::forget_failed(lang)` removing failed
   clients for a language from `servers` and `by_root` so the next `sync` retries; the run
-  panel gains a way to start a one-off command that isn't a `.glyph.toml` entry and to
+  panel gains a way to start a one-off command that isn't a `.tome.toml` entry and to
   learn when that run exits.
 - **Reuses**: `servers::find` for PATH checks, `start_entry` / `RunEntry` for running,
   `Clipboard` for copy.
@@ -72,7 +72,7 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
 
 Every requirement's test passes in `cargo test` on Windows and Ubuntu CI. Person check: on
 Windows, with `pyright` uninstalled, open a `.py` file, install it from the catalog, and
-get completion without restarting Glyph.
+get completion without restarting Tome.
 
 ## Coverage
 

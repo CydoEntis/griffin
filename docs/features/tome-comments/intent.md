@@ -7,12 +7,12 @@ Date: 2026-10-08 · Plan: [Phase 14](../../PLANNING.md)
 ## Problem
 
 "ctrl + / doesnt comment or uncomment based on the state of the line thats a feature we
-need." Commenting code out in Glyph means typing the marker on every line by hand.
+need." Commenting code out in Tome means typing the marker on every line by hand.
 
 ## Proposed outcome
 
 Ctrl+/ comments the cursor's line, or every line the selection touches, and uncomments
-them if they're all commented already, in every language Glyph highlights.
+them if they're all commented already, in every language Tome highlights.
 
 ## Affected users and systems
 
