@@ -854,7 +854,40 @@ impl Keymap {
     /// Every key that runs `action` in its own scope, labelled as the cast
     /// palette labels them, in `key_label`'s order: the palette's pick first.
     pub fn key_labels(&self, action: Action) -> Vec<String> {
-        let table = match action.scope() {
+        let mut labels: Vec<String> = self
+            .scope_table(action.scope())
+            .iter()
+            .filter(|&(_, &bound)| bound == action)
+            .map(|(&key, _)| key_label(key))
+            .collect();
+        labels.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+        labels
+    }
+
+    /// Every key that runs `action` in its own scope, in `[keys]` notation and
+    /// in a stable order: what `[keys]` writes for it when one of its keys
+    /// moves to another command.
+    pub fn key_notations(&self, action: Action) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .scope_table(action.scope())
+            .iter()
+            .filter(|&(_, &bound)| bound == action)
+            .filter_map(|(&key, _)| notation(key))
+            .collect();
+        keys.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+        keys
+    }
+
+    /// The command `notation` runs among `scope`'s own bindings, if any. Only
+    /// that scope's table counts: the tree's `a` is no conflict for a command
+    /// that works anywhere, and the reverse.
+    pub fn action_for(&self, scope: Scope, notation: &str) -> Option<Action> {
+        let key = parse_key(notation).ok()?;
+        self.scope_table(scope).get(&key).copied()
+    }
+
+    fn scope_table(&self, scope: Scope) -> &HashMap<Key, Action> {
+        match scope {
             Scope::Global => &self.bindings,
             Scope::Tree => &self.tree,
             Scope::Find => &self.find,
@@ -863,14 +896,7 @@ impl Keymap {
             Scope::Catalog => &self.catalog,
             Scope::Splash => &self.splash,
             Scope::Debug => &self.debug,
-        };
-        let mut labels: Vec<String> = table
-            .iter()
-            .filter(|&(_, &bound)| bound == action)
-            .map(|(&key, _)| key_label(key))
-            .collect();
-        labels.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
-        labels
+        }
     }
 
     /// What `event` means outside the tree.
@@ -2218,5 +2244,44 @@ mod tests {
             key_notation(&ev(KeyCode::Char('\u{1}'), KeyModifiers::NONE)),
             None
         );
+    }
+
+    #[test]
+    fn a_key_is_only_taken_within_its_own_scope() {
+        let map = Keymap::default();
+        assert_eq!(map.action_for(Scope::Global, "alt+k"), Some(Action::Hover));
+        assert_eq!(map.action_for(Scope::Global, "ctrl+k"), None);
+        // The tree's `a` is no conflict for a command that works anywhere,
+        // and Ctrl+S is no conflict for the tree's own commands.
+        assert_eq!(map.action_for(Scope::Tree, "a"), Some(Action::TreeNewFile));
+        assert_eq!(map.action_for(Scope::Global, "a"), None);
+        assert_eq!(map.action_for(Scope::Tree, "ctrl+s"), None);
+        // Alt+A is the find bar's Replace All and project search's own.
+        assert_eq!(
+            map.action_for(Scope::Search, "alt+a"),
+            Some(Action::ProjectReplace)
+        );
+        assert_eq!(
+            map.action_for(Scope::Find, "alt+a"),
+            Some(Action::ReplaceAll)
+        );
+        assert_eq!(map.action_for(Scope::Global, "not a key"), None);
+    }
+
+    #[test]
+    fn key_notations_are_what_keys_would_write() -> Result<(), KeymapError> {
+        let map = Keymap::default();
+        assert_eq!(map.key_notations(Action::Save), ["ctrl+s"]);
+        assert_eq!(
+            map.key_notations(Action::ToggleComment),
+            ["ctrl+/", "ctrl+7"]
+        );
+        assert_eq!(map.key_notations(Action::Keybindings), Vec::<String>::new());
+        let map = Keymap::new(&keys(&[(
+            "hover",
+            KeyBinding::Many(vec!["ctrl+k".into(), "Alt+Shift+K".into()]),
+        )]))?;
+        assert_eq!(map.key_notations(Action::Hover), ["ctrl+k", "alt+shift+k"]);
+        Ok(())
     }
 }

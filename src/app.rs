@@ -124,6 +124,31 @@ enum Prompt {
     /// Opening another folder while tabs have unsaved changes, asked once about
     /// all of them.
     UnsavedSwitch,
+    /// Rebinding a command to a key another command in its scope already has.
+    MoveKey,
+}
+
+/// A key the keybindings card is about to move from one command to another,
+/// waiting for the move prompt's answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingMove {
+    /// The command being rebound.
+    action: Action,
+    /// The command that has the key now.
+    other: Action,
+    /// The key, in `[keys]` notation.
+    notation: String,
+}
+
+impl PendingMove {
+    /// The keys `other` keeps once the key has gone, in `[keys]` notation.
+    fn remaining(&self, keymap: &Keymap) -> Vec<String> {
+        keymap
+            .key_notations(self.other)
+            .into_iter()
+            .filter(|key| *key != self.notation)
+            .collect()
+    }
 }
 
 /// A project replace waiting for its prompt's answer.
@@ -263,6 +288,17 @@ const REPLACE: &[Choice] = &[
     Choice {
         key: 'c',
         label: "Cancel",
+    },
+];
+
+const MOVE_KEY: &[Choice] = &[
+    Choice {
+        key: 'y',
+        label: "Yes",
+    },
+    Choice {
+        key: 'n',
+        label: "No",
     },
 ];
 
@@ -930,6 +966,8 @@ pub struct App {
     pending_replace: Option<PendingReplace>,
     /// The entry the trash prompt will move once answered.
     pending_trash: Option<PathBuf>,
+    /// The key the move prompt will move once answered.
+    pending_move: Option<PendingMove>,
     /// The folder the unsaved-files prompt will open once its tabs are saved
     /// or discarded. Emptied when the switch is cancelled.
     pending_switch: Option<PathBuf>,
@@ -2300,6 +2338,33 @@ impl App {
                         "Open buffers are edited in place (undo with Ctrl+Z); other files are saved.",
                     ),
                     choices: REPLACE,
+                }
+            }
+            Prompt::MoveKey => {
+                let (question, explanation) = match &self.pending_move {
+                    Some(pending) => {
+                        let label = keymap::notation_label(&pending.notation);
+                        let title = pending.other.title();
+                        let left: Vec<String> = pending
+                            .remaining(&self.keymap)
+                            .iter()
+                            .map(|key| keymap::notation_label(key))
+                            .collect();
+                        (
+                            format!("{label} is used by {title} — move it here?"),
+                            if left.is_empty() {
+                                format!("{title} is left with no key.")
+                            } else {
+                                format!("{title} keeps {}.", left.join(", "))
+                            },
+                        )
+                    }
+                    None => (String::new(), String::new()),
+                };
+                Confirm {
+                    question: Cow::Owned(question),
+                    explanation: Cow::Owned(explanation),
+                    choices: MOVE_KEY,
                 }
             }
             Prompt::UnsavedSwitch => {
@@ -4016,6 +4081,9 @@ impl App {
                 }
             }
             (Prompt::UnsavedSwitch, _) => self.pending_switch = None,
+            (Prompt::MoveKey, Answer::Picked('y')) => self.move_key(),
+            // No or Esc: nothing is written, and the card is still there.
+            (Prompt::MoveKey, _) => self.pending_move = None,
             (Prompt::Trash, Answer::Picked('y')) => self.trash_pending(),
             (Prompt::Trash, _) => self.pending_trash = None,
             (Prompt::ProjectReplace, Answer::Picked('r')) => self.replace_in_project(),
@@ -4208,8 +4276,8 @@ impl App {
 
     /// The key pressed while the keybindings card waits for `action`'s new
     /// key: Esc (`input` is Cancel) gives up, a key the keymap can name
-    /// becomes `action`'s only key, and any other key says so and keeps
-    /// waiting.
+    /// becomes `action`'s only key (after asking, when another command in
+    /// `action`'s scope has it), and any other key says so and keeps waiting.
     fn capture_key(&mut self, action: Action, key: &KeyEvent, input: Input) {
         if input == Input::Action(Action::Cancel) {
             if let Some(card) = &mut self.keybindings {
@@ -4224,10 +4292,48 @@ impl App {
         if let Some(card) = &mut self.keybindings {
             card.stop_waiting();
         }
+        // Another command in the same scope with this key would lose it, so
+        // that is asked first; one in another scope keeps it unasked.
+        if let Some(other) = self
+            .keymap
+            .action_for(action.scope(), &notation)
+            .filter(|&other| other != action)
+        {
+            self.pending_move = Some(PendingMove {
+                action,
+                other,
+                notation,
+            });
+            self.ask(Prompt::MoveKey);
+            return;
+        }
         let label = keymap::notation_label(&notation);
         self.write_keys(
             &[(action, Some(vec![notation]))],
             format!("{} bound to {label}", action.name()),
+        );
+    }
+
+    /// Yes on the move prompt: the rebound command gets the key as its only
+    /// one, and the command that had it keeps its other keys, or `[]` when
+    /// none are left, so its defaults don't bring the key back.
+    fn move_key(&mut self) {
+        let Some(pending) = self.pending_move.take() else {
+            return;
+        };
+        let remaining = pending.remaining(&self.keymap);
+        let done = format!(
+            "{} moved from {} to {}",
+            keymap::notation_label(&pending.notation),
+            pending.other.name(),
+            pending.action.name()
+        );
+        self.write_keys(
+            &[
+                (pending.action, Some(vec![pending.notation])),
+                (pending.other, Some(remaining)),
+            ],
+            done,
         );
     }
 
@@ -5530,7 +5636,12 @@ mod tests {
     /// keybindings card open on `query`'s first row.
     fn app_on_card(dir: &Path, query: &str) -> App {
         let clipboard = FakeClipboard::default();
-        let mut app = app_with("", &clipboard).with_config_path(Some(dir.join("config.toml")));
+        let path = dir.join("config.toml");
+        let mut app = app_with("", &clipboard).with_config_path(Some(path.clone()));
+        // As startup would have read it; a broken file keeps the defaults.
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let _ = app.apply_config_text(&text);
+        }
         app.handle_action(Action::Keybindings);
         for c in query.chars() {
             app.handle_event(AppEvent::Input(Event::Key(key_event(&c.to_string()))));
@@ -5627,6 +5738,102 @@ mod tests {
         assert_eq!(app.keymap.key_labels(Action::Save), ["Ctrl+S"]);
         press(&mut app, &["esc"]);
         assert!(app.keybindings.is_none());
+    }
+
+    #[test]
+    fn a_key_another_command_has_moves_only_after_yes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let before = "[keys]\nhover = \"ctrl+k\"\n";
+        std::fs::write(&path, before).unwrap();
+        let mut app = app_on_card(dir.path(), "save");
+        press(&mut app, &["enter", "ctrl+k"]);
+        assert_eq!(app.prompt, Some(Prompt::MoveKey));
+        let card = app.confirm(Prompt::MoveKey);
+        assert_eq!(
+            card.question,
+            "Ctrl+K is used by Show hover — move it here?"
+        );
+        assert_eq!(card.explanation, "Show hover is left with no key.");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+
+        press(&mut app, &["y"]);
+        assert_eq!(app.prompt, None);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[keys]\nhover = []\nsave = \"ctrl+k\"\n"
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Ctrl+K moved from hover to save")
+        );
+        assert_eq!(app.keymap.key_labels(Action::Save), ["Ctrl+K"]);
+        assert!(app.keymap.key_labels(Action::Hover).is_empty());
+        assert_eq!(card_keys(&app, Action::Hover), Vec::<String>::new());
+        assert!(app.keybindings.is_some());
+    }
+
+    #[test]
+    fn the_command_a_key_moves_from_keeps_its_other_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[keys]\nhover = [\"ctrl+k\", \"alt+k\"]\n").unwrap();
+        let mut app = app_on_card(dir.path(), "save");
+        press(&mut app, &["enter", "ctrl+k"]);
+        assert_eq!(
+            app.confirm(Prompt::MoveKey).explanation,
+            "Show hover keeps Alt+K."
+        );
+        press(&mut app, &["enter"]);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[keys]\nhover = \"alt+k\"\nsave = \"ctrl+k\"\n"
+        );
+        assert_eq!(app.keymap.key_labels(Action::Hover), ["Alt+K"]);
+    }
+
+    #[test]
+    fn no_or_esc_on_the_move_prompt_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let before = "[keys]\nhover = \"ctrl+k\"\n";
+        std::fs::write(&path, before).unwrap();
+        let mut app = app_on_card(dir.path(), "save");
+        for answer in ["n", "esc"] {
+            press(&mut app, &["enter", "ctrl+k"]);
+            assert_eq!(app.prompt, Some(Prompt::MoveKey), "{answer}");
+            press(&mut app, &[answer]);
+            assert_eq!(app.prompt, None, "{answer}");
+            assert_eq!(app.pending_move, None, "{answer}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "{answer}");
+            assert_eq!(app.keymap.key_labels(Action::Hover), ["Ctrl+K"]);
+            assert_eq!(app.keymap.key_labels(Action::Save), ["Ctrl+S"]);
+            // The card is still open and no longer waiting.
+            assert_eq!(
+                app.keybindings.as_ref().and_then(Keybindings::waiting),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_used_in_another_scope_is_no_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // The tree's `a` (New file in tree) given to a command that works
+        // anywhere: no prompt, and the tree keeps its `a`.
+        let mut app = app_on_card(dir.path(), "close_tab");
+        press(&mut app, &["enter", "a"]);
+        assert_eq!(app.prompt, None);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("[keys]\nclose_tab = \"a\"\n")
+        );
+        assert_eq!(app.keymap.key_labels(Action::TreeNewFile), ["A"]);
+        // Rebinding a command to a key it already has is no conflict either.
+        press(&mut app, &["enter", "a"]);
+        assert_eq!(app.prompt, None);
     }
 
     #[test]
