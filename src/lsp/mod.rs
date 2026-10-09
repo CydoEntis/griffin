@@ -43,8 +43,12 @@ pub struct LspEvent {
 pub enum ServerEvent {
     /// A JSON-RPC message from the server.
     Message(Value),
-    /// The server's output closed and the process exited, with its code if any.
-    Exited(Option<i32>),
+    /// The server's output closed and the process exited, with its code if any
+    /// and the last lines it wrote to stderr, oldest first.
+    Exited {
+        code: Option<i32>,
+        stderr: Vec<String>,
+    },
 }
 
 /// Where the server following a buffer is, as the status line shows it.
@@ -613,6 +617,10 @@ pub struct Lsp {
     completion: Option<PendingCompletion>,
     /// The formatting request a save is waiting on.
     format: Option<PendingFormat>,
+    /// Why each language's server last failed after it was spawned, by language
+    /// id. Kept past forgetting the server, so the reason outlives a retry until
+    /// one starts.
+    failures: HashMap<String, String>,
 }
 
 impl Lsp {
@@ -741,6 +749,19 @@ impl Lsp {
         };
         let command = self.config.get(attached.lang)?.command.as_deref()?;
         Some((state, server_name(command)))
+    }
+
+    /// Why the server for `lang` last failed: its `initialize` error, the last
+    /// line it wrote to stderr before crashing, or its exit code. `None` when it
+    /// hasn't failed, or has started since.
+    pub fn failure(&self, lang: &str) -> Option<&str> {
+        self.failures.get(lang).map(String::as_str)
+    }
+
+    /// Drops the remembered reason `lang`'s server failed, for a retry that has
+    /// nothing to start yet: the next file opened tries it afresh.
+    pub fn clear_failure(&mut self, lang: &str) {
+        self.failures.remove(lang);
     }
 
     /// The server table for every language, as configured.
@@ -970,6 +991,7 @@ impl Lsp {
             client.handle(message);
             return vec![news];
         }
+        let before = client.state;
         let message = match event.event {
             ServerEvent::Message(message)
                 if message["method"] == "textDocument/publishDiagnostics"
@@ -978,8 +1000,20 @@ impl Lsp {
                 return self.diagnostics(event.server, message);
             }
             ServerEvent::Message(message) => client.handle(message),
-            ServerEvent::Exited(code) => client.exited(code),
+            ServerEvent::Exited { code, stderr } => client.exited(code, &stderr),
         };
+        match client.state {
+            client::State::Ready { .. } if !matches!(before, client::State::Ready { .. }) => {
+                self.failures.remove(&client.lang);
+            }
+            client::State::Failed if before != client::State::Failed => {
+                // No reason means Glyph stopped it: not a failure.
+                if let Some(reason) = &client.reason {
+                    self.failures.insert(client.lang.clone(), reason.clone());
+                }
+            }
+            _ => {}
+        }
         message.map(LspNews::Message).into_iter().collect()
     }
 
@@ -1175,6 +1209,16 @@ mod tests {
             path: Some(dir.join(name)),
             ..Buffer::empty()
         }
+    }
+
+    #[test]
+    fn clearing_a_failure_forgets_only_that_languages_reason() {
+        let mut lsp = Lsp::new(config("glyph-no-such-server"));
+        lsp.failures.insert("rust".into(), "exit code 3".into());
+        lsp.failures.insert("go".into(), "no gopls".into());
+        lsp.clear_failure("rust");
+        assert_eq!(lsp.failure("rust"), None);
+        assert_eq!(lsp.failure("go"), Some("no gopls"));
     }
 
     #[test]
@@ -1628,7 +1672,7 @@ mod tests {
             while let Ok(event) = self.events.try_recv() {
                 if let AppEvent::Lsp(LspEvent {
                     server: from,
-                    event: ServerEvent::Exited(code),
+                    event: ServerEvent::Exited { code, .. },
                 }) = event
                     && from == server
                 {
@@ -1637,6 +1681,118 @@ mod tests {
             }
             codes
         }
+    }
+
+    /// Spawns the fake server straight through the transport with `script`,
+    /// sends `initialize`, and waits for its exit report: (code, stderr lines),
+    /// with the connection.
+    async fn spawn_until_exit(script: Value) -> (Option<i32>, Vec<String>, transport::Connection) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("script.json");
+        std::fs::write(&path, script.to_string()).unwrap();
+        let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let args = ["--script".to_string(), path.display().to_string()];
+        let connection = transport::spawn(7, &fake_lsp(), &args, root.path(), tx).unwrap();
+        connection
+            .outgoing
+            .send(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
+            .unwrap();
+        let (code, stderr) = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match events.recv().await {
+                    Some(AppEvent::Lsp(LspEvent {
+                        server: 7,
+                        event: ServerEvent::Exited { code, stderr },
+                    })) => return (code, stderr),
+                    Some(_) => {}
+                    None => panic!("the app channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("the fake server to exit");
+        (code, stderr, connection)
+    }
+
+    #[tokio::test]
+    async fn spawn_keeps_the_last_lines_a_server_writes_to_stderr() {
+        let lines: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
+        let script = serde_json::json!({"stderr": {"initialize": lines}, "exit_on": "initialize"});
+        let (code, stderr, _) = spawn_until_exit(script).await;
+        assert_eq!(code, Some(3));
+        assert_eq!(stderr, lines[5..]);
+        assert_eq!(stderr.len(), transport::STDERR_LINES);
+    }
+
+    // Unix only: a Windows child inherits every inheritable handle, the
+    // server's stdout pipe included, so the exit itself would never be seen.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stderr_held_open_by_a_child_is_let_go_after_the_exit() {
+        // The child holds stderr for 20 s; the reading task must let go long
+        // before.
+        let script = serde_json::json!({"hold_stderr": 20000,
+            "stderr": {"initialize": ["giving up"]}, "exit_on": "initialize"});
+        let (code, stderr, mut connection) = spawn_until_exit(script).await;
+        assert_eq!(code, Some(3));
+        assert_eq!(stderr, ["giving up"]);
+        // The stderr task is the connection's last, so stopping the server
+        // reaches it too; by now it's been aborted rather than left reading.
+        assert_eq!(connection.tasks.len(), 3);
+        let reading = connection.tasks.pop().unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(5), reading).await;
+        assert!(
+            ended
+                .expect("the stderr task to end")
+                .is_err_and(|e| e.is_cancelled()),
+            "it ended by being aborted"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failure_reason_is_remembered_per_language_until_a_start_succeeds() {
+        let root = tempfile::tempdir().unwrap();
+        let crashed = |lsp: &Lsp| {
+            lsp.server_state(1)
+                .is_some_and(|(state, _)| state == ServerState::Crashed)
+        };
+
+        // Crashed, saying why on stderr.
+        let mut fake = Fake::new(Some(
+            r#"{"stderr": {"initialize": ["warming up", "tsserver not found", ""]},
+                "exit_on": "initialize"}"#,
+        ));
+        let a = rust_buffer(root.path(), "a.rs");
+        assert_eq!(fake.lsp.failure("rust"), None);
+        fake.run_until(root.path(), &[(1, &a)], crashed).await;
+        assert_eq!(fake.lsp.failure("rust"), Some("tsserver not found"));
+        assert_eq!(fake.lsp.failure("python"), None);
+
+        // Crashed in silence: its exit code.
+        let script = r#"{"exit_on": "initialize"}"#;
+        set_server(&mut fake, "rust", &fake_lsp(), Some(script));
+        assert!(fake.lsp.forget_failed("rust"));
+        // Forgetting a server to retry it keeps the reason until a start works.
+        assert_eq!(fake.lsp.failure("rust"), Some("tsserver not found"));
+        fake.run_until(root.path(), &[(1, &a)], crashed).await;
+        assert_eq!(fake.lsp.failure("rust"), Some("exit code 3"));
+
+        // Refused to initialize: its error's message.
+        let script = r#"{"errors": {"initialize": {"code": -32603, "message": "no tsserver"}}}"#;
+        set_server(&mut fake, "rust", &fake_lsp(), Some(script));
+        assert!(fake.lsp.forget_failed("rust"));
+        fake.run_until(root.path(), &[(1, &a)], crashed).await;
+        assert_eq!(fake.lsp.failure("rust"), Some("no tsserver"));
+
+        // Started: the reason is gone.
+        set_server(&mut fake, "rust", &fake_lsp(), None);
+        assert!(fake.lsp.forget_failed("rust"));
+        fake.run_until(root.path(), &[(1, &a)], opened(1)).await;
+        assert_eq!(fake.lsp.failure("rust"), None);
+
+        // Stopping it is no failure.
+        reaped(fake.lsp.stop_root(root.path())).await;
+        assert_eq!(fake.lsp.failure("rust"), None);
     }
 
     async fn reaped(handle: Option<JoinHandle<()>>) {

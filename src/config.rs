@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::keymap::Keymap;
+use crate::theme::{self, Theme};
+
 /// The user's `config.toml`. Sections Glyph doesn't know yet are ignored rather
 /// than rejected, so later tickets can add theirs without breaking old files.
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -160,6 +163,106 @@ fn describe(err: &toml::de::Error, text: &str) -> String {
     }
 }
 
+/// What a `config.toml` gives the editor, built from it whole. Startup and
+/// saving the file inside Glyph both come through here, so the two can't read
+/// the same file differently.
+#[derive(Debug, Default)]
+pub struct Settings {
+    pub keymap: Keymap,
+    pub editor: EditorConfig,
+    pub theme: Theme,
+    /// `[lsp.<lang>]` as written; `lsp::servers::with_defaults` fills the rest.
+    pub lsp: BTreeMap<String, LspServer>,
+    pub debug: BTreeMap<String, DebugAdapter>,
+}
+
+impl Settings {
+    /// Startup's reading: never fails. A malformed file means every default; a
+    /// bad `[keys]` costs only the keymap and a bad theme only the theme, each
+    /// with a message for the status line.
+    pub fn startup(loaded: Loaded) -> (Self, Option<String>) {
+        if let Some(err) = loaded.error {
+            return (Self::default(), Some(format!("config error: {err}")));
+        }
+        let config = loaded.config;
+        let (theme, theme_error) = theme::load(config.theme.as_deref(), &config.theme_overrides);
+        let (keymap, keys_error) = match Keymap::new(&config.keys) {
+            Ok(keymap) => (keymap, None),
+            Err(err) => (Keymap::default(), Some(format!("config error: {err}"))),
+        };
+        let errors: Vec<String> = keys_error.into_iter().chain(theme_error).collect();
+        let message = (!errors.is_empty()).then(|| errors.join(" · "));
+        let settings = Self {
+            keymap,
+            editor: config.editor,
+            theme,
+            lsp: config.lsp,
+            debug: config.debug,
+        };
+        (settings, message)
+    }
+
+    /// A saved file's reading: all or nothing, so a typo while editing never
+    /// swaps working settings for defaults. The error is the status line's
+    /// `config error: …`.
+    pub fn from_text(text: &str) -> Result<Self, String> {
+        let config = toml::from_str::<Config>(text)
+            .map_err(|err| format!("config error: {}", describe(&err, text)))?;
+        let keymap = Keymap::new(&config.keys).map_err(|err| err.to_string());
+        let theme = theme::resolve(config.theme.as_deref(), &config.theme_overrides);
+        match (keymap, theme) {
+            (Ok(keymap), Ok(theme)) => Ok(Self {
+                keymap,
+                editor: config.editor,
+                theme,
+                lsp: config.lsp,
+                debug: config.debug,
+            }),
+            (keymap, theme) => {
+                let errors: Vec<String> = keymap.err().into_iter().chain(theme.err()).collect();
+                Err(format!("config error: {}", errors.join(" · ")))
+            }
+        }
+    }
+}
+
+/// What `>settings` writes when there is no `config.toml` yet. Every line is
+/// commented out, so the new file changes nothing until the user says so, and
+/// each `[editor]` line shows the default it would keep.
+pub const TEMPLATE: &str = r#"# Glyph's settings. Remove the `#` in front of a line to change it.
+
+# One of aurora, moonlit, hydra, papercolor-dark, tango-dark, monokai,
+# tokyo-night, catppuccin-mocha, catppuccin-latte, gruvbox, nord, dracula, mono.
+# theme = "hydra"
+
+[editor]
+# tab_width = 4
+# insert_spaces = true
+# auto_pairs = true
+
+[keys]
+# action = "key" or ["key", "key"]
+# save = "ctrl+s"
+# go_to_file = ["ctrl+p", "alt+p"]
+"#;
+
+/// Writes `TEMPLATE` to `path`, making its folders first, unless a file is
+/// already there: `create_new` keeps a file that appeared meanwhile.
+pub fn create_template(path: &Path) -> std::io::Result<()> {
+    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(dir)?;
+    }
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => std::io::Write::write_all(&mut file, TEMPLATE.as_bytes()),
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
 /// The project's `.glyph.toml`, at the project root.
 pub const PROJECT_FILE: &str = ".glyph.toml";
 
@@ -236,6 +339,144 @@ pub fn parse_project(text: &str) -> LoadedProject {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    fn save_key(keymap: &Keymap) -> Option<String> {
+        keymap.key_label(crate::keymap::Action::Save)
+    }
+
+    #[test]
+    fn startup_reads_keys_editor_theme_and_tables() {
+        let text = "theme = \"nord\"\n[editor]\ntab_width = 2\n[keys]\nsave = \"f2\"\n\
+                    [lsp.rust]\ncommand = \"ra\"\n[debug.python]\nadapter = \"dbg\"\n";
+        let (settings, message) = Settings::startup(parse(text));
+        assert_eq!(message, None);
+        assert_eq!(settings.editor.tab_width, 2);
+        assert_eq!(settings.theme, Theme::named("nord").unwrap());
+        assert_eq!(save_key(&settings.keymap).as_deref(), Some("F2"));
+        assert_eq!(settings.lsp["rust"].command.as_deref(), Some("ra"));
+        assert_eq!(settings.debug["python"].adapter.as_deref(), Some("dbg"));
+    }
+
+    #[test]
+    fn startup_falls_back_to_defaults_on_a_malformed_file() {
+        let (settings, message) = Settings::startup(parse("[editor\ntab_width = 2\n"));
+        assert!(message.unwrap().starts_with("config error: line 1"));
+        assert_eq!(settings.editor, EditorConfig::default());
+        assert_eq!(settings.theme, Theme::default());
+        assert!(settings.lsp.is_empty());
+    }
+
+    #[test]
+    fn startup_drops_only_the_part_that_is_bad() {
+        let text = "theme = \"nord\"\n[editor]\ntab_width = 2\n[keys]\nnope = \"f2\"\n";
+        let (settings, message) = Settings::startup(parse(text));
+        assert_eq!(
+            message.as_deref(),
+            Some("config error: [keys]: unknown action \"nope\"")
+        );
+        assert_eq!(settings.theme, Theme::named("nord").unwrap());
+        assert_eq!(settings.editor.tab_width, 2);
+        assert_eq!(save_key(&settings.keymap).as_deref(), Some("Ctrl+S"));
+
+        let (settings, message) = Settings::startup(parse("theme = \"nope\"\n"));
+        assert_eq!(
+            message.as_deref(),
+            Some("theme: unknown theme \"nope\", using hydra")
+        );
+        assert_eq!(settings.theme, Theme::default());
+    }
+
+    #[test]
+    fn from_text_takes_a_good_file_whole() {
+        let settings = Settings::from_text("theme = \"nord\"\n[editor]\ntab_width = 2\n").unwrap();
+        assert_eq!(settings.editor.tab_width, 2);
+        assert_eq!(settings.theme, Theme::named("nord").unwrap());
+    }
+
+    #[test]
+    fn from_text_refuses_a_file_with_any_error() {
+        let err = Settings::from_text("[editor\n").unwrap_err();
+        assert!(err.starts_with("config error: line 1"), "{err}");
+        let err = Settings::from_text("[editor]\ntab_width = 2\n[keys]\nnope = \"f2\"\n");
+        assert_eq!(
+            err.unwrap_err(),
+            "config error: [keys]: unknown action \"nope\""
+        );
+        let err = Settings::from_text("theme = \"nope\"\n").unwrap_err();
+        assert_eq!(err, "config error: theme: unknown theme \"nope\"");
+    }
+
+    #[test]
+    fn template_parses_to_the_defaults() {
+        let loaded = parse(TEMPLATE);
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert_eq!(loaded.config.editor, EditorConfig::default());
+        assert_eq!(loaded.config.theme, None);
+        assert!(loaded.config.keys.is_empty());
+    }
+
+    #[test]
+    fn template_names_each_editor_option_with_its_default() {
+        // Uncommenting every line must change nothing: the values shown are
+        // the defaults, and the examples are valid.
+        let uncommented: String = TEMPLATE
+            .lines()
+            .filter_map(|line| line.strip_prefix("# "))
+            .filter(|line| line.contains(" = "))
+            .filter(|line| !line.starts_with("action"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        let sections = uncommented
+            .replace(
+                "tab_width",
+                "[editor]
+tab_width",
+            )
+            .replace(
+                "save =",
+                "[keys]
+save =",
+            );
+        let loaded = parse(&sections);
+        assert!(
+            loaded.error.is_none(),
+            "{:?}
+{sections}",
+            loaded.error
+        );
+        assert_eq!(loaded.config.editor, EditorConfig::default());
+        assert_eq!(loaded.config.theme.as_deref(), Some("hydra"));
+        assert!(crate::keymap::Keymap::new(&loaded.config.keys).is_ok());
+        for name in ["tab_width", "insert_spaces", "auto_pairs"] {
+            assert!(TEMPLATE.contains(&format!("# {name} = ")), "{name}");
+        }
+        for theme in crate::theme::NAMES {
+            assert!(TEMPLATE.contains(theme), "{theme}");
+        }
+    }
+
+    #[test]
+    fn create_template_makes_the_folders_and_keeps_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("glyph").join("nested").join("config.toml");
+        create_template(&path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), TEMPLATE);
+        fs::write(
+            &path,
+            "theme = \"nord\"
+",
+        )
+        .unwrap();
+        create_template(&path).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "theme = \"nord\"
+"
+        );
+    }
 
     #[test]
     fn empty_file_is_defaults() {

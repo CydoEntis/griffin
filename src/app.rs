@@ -47,6 +47,7 @@ use crate::ui::debug::{self as debug_panel, DebugPanel, DebugView, render_debug_
 use crate::ui::dirpicker::{Browsed, DirPicker};
 use crate::ui::find::{FindBar, Step};
 use crate::ui::hover::render_hover;
+use crate::ui::keybindings::{self, Keybindings};
 use crate::ui::nofile;
 use crate::ui::picker::{self, Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
@@ -842,6 +843,16 @@ fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Whether `a` and `b` name one file. Canonical paths see through symlinked
+/// folders and Windows letter case; a path that doesn't exist can't be
+/// canonicalized, so the absolute spellings are compared instead.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => absolute(a) == absolute(b),
+    }
+}
+
 /// All editor state, owned by the main task.
 #[derive(Debug, Default)]
 pub struct App {
@@ -887,6 +898,8 @@ pub struct App {
     folders: Option<DirPicker>,
     /// The language server catalog, while it's open; it takes every key.
     catalog: Option<Catalog>,
+    /// The keybindings card, while it's open; it takes every key.
+    keybindings: Option<Keybindings>,
     /// The latest run, whose output the run panel shows.
     run: Option<RunView>,
     /// The latest run's entry, for Ctrl+F5 to start again.
@@ -970,6 +983,9 @@ pub struct App {
     debug_build: Option<PendingDebug>,
     /// `config.toml`'s `[debug.<lang>]` tables.
     debug_adapters: BTreeMap<String, DebugAdapter>,
+    /// Where `config.toml` lives, for `>settings`; `None` when the OS has no
+    /// config folder and `GLYPH_CONFIG` isn't set.
+    config_path: Option<PathBuf>,
     /// How many debug sessions have started, numbering them so an old
     /// adapter's last words are dropped.
     debug_sessions: u64,
@@ -1033,6 +1049,12 @@ impl App {
     /// Debugs with the adapters `[debug.<lang>]` names in place of the defaults.
     pub fn with_debug_adapters(mut self, adapters: BTreeMap<String, DebugAdapter>) -> Self {
         self.debug_adapters = adapters;
+        self
+    }
+
+    /// Where `>settings` finds `config.toml`.
+    pub fn with_config_path(mut self, path: Option<PathBuf>) -> Self {
+        self.config_path = path;
         self
     }
 
@@ -1154,6 +1176,10 @@ impl App {
                 if self.catalog.is_some() {
                     return;
                 }
+                if let Some(card) = &mut self.keybindings {
+                    card.paste(&text);
+                    return;
+                }
                 if let Some(picker) = &mut self.picker {
                     if let Some(picked) = picker.paste(&text) {
                         self.finish_picker(picked);
@@ -1227,6 +1253,18 @@ impl App {
                 });
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left) && outside {
                     self.catalog = None;
+                }
+            }
+            // The keybindings card closes on a click outside it, as the catalog
+            // does.
+            AppEvent::Input(Event::Mouse(mouse)) if self.keybindings.is_some() => {
+                let outside = self.keybindings.as_ref().is_some_and(|card| {
+                    !card
+                        .card(self.screen)
+                        .contains(Position::new(mouse.column, mouse.row))
+                });
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) && outside {
+                    self.keybindings = None;
                 }
             }
             // The cast palette closes on a click outside it, as a dialog does.
@@ -1369,6 +1407,9 @@ impl App {
             Scope::Folders
         } else if self.catalog.is_some() && self.prompt.is_none() {
             Scope::Catalog
+        } else if self.keybindings.is_some() && self.prompt.is_none() {
+            // Its query is typed, so letters are text, whatever has focus.
+            Scope::Global
         } else if self.project_search.is_some() && self.prompt.is_none() {
             Scope::Search
         } else if self.find.is_some() && self.prompt.is_none() {
@@ -1420,6 +1461,13 @@ impl App {
         if let Some(catalog) = &mut self.catalog {
             if let Some(step) = catalog.handle(input) {
                 self.catalog_step(step);
+            }
+            return;
+        }
+        if let Some(card) = &mut self.keybindings {
+            match card.handle(input, self.screen) {
+                Some(keybindings::Step::Close) => self.keybindings = None,
+                None => {}
             }
             return;
         }
@@ -1636,7 +1684,8 @@ impl App {
             | Action::StopRun
             | Action::RestartRun
             | Action::OpenDirectory
-            | Action::LanguageServers => {
+            | Action::LanguageServers
+            | Action::Settings => {
                 self.handle_action(action);
             }
             _ => {}
@@ -1908,7 +1957,8 @@ impl App {
             | Action::DebugStart
             | Action::DebugStop
             | Action::OpenDirectory
-            | Action::LanguageServers => self.handle_action(action),
+            | Action::LanguageServers
+            | Action::Settings => self.handle_action(action),
             _ => {}
         }
     }
@@ -1950,10 +2000,12 @@ impl App {
                 }
                 // What makes sense with nothing open: quitting, the tree, going
                 // to a file or a search hit (which replaces the splash or the
-                // key list), runs, opening another folder.
+                // key list), runs, opening another folder, the cards.
                 Action::Quit
                 | Action::OpenDirectory
                 | Action::LanguageServers
+                | Action::Settings
+                | Action::Keybindings
                 | Action::ToggleTree
                 | Action::FocusTree
                 | Action::CycleFocus
@@ -2093,6 +2145,8 @@ impl App {
             Action::Complete => self.request_completion(),
             Action::OpenDirectory => self.open_folders(),
             Action::LanguageServers => self.open_catalog(),
+            Action::Settings => self.open_settings(),
+            Action::Keybindings => self.keybindings = Some(Keybindings::new(&self.keymap)),
             // Bound only in tree, find bar, folder browser, catalog or splash scope,
             // so they never reach the editor.
             Action::TreeNewFile
@@ -2526,9 +2580,32 @@ impl App {
     /// server installed outside Glyph shows once the catalog is opened again.
     fn open_catalog(&mut self) {
         let lsp = &self.lsp;
-        let catalog =
-            with_lookup(|lookup| Catalog::new(lsp.config(), |lang| lsp.is_running(lang), lookup));
+        let catalog = with_lookup(|lookup| {
+            Catalog::new(
+                lsp.config(),
+                |lang| lsp.is_running(lang),
+                |lang| lsp.failure(lang).map(str::to_owned),
+                lookup,
+            )
+        });
         self.catalog = Some(catalog);
+    }
+
+    /// `>settings`: `config.toml` in a tab, written from the template first when
+    /// there is none, so the user sees every option rather than an empty file.
+    fn open_settings(&mut self) {
+        let Some(path) = self.config_path.clone() else {
+            self.say(Tone::Err, "no config folder");
+            return;
+        };
+        if let Err(err) = config::create_template(&path) {
+            self.say(
+                Tone::Err,
+                format!("cannot create {}: {err}", path.display()),
+            );
+            return;
+        }
+        self.open(&path);
     }
 
     /// Follows what a key did in the catalog. It stays open under a message.
@@ -2543,6 +2620,34 @@ impl App {
                 self.say(Tone::Warn, format!("no install command for {name}"));
             }
             catalog::Step::Install(install) => self.start_install(install),
+            catalog::Step::Retry { name, langs } => {
+                // Forgotten, the failed servers are started afresh by the
+                // `sync_lsp` after this event, as after an install; whether it
+                // works this time comes to the status line. Every language is
+                // forgotten, so no short-circuiting `any`.
+                self.catalog = None;
+                let mut forgot = false;
+                for lang in langs {
+                    forgot |= self.lsp.forget_failed(lang);
+                }
+                let open = self.tabs.docs.iter().any(|doc| {
+                    doc.buffer
+                        .path
+                        .as_deref()
+                        .and_then(crate::lsp::language_for)
+                        .is_some_and(|lang| langs.contains(&lang))
+                });
+                if forgot && open {
+                    self.say(Tone::Ok, format!("retrying {name}"));
+                } else {
+                    // Nothing starts until a file of the language is opened, so
+                    // the row shouldn't go on calling it failed meanwhile.
+                    for lang in langs {
+                        self.lsp.clear_failure(lang);
+                    }
+                    self.say(Tone::Ok, format!("{name} will start when you open a file"));
+                }
+            }
         }
     }
 
@@ -4015,12 +4120,62 @@ impl App {
             Ok(()) => {
                 // Best effort, as in `delete_backup`.
                 let _ = self.backups.delete(doc.buffer.path.as_deref(), id);
+                let path = doc.buffer.path.clone();
                 self.say(Tone::Ok, format!("saved {name}{note}"));
+                if let Some(path) = path
+                    && self.is_config(&path)
+                {
+                    self.apply_saved_config(&path);
+                }
                 true
             }
             Err(err) => {
                 self.say(Tone::Err, format!("cannot save {name}: {err}"));
                 false
+            }
+        }
+    }
+
+    /// Whether `path` is the `config.toml` this Glyph reads, however it was
+    /// spelled when opened.
+    fn is_config(&self, path: &Path) -> bool {
+        self.config_path
+            .as_deref()
+            .is_some_and(|config| same_file(config, path))
+    }
+
+    /// The config file was just written: re-reads it from disk, as the next
+    /// startup would, and applies it.
+    fn apply_saved_config(&mut self, path: &Path) {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                // The outcome is already on the status line either way.
+                let _ = self.apply_config_text(&text);
+            }
+            Err(err) => self.say(
+                Tone::Err,
+                format!("config error: cannot read {}: {err}", path.display()),
+            ),
+        }
+    }
+
+    /// Replaces the keymap, `[editor]` and theme with those `text` (a whole
+    /// `config.toml`) describes, and says `settings applied`. A file that fails
+    /// to parse, or names a bad key or theme, changes nothing: the settings in
+    /// use stay and the status line shows `config error: …`, which is also the
+    /// `Err`.
+    pub fn apply_config_text(&mut self, text: &str) -> Result<(), String> {
+        match config::Settings::from_text(text) {
+            Ok(settings) => {
+                self.keymap = settings.keymap;
+                self.editor = settings.editor;
+                self.theme = settings.theme;
+                self.say(Tone::Ok, "settings applied");
+                Ok(())
+            }
+            Err(err) => {
+                self.say(Tone::Err, err.clone());
+                Err(err)
             }
         }
     }
@@ -4179,6 +4334,7 @@ impl App {
             || self.picker.is_some()
             || self.folders.is_some()
             || self.catalog.is_some()
+            || self.keybindings.is_some()
             || self.project_search.is_some()
             || self.find.is_some()
     }
@@ -4500,6 +4656,10 @@ impl App {
         // Nothing is typed into the catalog, so it shows no cursor.
         if let Some(catalog) = &self.catalog {
             catalog.render(theme, frame, frame.area());
+        }
+        if let Some(card) = &self.keybindings {
+            let at = card.render(theme, frame, frame.area());
+            frame.set_cursor_position(at);
         }
         if let Some(panel) = &self.project_search {
             let at = panel.render(theme, frame, frame.area());
@@ -5153,6 +5313,111 @@ mod tests {
         assert!(app.catalog.is_some());
         press(&mut app, &["esc"]);
         assert!(app.catalog.is_none());
+    }
+
+    #[test]
+    fn settings_with_no_config_folder_says_so() {
+        let clipboard = FakeClipboard::default();
+        let mut app = app_with("text", &clipboard).with_config_path(None);
+        app.handle_action(Action::Settings);
+        assert_eq!(app.message.as_deref(), Some("no config folder"));
+        assert_eq!(app.message_tone, Tone::Err);
+        assert_eq!(app.tabs.docs.len(), 1);
+    }
+
+    #[test]
+    fn settings_creates_the_template_and_opens_it_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("glyph").join("config.toml");
+        let clipboard = FakeClipboard::default();
+        let mut app = app_with("text", &clipboard).with_config_path(Some(path.clone()));
+        app.handle_action(Action::Settings);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), config::TEMPLATE);
+        assert_eq!(app.buffer().path.as_deref(), Some(path.as_path()));
+        let tabs = app.tabs.docs.len();
+        app.handle_action(Action::NextTab);
+        app.handle_action(Action::Settings);
+        assert_eq!(app.tabs.docs.len(), tabs);
+        assert_eq!(app.buffer().path.as_deref(), Some(path.as_path()));
+    }
+
+    /// An app on `name` in a temp folder holding `text`, with that folder's
+    /// `config.toml` as its config file.
+    fn app_on_file(dir: &Path, name: &str, text: &str) -> App {
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        let clipboard = FakeClipboard::default();
+        let mut app = app_with("", &clipboard).with_config_path(Some(dir.join("config.toml")));
+        app.open(&path);
+        app
+    }
+
+    #[test]
+    fn saving_the_config_file_applies_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_on_file(dir.path(), "config.toml", "theme = \"nord\"\n");
+        press(&mut app, &["ctrl+end"]);
+        app.edit(|b| b.paste("[editor]\ntab_width = 2\n[keys]\nsave = \"f2\"\n"));
+        assert!(app.save());
+        assert_eq!(app.message.as_deref(), Some("settings applied"));
+        assert_eq!(app.message_tone, Tone::Ok);
+        assert_eq!(app.editor.tab_width, 2);
+        assert_eq!(app.theme, Theme::named("nord").unwrap());
+        assert_eq!(app.keymap.key_label(Action::Save).as_deref(), Some("F2"));
+    }
+
+    #[test]
+    fn a_bad_config_keeps_the_settings_in_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_on_file(dir.path(), "config.toml", "");
+        for bad in ["[editor\n", "[keys]\nnope = \"f2\"\n", "theme = \"nope\"\n"] {
+            app.apply_config_text("theme = \"nord\"\n[editor]\ntab_width = 3\n")
+                .unwrap();
+            press(&mut app, &["ctrl+a"]);
+            app.edit(|b| b.paste(bad));
+            assert!(app.save());
+            let message = app.message.clone().unwrap_or_default();
+            assert!(message.starts_with("config error: "), "{bad:?}: {message}");
+            assert_eq!(app.message_tone, Tone::Err);
+            assert_eq!(app.editor.tab_width, 3, "{bad:?}");
+            assert_eq!(app.theme, Theme::named("nord").unwrap(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn same_file_sees_through_other_spellings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "").unwrap();
+        assert!(same_file(&config, &dir.path().join("sub/../config.toml")));
+        assert!(!same_file(&config, &dir.path().join("other.toml")));
+        // Missing files fall back to comparing absolute paths.
+        let missing = dir.path().join("missing.toml");
+        assert!(same_file(&missing, &missing));
+        #[cfg(windows)]
+        {
+            let upper = PathBuf::from(config.to_string_lossy().to_uppercase());
+            assert!(same_file(&config, &upper));
+        }
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+            assert!(same_file(&config, &link.join("config.toml")));
+        }
+    }
+
+    #[test]
+    fn saving_any_other_file_applies_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_on_file(dir.path(), "other.toml", "[editor]\ntab_width = 2\n");
+        press(&mut app, &["end", "x"]);
+        assert!(app.save());
+        let message = app.message.clone().unwrap_or_default();
+        assert!(message.starts_with("saved "), "{message}");
+        assert_eq!(app.editor, EditorConfig::default());
+        assert_eq!(app.theme, Theme::default());
     }
 
     #[test]

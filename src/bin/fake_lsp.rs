@@ -21,6 +21,13 @@
 //!   - `silent`: methods whose requests are never answered, as a hung server's.
 //!   - `errors`: the JSON-RPC error object to answer each method with instead
 //!     of a result.
+//!   - `stderr`: lines to write to stderr on receiving each method, before
+//!     anything else it does (an `exit_on` crash included), as a failing server
+//!     says why.
+//!   - `hold_stderr`: milliseconds a child it starts at once keeps its stderr
+//!     open after it, as a wrapper script's or a forking server's child would.
+//!     The child is this program run with `--hold <ms>`; it touches nothing else.
+//!     Unix only in effect: on Windows the child inherits the stdout pipe too.
 //!
 //! `--log <path>` and `--script <path>` arguments stand in for the two variables,
 //! for tests that start it through a server config rather than a child of their
@@ -39,11 +46,27 @@ use serde_json::{Value, json};
 const CRASH_CODE: u8 = 3;
 
 fn main() -> ExitCode {
+    if let Some(ms) = arg("--hold").and_then(|ms| ms.to_str()?.parse::<u64>().ok()) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        return ExitCode::SUCCESS;
+    }
     let script = arg("--script")
         .or_else(|| env::var_os("FAKE_LSP_SCRIPT"))
         .and_then(|path| fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .unwrap_or_else(|| json!({}));
+    if let Some(ms) = script["hold_stderr"].as_u64()
+        && let Ok(me) = env::current_exe()
+    {
+        // Only stderr is shared: a held stdout would keep the client from ever
+        // seeing this server exit.
+        let _ = std::process::Command::new(me)
+            .args(["--hold", &ms.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
+            .spawn();
+    }
     let mut log = arg("--log")
         .or_else(|| env::var_os("FAKE_LSP_LOG"))
         .and_then(|path| OpenOptions::new().create(true).append(true).open(path).ok());
@@ -58,6 +81,13 @@ fn main() -> ExitCode {
             let _ = log.flush();
         }
         let method = message["method"].as_str().unwrap_or_default();
+        if let Some(lines) = script["stderr"][method].as_array() {
+            let mut stderr = io::stderr().lock();
+            for line in lines {
+                let _ = writeln!(stderr, "{}", line.as_str().unwrap_or_default());
+            }
+            let _ = stderr.flush();
+        }
         if !method.is_empty() && script["exit_on"].as_str() == Some(method) {
             return ExitCode::from(CRASH_CODE);
         }
