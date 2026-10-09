@@ -1,4 +1,5 @@
-//! `>settings`: config.toml in a tab, made from a template when missing.
+//! `>settings`: config.toml in a tab, made from a template when missing, and
+//! applied when saved there.
 
 mod harness;
 
@@ -8,6 +9,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use harness::Glyph;
+use tempfile::TempDir;
 
 const START: Duration = Duration::from_secs(10);
 const WAIT: Duration = Duration::from_secs(10);
@@ -83,4 +85,75 @@ fn settings_opens_an_existing_config_and_switches_to_its_tab() {
         fs::read_to_string(&config).expect("read config"),
         "# mine\ntheme = \"hydra\"\n"
     );
+}
+
+/// Glyph on `a.txt` with a config file holding `text`, opened in a tab
+/// through `>settings`. The folders are returned to outlive the test.
+fn editing_config(text: &str) -> (TempDir, TempDir, Glyph) {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create config home");
+    let config = home.path().join("config.toml");
+    fs::write(&config, text).expect("write config");
+    let mut glyph = open_with_config(project.path(), &config);
+    run_settings(&mut glyph);
+    glyph.wait_for_text("[editor]", WAIT);
+    (project, home, glyph)
+}
+
+/// Back on a.txt, Tab at its start and Ctrl+S: what the Tab inserted.
+fn tab_in_a(glyph: &mut Glyph, project: &Path) -> String {
+    glyph.send_keys("alt+,");
+    glyph.wait_for_text_gone("[editor]", WAIT);
+    glyph.send_keys("ctrl+home");
+    glyph.send_keys("tab");
+    glyph.send_keys("ctrl+s");
+    glyph.wait_for_text("saved a.txt", WAIT);
+    let text = fs::read_to_string(project.join("a.txt")).expect("read a.txt");
+    text.strip_suffix("alpha\n")
+        .expect("the tab went before alpha")
+        .to_string()
+}
+
+#[test]
+fn saving_the_config_applies_tab_width_at_once() {
+    let (project, _home, mut glyph) = editing_config("[editor]\ntab_width = 4\n");
+    // Ctrl+End lands below the last line; the 4 ends the line above.
+    glyph.send_keys("ctrl+end");
+    glyph.send_keys("up");
+    glyph.send_keys("end");
+    glyph.send_keys("backspace");
+    glyph.type_text("2");
+    glyph.wait_for_text("tab_width = 2", WAIT);
+    glyph.send_keys("ctrl+s");
+    glyph.wait_for_text("settings applied", WAIT);
+    assert_eq!(tab_in_a(&mut glyph, project.path()), "  ");
+}
+
+#[test]
+fn a_config_that_fails_to_parse_keeps_the_settings_in_use() {
+    let (project, _home, mut glyph) = editing_config("[editor]\ntab_width = 2\n");
+    glyph.send_keys("ctrl+end");
+    glyph.type_text("= =");
+    glyph.wait_for_text("= =", WAIT);
+    glyph.send_keys("ctrl+s");
+    glyph.wait_for_text("config error: line 3", WAIT);
+    assert_eq!(tab_in_a(&mut glyph, project.path()), "  ");
+}
+
+#[test]
+fn a_config_naming_a_bad_theme_keeps_the_settings_in_use() {
+    let (project, _home, mut glyph) = editing_config("theme = \"nord\"\n[editor]\ntab_width = 2\n");
+    // Select `nord`, nine cells in, and type over it.
+    glyph.send_keys("ctrl+home");
+    for _ in 0..9 {
+        glyph.send_keys("right");
+    }
+    for _ in 0..4 {
+        glyph.send_keys("shift+right");
+    }
+    glyph.type_text("nope");
+    glyph.wait_for_text("theme = \"nope\"", WAIT);
+    glyph.send_keys("ctrl+s");
+    glyph.wait_for_text("config error: theme: unknown theme", WAIT);
+    assert_eq!(tab_in_a(&mut glyph, project.path()), "  ");
 }
