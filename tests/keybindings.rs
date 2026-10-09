@@ -396,6 +396,80 @@ fn esc_while_waiting_cancels_and_writes_nothing() {
     assert!(!config.exists());
 }
 
+/// What the move prompt asks when Ctrl+K, Hover's key, is pressed for Save.
+const MOVE_CTRL_K: &str = "Ctrl+K is used by Show hover — move it here?";
+
+/// Glyph on a.txt with Hover on Ctrl+K, the card filtered to Save, Enter and
+/// Ctrl+K pressed, and the move prompt showing.
+fn ask_to_move_ctrl_k(project: &Path, config: &Path) -> Glyph {
+    fs::write(config, "[keys]\nhover = \"ctrl+k\"\n").expect("write config");
+    let mut glyph = glyph_on_file(project, config);
+    open_card(&mut glyph);
+    filter(&mut glyph, "save", "Save");
+    glyph.send_keys("enter");
+    glyph.wait_for_text(WAITING, WAIT);
+    glyph.send_keys("ctrl+k");
+    glyph.wait_for_text(MOVE_CTRL_K, WAIT);
+    glyph.wait_for_text("Show hover is left with no key.", WAIT);
+    glyph
+}
+
+#[test]
+fn yes_moves_a_key_another_command_has() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create config home");
+    let config = home.path().join("config.toml");
+    let mut glyph = ask_to_move_ctrl_k(project.path(), &config);
+    // Nothing is written until it's answered.
+    assert_eq!(read(&config), "[keys]\nhover = \"ctrl+k\"\n");
+
+    glyph.type_text("y");
+    glyph.wait_for_text("Ctrl+K moved from hover to save", WAIT);
+    glyph.wait_for_text_gone(MOVE_CTRL_K, WAIT);
+    assert_eq!(read(&config), "[keys]\nhover = []\nsave = \"ctrl+k\"\n");
+    // Save's row shows its new key; Hover's has none.
+    glyph.wait_for_screen("Save shows Ctrl+K", WAIT, |screen| {
+        screen[usize::from(FIRST_ROW)]
+            .trim_end()
+            .ends_with("Ctrl+K")
+    });
+    erase(&mut glyph, 4);
+    filter(&mut glyph, "hover", "Show hover");
+    assert_eq!(glyph.text_col(FIRST_ROW, "—"), Some(keys_x("—")));
+
+    // Ctrl+K saves now.
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(HEADER, WAIT);
+    glyph.type_text("x");
+    glyph.wait_for_text("xalpha", WAIT);
+    glyph.send_keys("ctrl+k");
+    let file = project.path().join("a.txt");
+    glyph.wait_for_files("a.txt saved by Ctrl+K", WAIT, || read(&file) == "xalpha\n");
+}
+
+#[test]
+fn no_or_esc_on_the_move_prompt_writes_nothing() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create config home");
+    let config = home.path().join("config.toml");
+    let mut glyph = ask_to_move_ctrl_k(project.path(), &config);
+    glyph.type_text("n");
+    glyph.wait_for_text_gone(MOVE_CTRL_K, WAIT);
+    // Back on the card, Save's row as it was.
+    assert_eq!(glyph.text_col(HEADER_ROW, HEADER), Some(TEXT_X));
+    assert_eq!(glyph.text_col(FIRST_ROW, "Ctrl+S"), Some(keys_x("Ctrl+S")));
+    assert_eq!(read(&config), "[keys]\nhover = \"ctrl+k\"\n");
+
+    glyph.send_keys("enter");
+    glyph.wait_for_text(WAITING, WAIT);
+    glyph.send_keys("ctrl+k");
+    glyph.wait_for_text(MOVE_CTRL_K, WAIT);
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(MOVE_CTRL_K, WAIT);
+    assert_eq!(glyph.text_col(HEADER_ROW, HEADER), Some(TEXT_X));
+    assert_eq!(read(&config), "[keys]\nhover = \"ctrl+k\"\n");
+}
+
 #[test]
 fn mono_reverses_the_selected_row() {
     let mut glyph = glyph_with("theme = \"mono\"\n");
