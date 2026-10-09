@@ -52,6 +52,9 @@ pub struct Language {
     /// Capture names this language maps to a role differently from the default
     /// (the capture's first dotted segment read as a role name).
     pub roles: &'static [(&'static str, Role)],
+    /// What Ctrl+/ puts before a line to comment it out, followed by a space.
+    /// `None` where the language has no line comment.
+    pub line_comment: Option<&'static str>,
     pub(super) compiled: OnceLock<Option<Compiled>>,
 }
 
@@ -256,6 +259,20 @@ mod tests {
         }
         assert_eq!(name("data.sqlite"), None);
         assert_eq!(name("app.db"), None);
+    }
+
+    #[test]
+    fn every_language_but_html_and_css_has_a_line_comment() {
+        let marker = |name: &str| for_name(name).and_then(|lang| lang.line_comment);
+        for name in ["rust", "go", "javascript", "typescript", "tsx"] {
+            assert_eq!(marker(name), Some("//"), "{name}");
+        }
+        assert_eq!(marker("python"), Some("#"));
+        assert_eq!(marker("sql"), Some("--"));
+        for lang in LANGUAGES {
+            let wraps = matches!(lang.name, "html" | "css");
+            assert_eq!(lang.line_comment.is_none(), wraps, "{}", lang.name);
+        }
     }
 
     #[test]

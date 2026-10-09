@@ -1,3 +1,4 @@
+pub mod comment;
 pub mod edit;
 pub mod history;
 pub mod movement;

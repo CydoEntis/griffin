@@ -1199,12 +1199,18 @@ pub fn key_bytes(notation: &str) -> Result<Vec<u8>, String> {
 
 /// ConPTY drops CSI u keys it doesn't know, so on Windows the keys that need CSI u
 /// go in win32-input-mode instead (`ESC [ Vk ; Sc ; Uc ; Kd ; Cs ; Rc _`, a press
-/// then a release), which is what Windows Terminal itself sends ConPTY.
+/// then a release), which is what Windows Terminal itself sends ConPTY. Ctrl+/
+/// and Ctrl+7 go this way too: their shared legacy byte 0x1F reaches crossterm
+/// through ConPTY as neither key.
 pub fn win32_input_bytes(notation: &str) -> Option<Vec<u8>> {
     const SHIFT_PRESSED: u16 = 0x10;
+    const LEFT_CTRL_PRESSED: u16 = 0x08;
     // Virtual key, scan code and character of the key.
     let (vk, scan, ch, state) = match notation.trim().to_ascii_lowercase().as_str() {
         "shift+enter" => (0x0D, 0x1C, 13, SHIFT_PRESSED),
+        // No character: crossterm then reads the key's own from the layout.
+        "ctrl+/" => (0xBF, 0x35, 0, LEFT_CTRL_PRESSED),
+        "ctrl+7" => (0x37, 0x08, 0, LEFT_CTRL_PRESSED),
         _ => return None,
     };
     Some(
@@ -1359,6 +1365,11 @@ mod tests {
             Some(&b"\x1b[13;28;13;1;16;1_\x1b[13;28;13;0;16;1_"[..])
         );
         assert_eq!(win32_input_bytes("enter"), None);
+        assert_eq!(
+            win32_input_bytes("ctrl+/").as_deref(),
+            Some(&b"[191;53;0;1;8;1_[191;53;0;0;8;1_"[..])
+        );
+        assert!(win32_input_bytes("ctrl+7").is_some());
     }
 
     fn gate_contents(gate: &mut FrameGate, parser: &mut vt100::Parser, bytes: &[u8]) -> String {
