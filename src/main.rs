@@ -84,6 +84,7 @@ async fn main() -> Result<()> {
         .with_theme(theme)
         .with_lsp(lsp)
         .with_debug_adapters(debug)
+        .with_config_path(config::config_path(std::env::var_os("GLYPH_CONFIG")))
         .with_backups(backups)
         .with_clipboard(clipboard::from_env(std::env::var_os(
             "GLYPH_CLIPBOARD_FILE",

@@ -973,6 +973,9 @@ pub struct App {
     debug_build: Option<PendingDebug>,
     /// `config.toml`'s `[debug.<lang>]` tables.
     debug_adapters: BTreeMap<String, DebugAdapter>,
+    /// Where `config.toml` lives, for `>settings`; `None` when the OS has no
+    /// config folder and `GLYPH_CONFIG` isn't set.
+    config_path: Option<PathBuf>,
     /// How many debug sessions have started, numbering them so an old
     /// adapter's last words are dropped.
     debug_sessions: u64,
@@ -1036,6 +1039,12 @@ impl App {
     /// Debugs with the adapters `[debug.<lang>]` names in place of the defaults.
     pub fn with_debug_adapters(mut self, adapters: BTreeMap<String, DebugAdapter>) -> Self {
         self.debug_adapters = adapters;
+        self
+    }
+
+    /// Where `>settings` finds `config.toml`.
+    pub fn with_config_path(mut self, path: Option<PathBuf>) -> Self {
+        self.config_path = path;
         self
     }
 
@@ -1665,7 +1674,8 @@ impl App {
             | Action::StopRun
             | Action::RestartRun
             | Action::OpenDirectory
-            | Action::LanguageServers => {
+            | Action::LanguageServers
+            | Action::Settings => {
                 self.handle_action(action);
             }
             _ => {}
@@ -1937,7 +1947,8 @@ impl App {
             | Action::DebugStart
             | Action::DebugStop
             | Action::OpenDirectory
-            | Action::LanguageServers => self.handle_action(action),
+            | Action::LanguageServers
+            | Action::Settings => self.handle_action(action),
             _ => {}
         }
     }
@@ -1983,6 +1994,7 @@ impl App {
                 Action::Quit
                 | Action::OpenDirectory
                 | Action::LanguageServers
+                | Action::Settings
                 | Action::Keybindings
                 | Action::ToggleTree
                 | Action::FocusTree
@@ -2122,6 +2134,7 @@ impl App {
             Action::Complete => self.request_completion(),
             Action::OpenDirectory => self.open_folders(),
             Action::LanguageServers => self.open_catalog(),
+            Action::Settings => self.open_settings(),
             Action::Keybindings => self.keybindings = Some(Keybindings::new(&self.keymap)),
             // Bound only in tree, find bar, folder browser, catalog or splash scope,
             // so they never reach the editor.
@@ -2559,6 +2572,23 @@ impl App {
         let catalog =
             with_lookup(|lookup| Catalog::new(lsp.config(), |lang| lsp.is_running(lang), lookup));
         self.catalog = Some(catalog);
+    }
+
+    /// `>settings`: `config.toml` in a tab, written from the template first when
+    /// there is none, so the user sees every option rather than an empty file.
+    fn open_settings(&mut self) {
+        let Some(path) = self.config_path.clone() else {
+            self.say(Tone::Err, "no config folder");
+            return;
+        };
+        if let Err(err) = config::create_template(&path) {
+            self.say(
+                Tone::Err,
+                format!("cannot create {}: {err}", path.display()),
+            );
+            return;
+        }
+        self.open(&path);
     }
 
     /// Follows what a key did in the catalog. It stays open under a message.
@@ -5175,6 +5205,32 @@ mod tests {
         assert!(app.catalog.is_some());
         press(&mut app, &["esc"]);
         assert!(app.catalog.is_none());
+    }
+
+    #[test]
+    fn settings_with_no_config_folder_says_so() {
+        let clipboard = FakeClipboard::default();
+        let mut app = app_with("text", &clipboard).with_config_path(None);
+        app.handle_action(Action::Settings);
+        assert_eq!(app.message.as_deref(), Some("no config folder"));
+        assert_eq!(app.message_tone, Tone::Err);
+        assert_eq!(app.tabs.docs.len(), 1);
+    }
+
+    #[test]
+    fn settings_creates_the_template_and_opens_it_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("glyph").join("config.toml");
+        let clipboard = FakeClipboard::default();
+        let mut app = app_with("text", &clipboard).with_config_path(Some(path.clone()));
+        app.handle_action(Action::Settings);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), config::TEMPLATE);
+        assert_eq!(app.buffer().path.as_deref(), Some(path.as_path()));
+        let tabs = app.tabs.docs.len();
+        app.handle_action(Action::NextTab);
+        app.handle_action(Action::Settings);
+        assert_eq!(app.tabs.docs.len(), tabs);
+        assert_eq!(app.buffer().path.as_deref(), Some(path.as_path()));
     }
 
     #[test]
