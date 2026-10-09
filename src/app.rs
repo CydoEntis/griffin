@@ -4209,7 +4209,7 @@ impl App {
     /// The key pressed while the keybindings card waits for `action`'s new
     /// key: Esc (`input` is Cancel) gives up, a key the keymap can name
     /// becomes `action`'s only key, and any other key says so and keeps
-    /// waiting.
+    /// waiting, as does a plain character for a command that works anywhere.
     fn capture_key(&mut self, action: Action, key: &KeyEvent, input: Input) {
         if input == Input::Action(Action::Cancel) {
             if let Some(card) = &mut self.keybindings {
@@ -4221,6 +4221,12 @@ impl App {
             self.say(Tone::Warn, "can't bind that key");
             return;
         };
+        // A command that works anywhere on a plain character would run
+        // whenever it's typed (Cody's decision); scoped commands may have one.
+        if action.scope() == Scope::Global && keymap::is_plain_text(key) {
+            self.say(Tone::Warn, "needs Ctrl or Alt");
+            return;
+        }
         if let Some(card) = &mut self.keybindings {
             card.stop_waiting();
         }
@@ -4243,12 +4249,23 @@ impl App {
     /// as saving it would and says `done`. The file is created from the
     /// template when missing. Nothing is written when the result wouldn't
     /// apply, so a broken file stays as the user left it, with its error
-    /// showing.
+    /// showing. A tab holding `config.toml` follows the new file; one with
+    /// unsaved changes refuses the write instead, as saving it would undo it.
     fn write_keys(&mut self, entries: &[(Action, Option<Vec<String>>)], done: String) {
         let Some(path) = self.config_path.clone() else {
             self.say(Tone::Err, "no config folder");
             return;
         };
+        if self
+            .config_docs()
+            .any(|doc| self.tabs.docs[doc].buffer.dirty)
+        {
+            self.say(
+                Tone::Err,
+                "config.toml has unsaved changes — save or discard it first",
+            );
+            return;
+        }
         let old = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(err) if err.kind() == io::ErrorKind::NotFound => config::TEMPLATE.to_string(),
@@ -4280,12 +4297,53 @@ impl App {
             if let Err(err) = written {
                 return self.say(Tone::Err, format!("cannot write {}: {err}", path.display()));
             }
+            self.reload_config_tabs(&path);
         }
         if self.apply_config_text(&text).is_ok() {
             self.say(Tone::Ok, done);
         }
         if let Some(card) = &mut self.keybindings {
             card.refresh(&self.keymap);
+        }
+    }
+
+    /// The indices into `tabs.docs` of the tabs holding `config.toml`.
+    fn config_docs(&self) -> impl Iterator<Item = usize> + '_ {
+        self.tabs.docs.iter().enumerate().filter_map(|(i, doc)| {
+            doc.buffer
+                .path
+                .as_deref()
+                .is_some_and(|p| self.is_config(p))
+                .then_some(i)
+        })
+    }
+
+    /// Reads `config.toml` (at `path`) afresh into every tab holding it, which
+    /// `write_keys` has made sure are clean, keeping each one's cursor where it
+    /// can. Otherwise saving that tab would write back the file as it was.
+    fn reload_config_tabs(&mut self, path: &Path) {
+        let docs: Vec<usize> = self.config_docs().collect();
+        for i in docs {
+            let fresh = match Buffer::open(path) {
+                Ok(fresh) => fresh,
+                Err(err) => {
+                    return self.say(
+                        Tone::Err,
+                        format!("cannot reload {}: {err}", path.display()),
+                    );
+                }
+            };
+            let old = &mut self.tabs.docs[i].buffer;
+            let caret = old.caret();
+            *old = Buffer {
+                // The text changed under anything following the old one.
+                revision: old.revision + 1,
+                saves: old.saves,
+                breakpoints: std::mem::take(&mut old.breakpoints),
+                path: old.path.take(),
+                ..fresh
+            };
+            old.set_caret(caret);
         }
     }
 
@@ -5627,6 +5685,77 @@ mod tests {
         assert_eq!(app.keymap.key_labels(Action::Save), ["Ctrl+S"]);
         press(&mut app, &["esc"]);
         assert!(app.keybindings.is_none());
+    }
+
+    #[test]
+    fn a_clean_config_tab_follows_a_rebind_and_a_dirty_one_refuses_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut app = app_on_file(dir.path(), "config.toml", "# mine\ntheme = \"nord\"\n");
+        press(&mut app, &["down", "right", "right"]);
+        let cursor = app.buffer().cursor;
+        app.handle_action(Action::Keybindings);
+        press(&mut app, &["s", "a", "v", "e", "enter", "alt+w"]);
+        let disk = std::fs::read_to_string(&path).unwrap();
+        assert!(disk.contains("save = \"alt+w\""), "{disk}");
+        // The tab shows the file as written, clean, its cursor where it was,
+        // so saving it keeps the new key.
+        assert_eq!(app.buffer().rope.to_string(), disk);
+        assert!(!app.buffer().dirty);
+        assert_eq!(app.buffer().cursor, cursor);
+        assert_eq!(app.message.as_deref(), Some("save bound to Alt+W"));
+        press(&mut app, &["esc", "alt+w"]);
+        assert_eq!(app.keymap.key_labels(Action::Save), ["Alt+W"]);
+
+        // With unsaved changes in the tab, nothing is written.
+        app.edit(|b| b.paste("x"));
+        app.handle_action(Action::Keybindings);
+        press(&mut app, &["s", "a", "v", "e", "delete"]);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("config.toml has unsaved changes — save or discard it first")
+        );
+        assert_eq!(app.message_tone, Tone::Err);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), disk);
+        assert_eq!(app.keymap.key_labels(Action::Save), ["Alt+W"]);
+        press(&mut app, &["enter", "f2"]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), disk);
+        assert!(app.buffer().dirty);
+    }
+
+    #[test]
+    fn a_command_that_works_anywhere_needs_ctrl_or_alt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut app = app_on_card(dir.path(), "save");
+        press(&mut app, &["enter"]);
+        for plain in ["a", "shift+a", "7", "space"] {
+            press(&mut app, &[plain]);
+            assert_eq!(app.message.as_deref(), Some("needs Ctrl or Alt"), "{plain}");
+            assert_eq!(
+                app.keybindings.as_ref().and_then(Keybindings::waiting),
+                Some(Action::Save),
+                "{plain}"
+            );
+            assert!(!path.exists(), "{plain}");
+        }
+        // Still waiting, so a key with Ctrl is taken.
+        press(&mut app, &["ctrl+shift+a"]);
+        assert_eq!(app.keymap.key_labels(Action::Save), ["Ctrl+Shift+A"]);
+    }
+
+    #[test]
+    fn a_scoped_command_can_take_a_plain_letter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut app = app_on_card(dir.path(), "tree_rename");
+        press(&mut app, &["enter", "x"]);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("tree_rename = \"x\"")
+        );
+        assert_eq!(app.keymap.key_labels(Action::TreeRename), ["X"]);
     }
 
     #[test]

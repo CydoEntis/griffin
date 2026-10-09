@@ -158,11 +158,25 @@ impl Keybindings {
     }
 
     /// Shows the keys `keymap` gives each command, after a rebind or reset.
-    /// The rows, query and selection stay as they are.
+    /// The query is matched again, as a key it named may have moved; the
+    /// selection stays on its command while that is still listed.
     pub fn refresh(&mut self, keymap: &Keymap) {
         for row in &mut self.rows {
             row.keys = keymap.key_labels(row.action);
         }
+        let selected = self.selected_action();
+        let query = self.query.text();
+        self.shown = (0..self.rows.len())
+            .filter(|&i| self.rows[i].matches(query))
+            .collect();
+        self.selected = selected
+            .and_then(|action| {
+                self.shown
+                    .iter()
+                    .position(|&i| self.rows[i].action == action)
+            })
+            .unwrap_or(0);
+        self.top = 0;
     }
 
     #[cfg(test)]
@@ -613,6 +627,31 @@ mod tests {
         assert_eq!(press(&mut k, Action::Delete), None);
         press(&mut k, Action::Newline);
         assert_eq!(k.waiting(), None);
+    }
+
+    #[test]
+    fn refresh_matches_the_query_again() -> anyhow::Result<()> {
+        let mut k = fresh();
+        type_text(&mut k, "alt+k");
+        assert_eq!(shown(&k), ["hover"]);
+        // Hover loses Alt+K to Save: Save is listed and Hover no longer is.
+        let keys: KeysConfig = [
+            ("hover".to_string(), KeyBinding::Many(Vec::new())),
+            ("save".to_string(), KeyBinding::One("alt+k".into())),
+        ]
+        .into_iter()
+        .collect();
+        k.refresh(&Keymap::new(&keys)?);
+        assert_eq!(shown(&k), ["save"]);
+        assert_eq!(k.selected_action(), Some(Action::Save));
+        // A selection still listed stays put.
+        let mut k = fresh();
+        type_text(&mut k, "save");
+        k.handle(Input::Action(Action::Move(Motion::Down)), SCREEN);
+        let before = k.selected_action();
+        k.refresh(&Keymap::default());
+        assert_eq!(k.selected_action(), before);
+        Ok(())
     }
 
     #[test]
