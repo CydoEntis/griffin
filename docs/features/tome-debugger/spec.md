@@ -12,7 +12,7 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
   module both use rather than being copied.
 - **Keys.** F6 is CycleFocus and F4, F5, Shift+F5, Ctrl+F5 belong to the run panel
   (`src/keymap.rs:542-561`). F11 is Windows Terminal's fullscreen key and never reaches
-  Glyph. Defaults: F9 toggle breakpoint, Alt+F5 start or continue, Alt+F6 stop debugging,
+  Tome. Defaults: F9 toggle breakpoint, Alt+F5 start or continue, Alt+F6 stop debugging,
   F10 step over, Alt+F10 step into, Shift+F10 step out — all rebindable.
 - **lldb-dap on Windows.** `winget install LLVM.LLVM` puts `lldb-dap.exe` in
   `C:\Program Files\LLVM\bin`, not on PATH by default; the adapter lookup checks that
@@ -32,14 +32,14 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
   against `fake_dap`.
 - **D2.** F9, or a click in the gutter's mark cell, toggles a breakpoint on that line: `●`
   in `err` in the mark cell, in place of a diagnostic mark on that line. Breakpoints belong
-  to files, survive closing the tab while Glyph runs, and move with lines inserted or
+  to files, survive closing the tab while Tome runs, and move with lines inserted or
   removed above them. `>toggle breakpoint` and `>clear breakpoints` are cast commands —
   checked by PTY tests.
 - **D3.** Adapters and launch defaults: rust → `lldb-dap` (also looked for in
   `C:\Program Files\LLVM\bin` on Windows), build `cargo build`, program
   `target/debug/<package name>`; python → `python -m debugpy.adapter`, program the current
   file; go → `dlv dap`, program the current file's package folder, mode `debug`.
-  `.glyph.toml` `[debug]` (`program`, `args`, `cwd`, `build`) overrides the launch for the
+  `.tome.toml` `[debug]` (`program`, `args`, `cwd`, `build`) overrides the launch for the
   project; `config.toml` `[debug.<lang>]` `adapter` / `args` overrides the adapter —
   checked by unit tests.
 - **D4.** Alt+F5 with no session starts one for the active file's language: it runs the
@@ -48,7 +48,7 @@ Intent: [intent.md](intent.md) · Status: accepted · Date: 2026-10-08
   panel titled `debug <program>`. The status bar shows `● debugging` while running and
   `‖ paused <file>:<line>` while stopped. Alt+F6 stops the session and the program. A
   language with no adapter says `no debugger for <lang>` — checked by PTY tests.
-- **D5.** When the program stops (breakpoint, step, exception) Glyph opens the file at the
+- **D5.** When the program stops (breakpoint, step, exception) Tome opens the file at the
   line, marks it with `▶` in `accent2` in the mark cell and a cursor-line glow in
   `accent2`, and keeps the marker until the program runs again — checked by PTY tests.
 - **D6.** While paused, Alt+F5 continues, F10 steps over, Alt+F10 steps into, Shift+F10

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Glyph is a non-modal TUI text editor in Rust + ratatui. Read this file, then the
+Tome is a non-modal TUI text editor in Rust + ratatui. Read this file, then the
 plan, before changing anything.
 
 ## Plan
@@ -13,7 +13,7 @@ With the roadmap skill installed, `/roadmap check` (Claude Code) or `$roadmap ch
 (Codex) runs this check.
 
 Requirements (R1–R35), the screen layout, the default keymap and the config format
-live in [`docs/features/glyph-v1/spec.md`](docs/features/glyph-v1/spec.md).
+live in [`docs/features/tome-v1/spec.md`](docs/features/tome-v1/spec.md).
 Tickets cite them by number.
 
 ## Verify
@@ -31,7 +31,7 @@ All three must pass before a change is done. CI runs them on Windows and Ubuntu.
 | `src/main.rs` | CLI args, terminal setup/teardown, panic hook, starting the loop |
 | `src/app.rs` | `App` (all editor state), `AppEvent`, the event loop, top-level render |
 | `src/keymap.rs` | `Action`, default bindings, parsing `[keys]`, turning key events into an `Action` or typed text |
-| `src/config.rs` | loading `config.toml` and `.glyph.toml` |
+| `src/config.rs` | loading `config.toml` and `.tome.toml` |
 | `src/buffer/` | `Buffer`: rope, cursor, selection, edits, undo history, line endings |
 | `src/view/` | editor viewport and rendering of a buffer |
 | `src/ui/` | chrome: tab bar, status line, tree panel, popups, picker, find bar, run panel |
@@ -70,7 +70,7 @@ seems to need a new top-level area, say so instead.
 
 - Logic (buffer edits, undo, save, parsing) gets unit tests next to the code.
 - Anything a user sees or presses gets a PTY harness test in `tests/` that runs the
-  real `glyph` binary, sends input and asserts on screen text. A test that only
+  real `tome` binary, sends input and asserts on screen text. A test that only
   calls internal functions doesn't prove a screen works.
 - No sleeps to wait for output: use the harness's wait-for-text helper with a
   timeout.

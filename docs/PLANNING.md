@@ -1,4 +1,4 @@
-# Plan: Glyph
+# Plan: Tome
 
 Source of truth for scope, order, decisions and rules. Tickets hold the detail.
 Read this before starting work. If work conflicts with it, stop and say so.
@@ -7,7 +7,7 @@ Verify: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo
 
 ## Now
 
-Active phase: **8 — Glyph opens on a splash and can switch projects.** Phases 9 and 10 are
+Active phase: **8 — Tome opens on a splash and can switch projects.** Phases 9 and 10 are
 ticketed ahead, as Cody asked to build them in one run (2026-10-08). The person checks for
 Phases 6 and 7 are still open. Phases 12, 13 and 14 are ticketed ahead as well (Cody, 2026-10-08).
 Phases 15 and 16 are ticketed ahead too (Cody, 2026-10-09); Phase 15's rename lands before
@@ -17,11 +17,11 @@ splash (PR #125).
 
 ## Phases
 
-### 1 — `glyph file.rs` opens, edits and saves one file safely, by keyboard and mouse · complete 2026-10-06 at `e0effc0`
+### 1 — `tome file.rs` opens, edits and saves one file safely, by keyboard and mouse · complete 2026-10-06 at `e0effc0`
 
 #1, #2, #3, #4, #5, #6, #7, #8, #9, #10
 
-### 2 — `glyph .` works across a whole project · complete 2026-10-06 at `4ca0ec6`
+### 2 — `tome .` works across a whole project · complete 2026-10-06 at `4ca0ec6`
 
 #11, #12, #13, #14, #15, #16, #17
 
@@ -33,7 +33,7 @@ splash (PR #125).
 
 #22, #23, #24, #25, #26
 
-### 5 — Start a dev server inside Glyph · complete 2026-10-06 at `6b9c873`
+### 5 — Start a dev server inside Tome · complete 2026-10-06 at `6b9c873`
 
 #27, #28, #29
 
@@ -41,14 +41,14 @@ splash (PR #125).
 
 #30, #31, #32, #33, #34, #35, #36, #75, #76
 
-### 7 — Glyph wears the Aurora look · complete except the person check, at `db1a00f`
+### 7 — Tome wears the Aurora look · complete except the person check, at `db1a00f`
 
 Exit when:
 - every ticket below is closed and its change is on `main`;
 - `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` passes on `main`;
 - the spec's person check passes (main frame and cast match the design at 160×45).
 
-[Glyph Aurora](features/glyph-aurora/intent.md) · [spec](features/glyph-aurora/spec.md)
+[Tome Aurora](features/tome-aurora/intent.md) · [spec](features/tome-aurora/spec.md)
 
 1. #80 — feat(theme): Aurora roles and the aurora and moonlit themes
 2. #81 — feat(search): project replace all on Alt+A · can run alongside 1
@@ -67,7 +67,7 @@ Exit when:
 15. #94 — feat(lsp): rounded hover and completion popups · after 8
 16. #95 — feat(run): Aurora run panel and run picker · after 10
 
-### 8 — Glyph opens on a splash and can switch projects · active
+### 8 — Tome opens on a splash and can switch projects · active
 
 Exit when:
 - every ticket below is closed and its change is on `main`;
@@ -75,11 +75,11 @@ Exit when:
 - the spec's person check passes (splash, New file / New directory / Open directory, and a
   project switch with an unsaved tab, at 160×45 in `aurora` and `mono`).
 
-[Splash and opening projects](features/glyph-splash/intent.md) · [spec](features/glyph-splash/spec.md)
+[Splash and opening projects](features/tome-splash/intent.md) · [spec](features/tome-splash/spec.md)
 
 1. #113 — feat(lsp): stop one project's language servers
 2. #114 — feat(project): open another folder as the project from Ctrl+P · after 1
-3. #115 — feat(splash): splash screen when Glyph starts with nothing to edit · can run alongside 1
+3. #115 — feat(splash): splash screen when Tome starts with nothing to edit · can run alongside 1
 4. #116 — feat(splash): New directory and Open directory on the splash · after 2, 3
 5. #117 — feat(project): unsaved files card before switching projects · after 2
 6. #124 — fix(project): open a folder onto the tree and an empty pane, not the splash · after 4
@@ -87,7 +87,7 @@ Exit when:
 8. #127 — feat(splash): splash status bar, q to quit, tree hidden · after 7
 9. #128 — feat(editor): no file open screen with the key list · after 8
 
-### 9 — Install language servers from a catalog inside Glyph
+### 9 — Install language servers from a catalog inside Tome
 
 Exit when:
 - every ticket below is closed and its change is on `main`;
@@ -95,7 +95,7 @@ Exit when:
 - the spec's person check passes (install a missing server from the catalog on Windows and
   get completion in an open file without restarting).
 
-[Language server catalog](features/glyph-catalog/intent.md) · [spec](features/glyph-catalog/spec.md)
+[Language server catalog](features/tome-catalog/intent.md) · [spec](features/tome-catalog/spec.md)
 
 1. #129 — feat(lsp): retry a language's server after it was missing
 2. #130 — feat(lsp): install commands for each language server · can run alongside 1
@@ -110,7 +110,7 @@ Exit when:
 - the spec's person check passes (break, step and read variables in a Rust, a Python and a
   Go program on Windows and Ubuntu).
 
-[Debugger](features/glyph-debugger/intent.md) · [spec](features/glyph-debugger/spec.md)
+[Debugger](features/tome-debugger/intent.md) · [spec](features/tome-debugger/spec.md)
 
 1. #133 — feat(dap): Debug Adapter Protocol client and fake adapter
 2. #134 — feat(debug): breakpoints in the gutter · can run alongside 1
@@ -122,7 +122,7 @@ Exit when:
 
 ### 11 — The v1 layout behaviours from the Aurora handoff
 
-Work: [SPEC_V1_LAYOUT.md](features/glyph-aurora/design/SPEC_V1_LAYOUT.md) §1–§11 and §14
+Work: [SPEC_V1_LAYOUT.md](features/tome-aurora/design/SPEC_V1_LAYOUT.md) §1–§11 and §14
 items not in Phase 7: minimum-size message, tree width and hiding while split, tab overflow
 `‹N` and duplicate names, completion anchor shift, run panel scrollback, `‹ ›` scroll
 markers, rename preselects the stem, an unmodified run-stop key.
@@ -138,14 +138,14 @@ Exit when:
 - the person check passes (in a .js and a .rs file: type `foo(`, a `{` block with Enter,
   Backspace an empty `[]`, wrap a selection in `(`, and turn it off with `auto_pairs = false`).
 
-[Brackets close themselves](features/glyph-autopair/intent.md)
+[Brackets close themselves](features/tome-autopair/intent.md)
 
 1. #155 — feat(editor): opening brackets insert their closer
 2. #156 — feat(editor): Backspace between an empty bracket pair deletes both · after 1
 3. #157 — feat(editor): Enter between a bracket pair opens an indented line · after 2
 4. #158 — feat(editor): typing an opening bracket wraps the selection · after 3
 
-### 13 — See and change settings, keys and server errors inside Glyph
+### 13 — See and change settings, keys and server errors inside Tome
 
 Exit when:
 - every ticket below is closed and its change is on `main`;
@@ -154,7 +154,7 @@ Exit when:
   `save` in `>keybindings`; with TypeScript 7 installed, the catalog shows the JavaScript
   server failed and why, and Enter retries it).
 
-[Settings, keys and server errors](features/glyph-settings/intent.md)
+[Settings, keys and server errors](features/tome-settings/intent.md)
 
 1. #164 — fix(lsp): keep what a failing language server prints
 2. #165 — feat(catalog): failed servers say why and retry on Enter · after 1
@@ -173,7 +173,7 @@ Exit when:
 - the person check passes (Ctrl+/ on a line and on a selection in a .rs, .py and .html file,
   on Windows Terminal and Ubuntu).
 
-[Ctrl+/ comments](features/glyph-comments/intent.md)
+[Ctrl+/ comments](features/tome-comments/intent.md)
 
 1. #173 — feat(editor): Ctrl+/ comments and uncomments lines
 2. #174 — feat(editor): Ctrl+/ wraps lines in HTML and CSS comments · after 1
@@ -217,28 +217,28 @@ Exit when:
 
 ## In scope
 
-- Glyph v1 — shipped — [intent](features/glyph-v1/intent.md) ·
-  [spec](features/glyph-v1/spec.md)
-- Glyph Aurora — shipped — [intent](features/glyph-aurora/intent.md) ·
-  [spec](features/glyph-aurora/spec.md)
-- Splash and opening projects — active — [intent](features/glyph-splash/intent.md) ·
-  [spec](features/glyph-splash/spec.md). Overrides the layout handoff's "No launch
+- Tome v1 — shipped — [intent](features/tome-v1/intent.md) ·
+  [spec](features/tome-v1/spec.md)
+- Tome Aurora — shipped — [intent](features/tome-aurora/intent.md) ·
+  [spec](features/tome-aurora/spec.md)
+- Splash and opening projects — active — [intent](features/tome-splash/intent.md) ·
+  [spec](features/tome-splash/spec.md). Overrides the layout handoff's "No launch
   splash" (SPEC_V1_LAYOUT 9a); its key list shows whenever no file is open (decided
   2026-10-08).
-- Language server catalog — planned — [intent](features/glyph-catalog/intent.md) ·
-  [spec](features/glyph-catalog/spec.md)
-- Debugger — planned — [intent](features/glyph-debugger/intent.md) ·
-  [spec](features/glyph-debugger/spec.md)
-- Brackets close themselves — active — [intent](features/glyph-autopair/intent.md)
-- Settings, keys and server errors — active — [intent](features/glyph-settings/intent.md)
-- Ctrl+/ comments — active — [intent](features/glyph-comments/intent.md)
+- Language server catalog — planned — [intent](features/tome-catalog/intent.md) ·
+  [spec](features/tome-catalog/spec.md)
+- Debugger — planned — [intent](features/tome-debugger/intent.md) ·
+  [spec](features/tome-debugger/spec.md)
+- Brackets close themselves — active — [intent](features/tome-autopair/intent.md)
+- Settings, keys and server errors — active — [intent](features/tome-settings/intent.md)
+- Ctrl+/ comments — active — [intent](features/tome-comments/intent.md)
 - Glyph becomes Tome — active — [intent](features/tome-rename/intent.md)
 - C and C++ — planned — [intent](features/tome-c-cpp/intent.md)
 
 ## Out
 
-- Plugin / scripting system — declined 2026-10-06: Glyph is extended by changing
-  Glyph ([ADR-0001](adr/0001-single-binary-core.md)). Bringing it back needs a new
+- Plugin / scripting system — declined 2026-10-06: Tome is extended by changing
+  Tome ([ADR-0001](adr/0001-single-binary-core.md)). Bringing it back needs a new
   decision.
 
 ## Later

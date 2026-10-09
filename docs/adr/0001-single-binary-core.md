@@ -1,11 +1,11 @@
-# ADR-0001: Glyph is one binary with a rope buffer, compiled-in grammars and one event loop; tools run as child processes
+# ADR-0001: Tome is one binary with a rope buffer, compiled-in grammars and one event loop; tools run as child processes
 
 Status: accepted
 Date: 2026-10-06
 
 ## Context
 
-Glyph is a new TUI editor (no code yet; `C:\dev\text-editor` was empty on
+Tome is a new TUI editor (no code yet; `C:\dev\text-editor` was empty on
 2026-10-06). v1 needs editing, highlighting for 8 languages, LSP and a run panel,
 built in about a day by agents working small tickets in parallel. Those agents need
 one shape to build into, or each ticket invents its own threading and text model.
@@ -23,9 +23,9 @@ Hydra, the sibling app, already settled on ratatui 0.30, crossterm 0.29 and toki
   as `AppEvent`s on one channel; the loop applies them and redraws. Background tasks
   never touch `App` directly.
 - **Language servers and run commands are child processes** spawned with
-  `tokio::process`, found on PATH or named in config. Glyph never bundles or
+  `tokio::process`, found on PATH or named in config. Tome never bundles or
   installs them.
-- **No plugin or scripting API.** Behaviour is extended by changing Glyph.
+- **No plugin or scripting API.** Behaviour is extended by changing Tome.
 
 ## Alternatives considered
 
