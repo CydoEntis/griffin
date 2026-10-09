@@ -19,6 +19,7 @@ pub static TYPESCRIPT: Language = Language {
     embeds: &[],
     roles: ROLES,
     line_comment: Some("//"),
+    wrap_comment: None,
     compiled: OnceLock::new(),
 };
 
@@ -37,5 +38,6 @@ pub static TSX: Language = Language {
     embeds: &[],
     roles: ROLES,
     line_comment: Some("//"),
+    wrap_comment: None,
     compiled: OnceLock::new(),
 };

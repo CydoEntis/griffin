@@ -27,5 +27,6 @@ pub static SQL: Language = Language {
         ("parameter", Role::Variable),
     ],
     line_comment: Some("--"),
+    wrap_comment: None,
     compiled: OnceLock::new(),
 };

@@ -14,5 +14,6 @@ pub static GO: Language = Language {
     embeds: &[],
     roles: &[("escape", Role::Constant)],
     line_comment: Some("//"),
+    wrap_comment: None,
     compiled: OnceLock::new(),
 };

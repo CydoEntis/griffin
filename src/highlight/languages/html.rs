@@ -13,5 +13,6 @@ pub static HTML: Language = Language {
     embeds: &["css", "javascript"],
     roles: &[],
     line_comment: None,
+    wrap_comment: Some(("<!--", "-->")),
     compiled: OnceLock::new(),
 };

@@ -14,5 +14,6 @@ pub static CSS: Language = Language {
     embeds: &[],
     roles: &[],
     line_comment: None,
+    wrap_comment: Some(("/*", "*/")),
     compiled: OnceLock::new(),
 };
