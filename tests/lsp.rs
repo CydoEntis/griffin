@@ -1774,10 +1774,14 @@ fn saving_the_config_restarts_only_the_servers_whose_table_changed() {
 
 #[test]
 fn a_config_naming_a_missing_server_shows_no_server_and_editing_carries_on() {
-    let project = Project::new(None);
+    let script = format!(r#"{{"notify": {{"textDocument/didOpen": [{}]}}}}"#, both());
+    let project = Project::new(Some(&script));
+    fs::write(project.dir.path().join("a.rs"), DIAG_FILE).expect("write a.rs");
     let config = project.files.path().join("config.toml");
     let mut glyph = open_with_config_file(&project, &config, &rust_server(fake()));
     glyph.wait_for_text("● fake_lsp", WAIT);
+    glyph.wait_for_text("✕ 1  ⚠ 1", WAIT);
+    glyph.wait_for_underlined(Y_ROW, "y", WAIT);
     let first = servers_of(&project, "a.rs");
 
     // The command's closing quote ends line 2; type just before it.
@@ -1794,10 +1798,17 @@ fn a_config_naming_a_missing_server_shows_no_server_and_editing_carries_on() {
 
     glyph.send_keys("alt+,");
     glyph.wait_for_text("○ no server", WAIT);
+    // The stopped server's diagnostics went with it: no underlines, no
+    // counts, and F8 has nowhere to go, so `abc` lands where the cursor was.
+    glyph.wait_for_underlined(Y_ROW, "", WAIT);
+    assert_eq!(glyph.underlined_text(X_ROW), "");
+    let status = status_line(&glyph);
+    assert!(!status.contains("✕ 1"), "{status:?}");
+    glyph.send_keys("f8");
     glyph.type_text("abc");
     glyph.wait_for_text("a.rs •", WAIT);
     glyph.send_keys("ctrl+s");
     glyph.wait_for_text("saved a.rs", WAIT);
-    assert_eq!(project.read("a.rs"), "abcfn a() {}\n");
+    assert_eq!(project.read("a.rs"), format!("abc{DIAG_FILE}"));
     assert_eq!(servers_of(&project, "a.rs"), first);
 }

@@ -4106,12 +4106,20 @@ impl App {
                 self.keymap = settings.keymap;
                 self.editor = settings.editor;
                 self.theme = settings.theme;
+                let stopped = self
+                    .lsp
+                    .reconfigure(crate::lsp::servers::with_defaults(settings.lsp));
+                // The stopped servers' diagnostics would stay underlined and
+                // reachable by F8 until the new server spoke, or forever if it
+                // never starts.
+                for doc in &mut self.tabs.docs {
+                    if stopped.docs.contains(&doc.id) {
+                        doc.diagnostics.clear();
+                    }
+                }
                 // The old servers' exit is waited for on a task of its own
                 // (R29), so the handle isn't needed here.
-                drop(
-                    self.lsp
-                        .reconfigure(crate::lsp::servers::with_defaults(settings.lsp)),
-                );
+                drop(stopped.exit);
                 self.debug_adapters = settings.debug;
                 self.say(Tone::Ok, "settings applied");
                 Ok(())

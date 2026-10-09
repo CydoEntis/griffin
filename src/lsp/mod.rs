@@ -595,6 +595,24 @@ struct Attached {
     saves: u64,
 }
 
+/// Whether a language's server must restart for its table to go from `old` to
+/// `new`: only what the process is started with counts.
+fn needs_restart(old: Option<&LspServer>, new: Option<&LspServer>) -> bool {
+    let start = |table: Option<&LspServer>| table.map(|t| (t.command.clone(), t.args.clone()));
+    start(old) != start(new)
+}
+
+/// What stopping servers left behind.
+#[derive(Debug, Default)]
+pub struct Stopped {
+    /// Buffers the stopped servers followed: what those servers said about
+    /// them, such as diagnostics, no longer holds.
+    pub docs: Vec<u64>,
+    /// Ends once the servers have exited, killed if they had to be; `None`
+    /// when there was nothing to wait for.
+    pub exit: Option<JoinHandle<()>>,
+}
+
 /// Every language server Glyph has started, and which buffers each one follows.
 #[derive(Debug, Default)]
 pub struct Lsp {
@@ -1035,19 +1053,21 @@ impl Lsp {
             .filter(|((_, r), _)| r == root)
             .map(|(_, &id)| id)
             .collect();
-        self.stop(&stopped)
+        self.stop(&stopped).exit
     }
 
     /// Takes `config` as the server tables from now on. Each language whose
-    /// table changed has its servers stopped, in every root, as `stop_root`
-    /// stops them; the next `sync` starts the new one for its open files.
-    /// Languages whose table is the same keep their servers running.
-    pub fn reconfigure(&mut self, config: BTreeMap<String, LspServer>) -> Option<JoinHandle<()>> {
+    /// `command` or `args` changed has its servers stopped, in every root, as
+    /// `stop_root` stops them; the next `sync` starts the new one for its open
+    /// files. The rest keep their servers running: `format_on_save` and
+    /// `install` are read from the config as they're needed, so they take
+    /// effect without a restart.
+    pub fn reconfigure(&mut self, config: BTreeMap<String, LspServer>) -> Stopped {
         let changed: HashSet<&str> = self
             .config
             .keys()
             .chain(config.keys())
-            .filter(|lang| self.config.get(*lang) != config.get(*lang))
+            .filter(|lang| needs_restart(self.config.get(*lang), config.get(*lang)))
             .map(String::as_str)
             .collect();
         let stopped: HashSet<u64> = self
@@ -1062,9 +1082,9 @@ impl Lsp {
 
     /// Stops servers `stopped` and forgets them, closing the buffers they
     /// follow first.
-    fn stop(&mut self, stopped: &HashSet<u64>) -> Option<JoinHandle<()>> {
+    fn stop(&mut self, stopped: &HashSet<u64>) -> Stopped {
         if stopped.is_empty() {
-            return None;
+            return Stopped::default();
         }
         self.by_root.retain(|_, id| !stopped.contains(id));
         let docs: Vec<u64> = self
@@ -1074,7 +1094,7 @@ impl Lsp {
             .map(|(&id, _)| id)
             .collect();
         // Before the shutdown, so the server hears every close on the same queue.
-        for id in docs {
+        for &id in &docs {
             self.detach(id);
         }
         // A reply from a stopped server would name a buffer it no longer follows.
@@ -1101,10 +1121,8 @@ impl Lsp {
             .filter_map(|id| self.servers.remove(id))
             .flat_map(|mut client| client.shutdown())
             .collect();
-        if tasks.is_empty() {
-            return None;
-        }
-        Some(tokio::spawn(reap(tasks)))
+        let exit = (!tasks.is_empty()).then(|| tokio::spawn(reap(tasks)));
+        Stopped { docs, exit }
     }
 
     /// Forgets every server for `lang` that is failed (never found, or crashed),
@@ -1891,6 +1909,60 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn reconfiguring_restarts_only_for_a_new_command_or_args() {
+        let root = tempfile::tempdir().unwrap();
+        let mut fake = Fake::new(None);
+        let a = rust_buffer(root.path(), "a.rs");
+        fake.run_until(root.path(), &[(1, &a)], opened(1)).await;
+        let server = fake.lsp.docs[&1].server;
+
+        // Format on save and install are taken as they are, server and all.
+        let mut config = fake.lsp.config.clone();
+        let rust = config.get_mut("rust").unwrap();
+        rust.format_on_save = true;
+        rust.install = Some("cargo install it".to_string());
+        let stopped = fake.lsp.reconfigure(config.clone());
+        assert!(stopped.docs.is_empty() && stopped.exit.is_none());
+        assert_eq!(fake.lsp.config, config);
+        assert_eq!(fake.lsp.docs[&1].server, server);
+        assert!(fake.lsp.servers[&server].is_ready());
+
+        // New args stop it, and the buffer it followed is handed back.
+        config
+            .get_mut("rust")
+            .unwrap()
+            .args
+            .push("--new".to_string());
+        let stopped = fake.lsp.reconfigure(config.clone());
+        assert_eq!(stopped.docs, [1]);
+        reaped(stopped.exit).await;
+        assert!(!fake.lsp.servers.contains_key(&server));
+        assert!(!fake.lsp.docs.contains_key(&1));
+        fake.run_until(root.path(), &[(1, &a)], opened(1)).await;
+        assert_ne!(fake.lsp.docs[&1].server, server);
+        reaped(fake.lsp.stop_root(root.path())).await;
+    }
+
+    #[test]
+    fn only_the_command_and_args_need_a_restart() {
+        let table = |command: &str, args: &[&str]| LspServer {
+            command: Some(command.to_string()),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            ..LspServer::default()
+        };
+        let old = table("ra", &["--a"]);
+        let mut same = old.clone();
+        same.format_on_save = true;
+        same.install = Some("x".to_string());
+        assert!(!needs_restart(Some(&old), Some(&same)));
+        assert!(!needs_restart(None, None));
+        assert!(needs_restart(Some(&old), Some(&table("ra", &["--b"]))));
+        assert!(needs_restart(Some(&old), Some(&table("rb", &["--a"]))));
+        assert!(needs_restart(Some(&old), None));
+        assert!(needs_restart(None, Some(&old)));
     }
 
     #[tokio::test]
