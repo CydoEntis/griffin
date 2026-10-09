@@ -12,6 +12,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use super::{LspEvent, ServerEvent};
@@ -35,8 +36,9 @@ pub const STDERR_LINES: usize = 20;
 const STDERR_LINE_CHARS: usize = 500;
 
 /// How long the exit report waits for stderr to close after the process has
-/// exited. A child the server started can hold the pipe open forever; this runs
-/// on the reader task, so editing never waits on it either way.
+/// exited. A child the server started can hold the pipe open forever, so the
+/// stderr task is aborted after this. It runs on the reader task, so editing
+/// never waits on it either way.
 const STDERR_GRACE: Duration = Duration::from_millis(250);
 
 /// The last lines written to a stderr, shared between the task reading it and
@@ -69,10 +71,18 @@ pub fn spawn(
         return Err(io::Error::other("server stdio was not piped"));
     };
     let tail: Tail = Arc::default();
-    let stderr = child
-        .stderr
-        .take()
-        .map(|stream| tokio::spawn(keep_tail(stream, Arc::clone(&tail))));
+    // Dropped when the stderr task ends, so the reader can wait for that without
+    // owning the task: the task's handle goes in `tasks`, where stopping or
+    // forgetting the server aborts it.
+    let (closed, stderr_closed) = oneshot::channel::<()>();
+    let stderr = child.stderr.take().map(|stream| {
+        let tail = Arc::clone(&tail);
+        tokio::spawn(async move {
+            keep_tail(stream, tail).await;
+            drop(closed);
+        })
+    });
+    let stderr_abort = stderr.as_ref().map(JoinHandle::abort_handle);
 
     let (outgoing, mut queue) = mpsc::unbounded_channel::<Value>();
     let writer = tokio::spawn(async move {
@@ -102,8 +112,12 @@ pub fn spawn(
             }
         }
         let code = child.wait().await.ok().and_then(|status| status.code());
-        if let Some(stderr) = stderr {
-            let _ = tokio::time::timeout(STDERR_GRACE, stderr).await;
+        let _ = tokio::time::timeout(STDERR_GRACE, stderr_closed).await;
+        // A child the server started may hold the pipe open for good; its
+        // output says nothing about this server's exit, and the task would
+        // outlive every retry.
+        if let Some(stderr) = stderr_abort {
+            stderr.abort();
         }
         let stderr = tail
             .lock()
@@ -113,10 +127,9 @@ pub fn spawn(
         let _ = events.send(AppEvent::Lsp(LspEvent { server, event }));
     });
 
-    Ok(Connection {
-        outgoing,
-        tasks: vec![writer, reader],
-    })
+    let mut tasks = vec![writer, reader];
+    tasks.extend(stderr);
+    Ok(Connection { outgoing, tasks })
 }
 
 /// Reads `stream` to its end, keeping its last `STDERR_LINES` lines in `tail`.
@@ -130,12 +143,7 @@ async fn keep_tail(stream: impl AsyncRead + Unpin, tail: Tail) {
             Ok(0) | Err(_) => return,
             Ok(_) => {}
         }
-        let text = String::from_utf8_lossy(&bytes);
-        let line: String = text
-            .trim_end_matches(['\r', '\n'])
-            .chars()
-            .take(STDERR_LINE_CHARS)
-            .collect();
+        let line = plain_line(&String::from_utf8_lossy(&bytes));
         // A poisoned lock only loses the tail; reading goes on regardless, since
         // a server whose stderr fills up stops.
         if let Ok(mut lines) = tail.lock() {
@@ -144,5 +152,57 @@ async fn keep_tail(stream: impl AsyncRead + Unpin, tail: Tail) {
             }
             lines.push_back(line);
         }
+    }
+}
+
+/// One stderr line as a person would have seen it in a terminal: what the last
+/// carriage return left (a progress line redraws itself that way), without
+/// colour or cursor codes (CSI sequences), cut to `STDERR_LINE_CHARS`.
+fn plain_line(raw: &str) -> String {
+    let line = raw.trim_end_matches(['\r', '\n']);
+    let line = line.rsplit('\r').next().unwrap_or(line);
+    let mut out = String::new();
+    let mut kept = 0;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            kept += 1;
+            if kept == STDERR_LINE_CHARS {
+                break;
+            }
+            continue;
+        }
+        if chars.next_if_eq(&'[').is_some() {
+            // Parameter and intermediate bytes, up to the final letter.
+            while chars
+                .next_if(|c| ('\u{20}'..='\u{3f}').contains(c))
+                .is_some()
+            {}
+            chars.next_if(|c| ('\u{40}'..='\u{7e}').contains(c));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_kept_line_drops_colour_codes_and_what_a_carriage_return_overwrote() {
+        assert_eq!(
+            plain_line("\u{1b}[1;31merror\u{1b}[0m: no tsserver\r\n"),
+            "error: no tsserver"
+        );
+        assert_eq!(
+            plain_line("loading 10%\rloading 50%\r\u{1b}[2Kfailed to load\n"),
+            "failed to load"
+        );
+        assert_eq!(plain_line("plain\n"), "plain");
+        // A sequence cut off at the end of the line goes with it.
+        assert_eq!(plain_line("broken \u{1b}[31"), "broken ");
+        let long = "é".repeat(STDERR_LINE_CHARS + 10);
+        assert_eq!(plain_line(&long).chars().count(), STDERR_LINE_CHARS);
     }
 }

@@ -1671,25 +1671,21 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn spawn_keeps_the_last_lines_a_server_writes_to_stderr() {
+    /// Spawns the fake server straight through the transport with `script`,
+    /// sends `initialize`, and waits for its exit report: (code, stderr lines),
+    /// with the connection.
+    async fn spawn_until_exit(script: Value) -> (Option<i32>, Vec<String>, transport::Connection) {
         let root = tempfile::tempdir().unwrap();
-        let lines: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
-        let script = root.path().join("script.json");
-        std::fs::write(
-            &script,
-            serde_json::json!({"stderr": {"initialize": lines}, "exit_on": "initialize"})
-                .to_string(),
-        )
-        .unwrap();
+        let path = root.path().join("script.json");
+        std::fs::write(&path, script.to_string()).unwrap();
         let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
-        let args = ["--script".to_string(), script.display().to_string()];
+        let args = ["--script".to_string(), path.display().to_string()];
         let connection = transport::spawn(7, &fake_lsp(), &args, root.path(), tx).unwrap();
         connection
             .outgoing
             .send(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
             .unwrap();
-        let exited = tokio::time::timeout(Duration::from_secs(10), async {
+        let (code, stderr) = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 match events.recv().await {
                     Some(AppEvent::Lsp(LspEvent {
@@ -1703,9 +1699,42 @@ mod tests {
         })
         .await
         .expect("the fake server to exit");
-        assert_eq!(exited.0, Some(3));
-        assert_eq!(exited.1, lines[5..]);
-        assert_eq!(exited.1.len(), transport::STDERR_LINES);
+        (code, stderr, connection)
+    }
+
+    #[tokio::test]
+    async fn spawn_keeps_the_last_lines_a_server_writes_to_stderr() {
+        let lines: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
+        let script = serde_json::json!({"stderr": {"initialize": lines}, "exit_on": "initialize"});
+        let (code, stderr, _) = spawn_until_exit(script).await;
+        assert_eq!(code, Some(3));
+        assert_eq!(stderr, lines[5..]);
+        assert_eq!(stderr.len(), transport::STDERR_LINES);
+    }
+
+    // Unix only: a Windows child inherits every inheritable handle, the
+    // server's stdout pipe included, so the exit itself would never be seen.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stderr_held_open_by_a_child_is_let_go_after_the_exit() {
+        // The child holds stderr for 20 s; the reading task must let go long
+        // before.
+        let script = serde_json::json!({"hold_stderr": 20000,
+            "stderr": {"initialize": ["giving up"]}, "exit_on": "initialize"});
+        let (code, stderr, mut connection) = spawn_until_exit(script).await;
+        assert_eq!(code, Some(3));
+        assert_eq!(stderr, ["giving up"]);
+        // The stderr task is the connection's last, so stopping the server
+        // reaches it too; by now it's been aborted rather than left reading.
+        assert_eq!(connection.tasks.len(), 3);
+        let reading = connection.tasks.pop().unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(5), reading).await;
+        assert!(
+            ended
+                .expect("the stderr task to end")
+                .is_err_and(|e| e.is_cancelled()),
+            "it ended by being aborted"
+        );
     }
 
     #[tokio::test]
