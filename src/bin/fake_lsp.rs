@@ -21,6 +21,9 @@
 //!   - `silent`: methods whose requests are never answered, as a hung server's.
 //!   - `errors`: the JSON-RPC error object to answer each method with instead
 //!     of a result.
+//!   - `stderr`: lines to write to stderr on receiving each method, before
+//!     anything else it does (an `exit_on` crash included), as a failing server
+//!     says why.
 //!
 //! `--log <path>` and `--script <path>` arguments stand in for the two variables,
 //! for tests that start it through a server config rather than a child of their
@@ -58,6 +61,13 @@ fn main() -> ExitCode {
             let _ = log.flush();
         }
         let method = message["method"].as_str().unwrap_or_default();
+        if let Some(lines) = script["stderr"][method].as_array() {
+            let mut stderr = io::stderr().lock();
+            for line in lines {
+                let _ = writeln!(stderr, "{}", line.as_str().unwrap_or_default());
+            }
+            let _ = stderr.flush();
+        }
         if !method.is_empty() && script["exit_on"].as_str() == Some(method) {
             return ExitCode::from(CRASH_CODE);
         }
