@@ -3,6 +3,9 @@
 
 mod harness;
 
+use std::ffi::OsString;
+use std::fs;
+use std::path::Path;
 use std::time::Duration;
 
 use harness::{Glyph, ROWS};
@@ -27,7 +30,7 @@ const NAME_X: u16 = 46;
 const RIGHT: u16 = 89;
 const FOOTER_ROW: u16 = 28;
 const HEADER: &str = "✦ keybindings";
-const FOOTER: &str = "⏎ rebind  ⌫ reset  esc close";
+const FOOTER: &str = "⏎ rebind  del reset  esc close";
 
 /// The default theme, hydra: its `accent` and `raised`.
 const ACCENT: Color = Color::Rgb(0xc3, 0xf5, 0x3c);
@@ -248,30 +251,149 @@ fn a_paste_goes_into_the_filter() {
     assert_eq!(row(&glyph, FIRST_ROW + 1).trim(), "");
 }
 
+/// What the selected row shows while it waits for a new key.
+const WAITING: &str = "press a key… (esc cancels)";
+
+/// Glyph on `a.txt` (`alpha`) in `project`, with `GLYPH_CONFIG` pointing at
+/// `config`.
+fn glyph_on_file(project: &Path, config: &Path) -> Glyph {
+    fs::write(project.join("a.txt"), "alpha\n").expect("write a.txt");
+    let env = [("GLYPH_CONFIG", OsString::from(config))];
+    let glyph = Glyph::spawn_in_with_env(project, &env, &["a.txt"]);
+    glyph.wait_for_text("alpha", START);
+    glyph
+}
+
+fn read(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_default()
+}
+
 #[test]
-fn enter_and_backspace_do_nothing_yet() {
-    let mut glyph = glyph_with("");
+fn enter_then_a_key_rebinds_save_and_the_new_key_saves() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create config home");
+    let config = home.path().join("config.toml");
+    fs::write(&config, "# mine\ntheme = \"hydra\"\n").expect("write config");
+    let mut glyph = glyph_on_file(project.path(), &config);
     open_card(&mut glyph);
-    let lit = mix(RAISED, ACCENT, 0.3);
-    glyph.send_keys("down");
-    glyph.wait_for_bg(CARD_X, FIRST_ROW + 1, lit, WAIT);
+    filter(&mut glyph, "save", "Save");
+
     glyph.send_keys("enter");
-    glyph.send_keys("backspace");
-    // Keys are handled in order, so once `x` shows in the query Enter and
-    // Backspace have been too.
-    glyph.type_text("x");
-    glyph.wait_for_screen("x typed", WAIT, |screen| {
-        screen[usize::from(HEADER_ROW)].contains("✦ keybindings  x")
+    glyph.wait_for_text(WAITING, WAIT);
+    assert_eq!(glyph.text_col(FIRST_ROW, WAITING), Some(keys_x(WAITING)));
+    glyph.send_keys("alt+w");
+    glyph.wait_for_text("save bound to Alt+W", WAIT);
+    glyph.wait_for_screen("the row shows Alt+W", WAIT, |screen| {
+        screen[usize::from(FIRST_ROW)].trim_end().ends_with("Alt+W")
     });
-    glyph.send_keys("backspace");
-    glyph.wait_for_screen("x erased", WAIT, |screen| starts(screen, FIRST_ROW, "Quit"));
-    // The card stayed open and the list is whole again, nothing typed.
-    assert!(
-        row(&glyph, HEADER_ROW)
-            .trim_end()
-            .ends_with("✦ keybindings")
+    assert_eq!(glyph.text_col(FIRST_ROW, "Alt+W"), Some(keys_x("Alt+W")));
+    assert_eq!(
+        read(&config),
+        "# mine\ntheme = \"hydra\"\n\n[keys]\nsave = \"alt+w\"\n"
     );
-    assert_eq!(glyph.text_col(FIRST_ROW + 1, "Save"), Some(TEXT_X));
+
+    // Applied at once: Alt+W saves a.txt, with no restart.
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(HEADER, WAIT);
+    glyph.type_text("x");
+    glyph.wait_for_text("xalpha", WAIT);
+    glyph.send_keys("alt+w");
+    let file = project.path().join("a.txt");
+    glyph.wait_for_files("a.txt saved by Alt+W", WAIT, || read(&file) == "xalpha\n");
+}
+
+#[test]
+fn delete_on_a_row_brings_back_its_default_and_backspace_edits_the_query() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create config home");
+    let config = home.path().join("config.toml");
+    fs::write(&config, "[keys]\nsave = \"alt+w\"\nclose_tab = \"alt+q\"\n").expect("write config");
+    let mut glyph = glyph_on_file(project.path(), &config);
+    open_card(&mut glyph);
+    filter(&mut glyph, "save", "Save");
+    assert_eq!(glyph.text_col(FIRST_ROW, "Alt+W"), Some(keys_x("Alt+W")));
+
+    glyph.send_keys("delete");
+    glyph.wait_for_text("save reset to its default keys", WAIT);
+    glyph.wait_for_screen("the row shows Ctrl+S", WAIT, |screen| {
+        screen[usize::from(FIRST_ROW)]
+            .trim_end()
+            .ends_with("Ctrl+S")
+    });
+    assert_eq!(read(&config), "[keys]\nclose_tab = \"alt+q\"\n");
+
+    // Backspace still corrects the query rather than resetting anything.
+    glyph.send_keys("backspace");
+    glyph.wait_for_screen("the query lost its e", WAIT, |screen| {
+        screen[usize::from(HEADER_ROW)]
+            .trim_end()
+            .ends_with("✦ keybindings  sav")
+    });
+    assert_eq!(read(&config), "[keys]\nclose_tab = \"alt+q\"\n");
+
+    // Ctrl+S saves again.
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(HEADER, WAIT);
+    glyph.type_text("y");
+    glyph.wait_for_text("yalpha", WAIT);
+    glyph.send_keys("ctrl+s");
+    let file = project.path().join("a.txt");
+    glyph.wait_for_files("a.txt saved by Ctrl+S", WAIT, || read(&file) == "yalpha\n");
+}
+
+#[test]
+fn an_open_config_tab_shows_the_rebind_and_saving_it_keeps_it() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create config home");
+    let config = home.path().join("config.toml");
+    let mut glyph = glyph_on_file(project.path(), &config);
+    // `>settings` opens config.toml, written from the template.
+    glyph.send_keys("ctrl+p");
+    glyph.wait_for_text("cast · files · commands", WAIT);
+    glyph.type_text(">settings");
+    glyph.wait_for_screen("Settings listed", WAIT, |screen| {
+        screen[9].contains("Settings")
+    });
+    glyph.send_keys("enter");
+    glyph.wait_for_text("# tab_width = 4", WAIT);
+
+    open_card(&mut glyph);
+    filter(&mut glyph, "save", "Save");
+    glyph.send_keys("enter");
+    glyph.wait_for_text(WAITING, WAIT);
+    glyph.send_keys("alt+w");
+    glyph.wait_for_text("save bound to Alt+W", WAIT);
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(HEADER, WAIT);
+    // The tab shows the new entry, and saving it with the new key keeps it.
+    glyph.wait_for_text("save = \"alt+w\"", WAIT);
+    glyph.send_keys("alt+w");
+    glyph.wait_for_text("settings applied", WAIT);
+    // A stale tab would have written the template back, Ctrl+S with it.
+    assert!(read(&config).contains("[keys]\nsave = \"alt+w\"\n"));
+}
+
+#[test]
+fn esc_while_waiting_cancels_and_writes_nothing() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create config home");
+    let config = home.path().join("config.toml");
+    let mut glyph = glyph_on_file(project.path(), &config);
+    open_card(&mut glyph);
+    filter(&mut glyph, "save", "Save");
+
+    glyph.send_keys("enter");
+    glyph.wait_for_text(WAITING, WAIT);
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(WAITING, WAIT);
+    // The card is still open, the row as it was.
+    assert_eq!(glyph.text_col(HEADER_ROW, HEADER), Some(TEXT_X));
+    assert_eq!(glyph.text_col(FIRST_ROW, "Ctrl+S"), Some(keys_x("Ctrl+S")));
+    assert!(!config.exists());
+    // A second Esc closes it.
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(HEADER, WAIT);
+    assert!(!config.exists());
 }
 
 #[test]
