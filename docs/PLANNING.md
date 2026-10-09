@@ -9,7 +9,7 @@ Verify: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo
 
 Active phase: **8 — Glyph opens on a splash and can switch projects.** Phases 9 and 10 are
 ticketed ahead, as Cody asked to build them in one run (2026-10-08). The person checks for
-Phases 6 and 7 are still open. Phase 12 is ticketed ahead as well (Cody, 2026-10-08).
+Phases 6 and 7 are still open. Phases 12 and 13 are ticketed ahead as well (Cody, 2026-10-08).
 Next unblocked: #124 — fix(project): open a folder onto the tree and an empty pane, not the
 splash (PR #125).
 
@@ -143,6 +143,26 @@ Exit when:
 3. #157 — feat(editor): Enter between a bracket pair opens an indented line · after 2
 4. #158 — feat(editor): typing an opening bracket wraps the selection · after 3
 
+### 13 — See and change settings, keys and server errors inside Glyph
+
+Exit when:
+- every ticket below is closed and its change is on `main`;
+- `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` passes on `main`;
+- the person check passes (open `>settings`, change `tab_width` and save, it applies; rebind
+  `save` in `>keybindings`; with TypeScript 7 installed, the catalog shows the JavaScript
+  server failed and why, and Enter retries it).
+
+[Settings, keys and server errors](features/glyph-settings/intent.md)
+
+1. #164 — fix(lsp): keep what a failing language server prints
+2. #165 — feat(catalog): failed servers say why and retry on Enter · after 1
+3. #166 — feat(config): >settings opens config.toml · can run alongside 1
+4. #167 — feat(config): saving config.toml applies keys, editor and theme · after 3
+5. #168 — feat(config): saving config.toml restarts changed servers and adapters · after 4
+6. #169 — feat(keys): >keybindings card · can run alongside 1, 3
+7. #170 — feat(keys): rebind a command from the keybindings card · after 4, 6
+8. #171 — feat(keys): moving a key another command already uses · after 7
+
 ## In scope
 
 - Glyph v1 — shipped — [intent](features/glyph-v1/intent.md) ·
@@ -158,6 +178,7 @@ Exit when:
 - Debugger — planned — [intent](features/glyph-debugger/intent.md) ·
   [spec](features/glyph-debugger/spec.md)
 - Brackets close themselves — active — [intent](features/glyph-autopair/intent.md)
+- Settings, keys and server errors — active — [intent](features/glyph-settings/intent.md)
 
 ## Out
 
