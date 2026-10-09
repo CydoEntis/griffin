@@ -30,6 +30,9 @@ pub enum Action {
     Copy,
     Cut,
     Paste,
+    /// Comments out the cursor's line or the selected lines, or uncomments them
+    /// when they're all commented already.
+    ToggleComment,
     /// Shows or hides the file tree.
     ToggleTree,
     /// Moves focus between the file tree and the editor.
@@ -125,6 +128,8 @@ pub enum Action {
     CatalogCopy,
     /// Opens `config.toml` in a tab, creating it from a template if missing.
     Settings,
+    /// Opens the keybindings card: every command, its keys and config name.
+    Keybindings,
     /// Splash only: moves the selection up a row, wrapping.
     SplashUp,
     /// Splash only: moves the selection down a row, wrapping.
@@ -218,6 +223,7 @@ impl Action {
         Action::Copy,
         Action::Cut,
         Action::Paste,
+        Action::ToggleComment,
         Action::ToggleTree,
         Action::FocusTree,
         Action::TreeNewFile,
@@ -273,6 +279,7 @@ impl Action {
         Action::LanguageServers,
         Action::CatalogCopy,
         Action::Settings,
+        Action::Keybindings,
         Action::SplashUp,
         Action::SplashDown,
         Action::SplashRun,
@@ -365,6 +372,7 @@ impl Action {
             Action::Copy => "copy",
             Action::Cut => "cut",
             Action::Paste => "paste",
+            Action::ToggleComment => "toggle_comment",
             Action::ToggleTree => "toggle_tree",
             Action::FocusTree => "focus_tree",
             Action::TreeNewFile => "tree_new_file",
@@ -423,6 +431,7 @@ impl Action {
             Action::LanguageServers => "language_servers",
             Action::Settings => "settings",
             Action::CatalogCopy => "catalog_copy",
+            Action::Keybindings => "keybindings",
             Action::SplashUp => "splash_up",
             Action::SplashDown => "splash_down",
             Action::SplashRun => "splash_run",
@@ -484,6 +493,7 @@ impl Action {
             Action::Copy => "Copy",
             Action::Cut => "Cut",
             Action::Paste => "Paste",
+            Action::ToggleComment => "Toggle comment",
             Action::ToggleTree => "Toggle file tree",
             Action::FocusTree => "Focus file tree",
             Action::TreeNewFile => "New file in tree",
@@ -542,6 +552,7 @@ impl Action {
             Action::LanguageServers => "Language servers",
             Action::Settings => "Settings",
             Action::CatalogCopy => "Catalog: copy command",
+            Action::Keybindings => "Keybindings",
             Action::SplashUp => "Splash: up",
             Action::SplashDown => "Splash: down",
             Action::SplashRun => "Splash: run selected",
@@ -566,6 +577,11 @@ impl Action {
             .iter()
             .copied()
             .filter(|a| a.scope() == Scope::Global && *a != Action::Cancel)
+    }
+
+    /// Every action, in the order the keybindings card lists them.
+    pub fn all() -> impl Iterator<Item = Action> {
+        Action::ALL.iter().copied()
     }
 
     fn from_name(name: &str) -> Option<Action> {
@@ -617,6 +633,10 @@ const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Copy, "ctrl+c"),
     (Action::Cut, "ctrl+x"),
     (Action::Paste, "ctrl+v"),
+    // Unix terminals send Ctrl+/ as the same byte as Ctrl+7, which crossterm
+    // reads back as Ctrl+7, so both are bound.
+    (Action::ToggleComment, "ctrl+/"),
+    (Action::ToggleComment, "ctrl+7"),
     (Action::ToggleTree, "ctrl+b"),
     (Action::FocusTree, "ctrl+e"),
     (Action::TreeNewFile, "a"),
@@ -706,6 +726,7 @@ const UNBOUND: &[Action] = &[
     Action::ClearBreakpoints,
     Action::LanguageServers,
     Action::Settings,
+    Action::Keybindings,
 ];
 
 /// What a key event means to the editor.
@@ -828,6 +849,28 @@ impl Keymap {
             .filter(|&(_, &bound)| bound == action)
             .map(|(&key, _)| key_label(key))
             .min_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)))
+    }
+
+    /// Every key that runs `action` in its own scope, labelled as the cast
+    /// palette labels them, in `key_label`'s order: the palette's pick first.
+    pub fn key_labels(&self, action: Action) -> Vec<String> {
+        let table = match action.scope() {
+            Scope::Global => &self.bindings,
+            Scope::Tree => &self.tree,
+            Scope::Find => &self.find,
+            Scope::Search => &self.search,
+            Scope::Folders => &self.folders,
+            Scope::Catalog => &self.catalog,
+            Scope::Splash => &self.splash,
+            Scope::Debug => &self.debug,
+        };
+        let mut labels: Vec<String> = table
+            .iter()
+            .filter(|&(_, &bound)| bound == action)
+            .map(|(&key, _)| key_label(key))
+            .collect();
+        labels.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+        labels
     }
 
     /// What `event` means outside the tree.
@@ -1133,6 +1176,21 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_slash_and_ctrl_7_toggle_comments_by_default() {
+        let map = Keymap::default();
+        for c in ['/', '7'] {
+            let event = ev(KeyCode::Char(c), KeyModifiers::CONTROL);
+            assert_eq!(map.resolve(&event), Input::Action(Action::ToggleComment));
+        }
+        assert_eq!(
+            Action::from_name("toggle_comment"),
+            Some(Action::ToggleComment)
+        );
+        assert_eq!(Action::ToggleComment.title(), "Toggle comment");
+        assert!(Action::commands().any(|a| a == Action::ToggleComment));
+    }
+
+    #[test]
     fn f5_runs_and_f4_toggles_the_run_panel_by_default() {
         let map = Keymap::default();
         assert_eq!(
@@ -1317,7 +1375,12 @@ mod tests {
 
     #[test]
     fn default_bindings_cover_every_action_once() {
-        let mut bound: Vec<Action> = DEFAULT_BINDINGS.iter().map(|&(a, _)| a).collect();
+        // Ctrl+7 is Ctrl+/ as Unix terminals send it, a second key on purpose.
+        let mut bound: Vec<Action> = DEFAULT_BINDINGS
+            .iter()
+            .filter(|&&binding| binding != (Action::ToggleComment, "ctrl+7"))
+            .map(|&(a, _)| a)
+            .collect();
         bound.extend_from_slice(UNBOUND);
         bound.sort_by_key(|a| a.name());
         let mut all = Action::ALL.to_vec();
@@ -1953,6 +2016,32 @@ mod tests {
             map.resolve(&ev(KeyCode::Char('j'), KeyModifiers::ALT)),
             Input::Action(Action::Settings)
         );
+    }
+
+    #[test]
+    fn keybindings_is_a_command_with_no_key() {
+        let map = Keymap::default();
+        assert!(Action::commands().any(|a| a == Action::Keybindings));
+        assert_eq!(Action::Keybindings.title(), "Keybindings");
+        assert_eq!(Action::Keybindings.name(), "keybindings");
+        assert_eq!(Action::Keybindings.scope(), Scope::Global);
+        assert_eq!(map.key_label(Action::Keybindings), None);
+        assert!(map.key_labels(Action::Keybindings).is_empty());
+    }
+
+    #[test]
+    fn key_labels_lists_every_key_in_the_actions_own_scope() {
+        let map = Keymap::default();
+        assert_eq!(map.key_labels(Action::TreeNewFolder), ["Shift+A"]);
+        assert_eq!(map.key_labels(Action::SplashRun), ["Enter"]);
+        assert_eq!(map.key_labels(Action::ProjectReplace), ["Alt+A"]);
+        let map = Keymap::new(&keys(&[(
+            "save",
+            KeyBinding::Many(vec!["ctrl+shift+s".into(), "alt+w".into()]),
+        )]))
+        .unwrap();
+        assert_eq!(map.key_labels(Action::Save), ["Alt+W", "Ctrl+Shift+S"]);
+        assert_eq!(map.key_label(Action::Save).as_deref(), Some("Alt+W"));
     }
 
     #[test]

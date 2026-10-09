@@ -18,6 +18,7 @@ pub static TYPESCRIPT: Language = Language {
     injections: tree_sitter_javascript::INJECTIONS_QUERY,
     embeds: &[],
     roles: ROLES,
+    line_comment: Some("//"),
     compiled: OnceLock::new(),
 };
 
@@ -35,5 +36,6 @@ pub static TSX: Language = Language {
     injections: tree_sitter_javascript::INJECTIONS_QUERY,
     embeds: &[],
     roles: ROLES,
+    line_comment: Some("//"),
     compiled: OnceLock::new(),
 };
