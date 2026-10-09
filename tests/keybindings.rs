@@ -342,6 +342,38 @@ fn delete_on_a_row_brings_back_its_default_and_backspace_edits_the_query() {
 }
 
 #[test]
+fn an_open_config_tab_shows_the_rebind_and_saving_it_keeps_it() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create config home");
+    let config = home.path().join("config.toml");
+    let mut glyph = glyph_on_file(project.path(), &config);
+    // `>settings` opens config.toml, written from the template.
+    glyph.send_keys("ctrl+p");
+    glyph.wait_for_text("cast · files · commands", WAIT);
+    glyph.type_text(">settings");
+    glyph.wait_for_screen("Settings listed", WAIT, |screen| {
+        screen[9].contains("Settings")
+    });
+    glyph.send_keys("enter");
+    glyph.wait_for_text("# tab_width = 4", WAIT);
+
+    open_card(&mut glyph);
+    filter(&mut glyph, "save", "Save");
+    glyph.send_keys("enter");
+    glyph.wait_for_text(WAITING, WAIT);
+    glyph.send_keys("alt+w");
+    glyph.wait_for_text("save bound to Alt+W", WAIT);
+    glyph.send_keys("esc");
+    glyph.wait_for_text_gone(HEADER, WAIT);
+    // The tab shows the new entry, and saving it with the new key keeps it.
+    glyph.wait_for_text("save = \"alt+w\"", WAIT);
+    glyph.send_keys("alt+w");
+    glyph.wait_for_text("settings applied", WAIT);
+    // A stale tab would have written the template back, Ctrl+S with it.
+    assert!(read(&config).contains("[keys]\nsave = \"alt+w\"\n"));
+}
+
+#[test]
 fn esc_while_waiting_cancels_and_writes_nothing() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create config home");

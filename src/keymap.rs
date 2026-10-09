@@ -1113,6 +1113,16 @@ pub fn key_notation(event: &KeyEvent) -> Option<String> {
     (parse_key(&text) == Ok(key)).then_some(text)
 }
 
+/// Whether `event` types a character: a printable key (Space included) with
+/// neither Ctrl nor Alt, Shift or not. Such a key can't run a command that
+/// works anywhere, or typing it would run the command instead.
+pub fn is_plain_text(event: &KeyEvent) -> bool {
+    matches!(event.code, KeyCode::Char(c) if !c.is_control())
+        && !event
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
+
 /// The palette's label for a key in `[keys]` notation (`alt+w` is `Alt+W`),
 /// or the notation itself if it doesn't parse.
 pub fn notation_label(notation: &str) -> String {
@@ -2227,6 +2237,31 @@ mod tests {
         }
         assert_eq!(notation_label("alt+w"), "Alt+W");
         assert_eq!(notation_label("ctrl+shift+left"), "Ctrl+Shift+Left");
+    }
+
+    #[test]
+    fn plain_text_is_a_printable_key_without_ctrl_or_alt() {
+        for (code, mods) in [
+            (KeyCode::Char('a'), KeyModifiers::NONE),
+            (KeyCode::Char('A'), KeyModifiers::SHIFT),
+            (KeyCode::Char('7'), KeyModifiers::NONE),
+            (KeyCode::Char('!'), KeyModifiers::SHIFT),
+            (KeyCode::Char(' '), KeyModifiers::NONE),
+            (KeyCode::Char('é'), KeyModifiers::NONE),
+        ] {
+            assert!(is_plain_text(&ev(code, mods)), "{code:?} {mods:?}");
+        }
+        for (code, mods) in [
+            (KeyCode::Char('a'), KeyModifiers::CONTROL),
+            (KeyCode::Char('w'), KeyModifiers::ALT),
+            (KeyCode::Char(' '), KeyModifiers::CONTROL),
+            (KeyCode::F(2), KeyModifiers::NONE),
+            (KeyCode::Enter, KeyModifiers::SHIFT),
+            (KeyCode::Tab, KeyModifiers::NONE),
+            (KeyCode::Char('\u{1}'), KeyModifiers::NONE),
+        ] {
+            assert!(!is_plain_text(&ev(code, mods)), "{code:?} {mods:?}");
+        }
     }
 
     #[test]

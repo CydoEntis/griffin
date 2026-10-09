@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use toml_edit::Item;
 
+use crate::buffer::LineEnding;
 use crate::keymap::Keymap;
 use crate::theme::{self, Theme};
 
@@ -299,7 +300,12 @@ pub fn with_keys(text: &str, name: &str, keys: Option<&[String]>) -> Result<Stri
             table.insert(name, Item::Value(value));
         }
     }
-    Ok(doc.to_string())
+    let out = doc.to_string();
+    // toml_edit writes LF; a CRLF file stays CRLF throughout.
+    Ok(match LineEnding::detect(text) {
+        LineEnding::Lf => out,
+        LineEnding::Crlf => out.replace("\r\n", "\n").replace('\n', "\r\n"),
+    })
 }
 
 /// Why `text` isn't TOML, in the words `Settings::from_text` would use.
@@ -883,6 +889,24 @@ save =",
         assert!(out.contains("[keys]\nsave = \"alt+w\"\n"), "{out}");
         assert!(out.contains("# save = \"ctrl+s\"\n"), "{out}");
         assert!(out.contains("# tab_width = 4\n"), "{out}");
+    }
+
+    #[test]
+    fn with_keys_keeps_a_crlf_file_crlf() {
+        let text = "# mine\r\ntheme = \"nord\"\r\n\r\n[keys]\r\nsave = \"f2\"\r\n";
+        let out = with_keys(text, "save", Some(&keys(&["alt+w"]))).unwrap();
+        assert_eq!(
+            out,
+            "# mine\r\ntheme = \"nord\"\r\n\r\n[keys]\r\nsave = \"alt+w\"\r\n"
+        );
+        let out = with_keys(&out, "quit", Some(&keys(&["f3"]))).unwrap();
+        assert!(
+            out.ends_with("save = \"alt+w\"\r\nquit = \"f3\"\r\n"),
+            "{out:?}"
+        );
+        assert!(!out.replace("\r\n", "").contains('\n'), "{out:?}");
+        let out = with_keys("theme = \"nord\"\r\n", "save", None).unwrap();
+        assert_eq!(out, "theme = \"nord\"\r\n");
     }
 
     #[test]
