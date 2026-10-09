@@ -4084,16 +4084,25 @@ impl App {
     }
 
     /// Replaces the keymap, `[editor]` and theme with those `text` (a whole
-    /// `config.toml`) describes, and says `settings applied`. A file that fails
-    /// to parse, or names a bad key or theme, changes nothing: the settings in
-    /// use stay and the status line shows `config error: …`, which is also the
-    /// `Err`.
+    /// `config.toml`) describes, and says `settings applied`. A language whose
+    /// `[lsp.<lang>]` changed has its servers restarted; a changed
+    /// `[debug.<lang>]` takes effect from the next debug session, as a running
+    /// one keeps the adapter it started with. A file that fails to parse, or
+    /// names a bad key or theme, changes nothing: the settings in use stay and
+    /// the status line shows `config error: …`, which is also the `Err`.
     pub fn apply_config_text(&mut self, text: &str) -> Result<(), String> {
         match config::Settings::from_text(text) {
             Ok(settings) => {
                 self.keymap = settings.keymap;
                 self.editor = settings.editor;
                 self.theme = settings.theme;
+                // The old servers' exit is waited for on a task of its own
+                // (R29), so the handle isn't needed here.
+                drop(
+                    self.lsp
+                        .reconfigure(crate::lsp::servers::with_defaults(settings.lsp)),
+                );
+                self.debug_adapters = settings.debug;
                 self.say(Tone::Ok, "settings applied");
                 Ok(())
             }
@@ -5288,6 +5297,39 @@ mod tests {
             assert_eq!(app.editor.tab_width, 3, "{bad:?}");
             assert_eq!(app.theme, Theme::named("nord").unwrap(), "{bad:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_changed_debug_table_waits_for_the_next_session() {
+        let clipboard = FakeClipboard::default();
+        let mut app = app_with("", &clipboard);
+        app.apply_config_text("[debug.python]\nadapter = 'old-dbg'\n")
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        // An adapter that never starts is still a session the app holds.
+        let (events, _rx) = mpsc::unbounded_channel();
+        let program = dir.path().join("glyph-no-such-adapter");
+        let session = Session::start(1, &program, &[], dir.path(), events);
+        let launch = adapters::Launch {
+            build: None,
+            program: dir.path().join("main.py"),
+            args: Vec::new(),
+            cwd: dir.path().to_path_buf(),
+            mode: None,
+        };
+        app.debug = Some(DebugSession::new(session, launch.clone(), 0));
+
+        app.apply_config_text("[debug.python]\nadapter = 'new-dbg'\nargs = ['-x']\n")
+            .unwrap();
+        let next = adapters::adapter_for("python", &app.debug_adapters).unwrap();
+        assert_eq!(next.command, "new-dbg");
+        assert_eq!(next.args, ["-x"]);
+        let running = app
+            .debug
+            .as_ref()
+            .expect("the running session is left alone");
+        assert_eq!(running.session.id, 1);
+        assert_eq!(running.launch, launch);
     }
 
     #[test]

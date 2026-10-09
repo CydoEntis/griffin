@@ -1035,6 +1035,34 @@ impl Lsp {
             .filter(|((_, r), _)| r == root)
             .map(|(_, &id)| id)
             .collect();
+        self.stop(&stopped)
+    }
+
+    /// Takes `config` as the server tables from now on. Each language whose
+    /// table changed has its servers stopped, in every root, as `stop_root`
+    /// stops them; the next `sync` starts the new one for its open files.
+    /// Languages whose table is the same keep their servers running.
+    pub fn reconfigure(&mut self, config: BTreeMap<String, LspServer>) -> Option<JoinHandle<()>> {
+        let changed: HashSet<&str> = self
+            .config
+            .keys()
+            .chain(config.keys())
+            .filter(|lang| self.config.get(*lang) != config.get(*lang))
+            .map(String::as_str)
+            .collect();
+        let stopped: HashSet<u64> = self
+            .by_root
+            .iter()
+            .filter(|((lang, _), _)| changed.contains(lang))
+            .map(|(_, &id)| id)
+            .collect();
+        self.config = config;
+        self.stop(&stopped)
+    }
+
+    /// Stops servers `stopped` and forgets them, closing the buffers they
+    /// follow first.
+    fn stop(&mut self, stopped: &HashSet<u64>) -> Option<JoinHandle<()>> {
         if stopped.is_empty() {
             return None;
         }
