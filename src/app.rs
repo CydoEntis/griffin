@@ -2525,8 +2525,14 @@ impl App {
     /// server installed outside Glyph shows once the catalog is opened again.
     fn open_catalog(&mut self) {
         let lsp = &self.lsp;
-        let catalog =
-            with_lookup(|lookup| Catalog::new(lsp.config(), |lang| lsp.is_running(lang), lookup));
+        let catalog = with_lookup(|lookup| {
+            Catalog::new(
+                lsp.config(),
+                |lang| lsp.is_running(lang),
+                |lang| lsp.failure(lang).map(str::to_owned),
+                lookup,
+            )
+        });
         self.catalog = Some(catalog);
     }
 
@@ -2542,6 +2548,16 @@ impl App {
                 self.say(Tone::Warn, format!("no install command for {name}"));
             }
             catalog::Step::Install(install) => self.start_install(install),
+            catalog::Step::Retry { name, langs } => {
+                // Forgotten, the failed servers are started afresh by the
+                // `sync_lsp` after this event, as after an install; whether it
+                // works this time comes to the status line.
+                self.catalog = None;
+                for lang in langs {
+                    self.lsp.forget_failed(lang);
+                }
+                self.say(Tone::Ok, format!("retrying {name}"));
+            }
         }
     }
 

@@ -754,10 +754,6 @@ impl Lsp {
     /// Why the server for `lang` last failed: its `initialize` error, the last
     /// line it wrote to stderr before crashing, or its exit code. `None` when it
     /// hasn't failed, or has started since.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the catalog is to show it beside a failed server")
-    )]
     pub fn failure(&self, lang: &str) -> Option<&str> {
         self.failures.get(lang).map(String::as_str)
     }
