@@ -79,6 +79,8 @@ impl Buffer {
                 .map(|(_, text)| indent(text))
                 .min()
                 .unwrap_or(0);
+            // Known limit: a line already holding `close` ends the new comment
+            // early there, as neither HTML nor CSS comments nest.
             for (start, text) in &lines {
                 let end = start + text.chars().count();
                 edits.push((start + col..start + col, format!("{open} ")));
@@ -168,10 +170,13 @@ fn unindented(text: &str) -> &str {
 }
 
 /// What sits between `open` and `close` when `text`, past its indent and before
-/// any trailing whitespace, is wrapped in them; `None` when it isn't.
+/// any trailing whitespace, is wrapped in them; `None` when it isn't. A line
+/// that only starts and ends with comments (`/* a */ b; /* c */`) has a marker
+/// inside and isn't one comment: unwrapping it would uncomment its middle.
 fn wrapped_body<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
     let body = unindented(text).trim_end_matches([' ', '\t']);
-    body.strip_prefix(open)?.strip_suffix(close)
+    let inner = body.strip_prefix(open)?.strip_suffix(close)?;
+    (!inner.contains(open) && !inner.contains(close)).then_some(inner)
 }
 
 #[cfg(test)]
@@ -391,5 +396,15 @@ b|");
 "
         );
         assert!(!b.undo(), "the whole wrap was one step");
+    }
+
+    #[test]
+    fn a_line_with_comments_only_at_its_ends_gets_wrapped() {
+        let mut b = buf("/* a */ color: red; /* b */|");
+        b.toggle_wrap_comment("/*", "*/");
+        assert_eq!(b.rope.to_string(), "/* /* a */ color: red; /* b */ */");
+        let mut b = buf("<!-- x --><p>hi</p><!-- y -->|");
+        b.toggle_wrap_comment("<!--", "-->");
+        assert_eq!(b.rope.to_string(), "<!-- <!-- x --><p>hi</p><!-- y --> -->");
     }
 }
