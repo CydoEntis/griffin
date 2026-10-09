@@ -79,7 +79,7 @@ needs is Phase 11, not this spec.
   PTY `tests/find.rs`, `tests/replace.rs`, `tests/tree_ops.rs`.
 - **R16.** Hover and completion keep a border, `╭─╮│╰╯` in `line2` on `raised`, hover rule
   `├─┤`; completion's selected row is the glow row (README §5.3). — PTY `tests/lsp.rs`.
-- **R17.** Run panel title row per README §5.7 + SPEC_V1_LAYOUT §9 (state symbol, name, state word,
+- **R17.** Run panel title row per README §5.7 + SPEC_V1_LAYOUT §9 (glyph, name, state word,
   command, hints), ANSI colours mapped to roles, restart marker in `muted`; the F5 run picker
   uses the R10 card. — PTY `tests/run.rs`.
 - **R18.** `mono` draws every screen above with flat `accent`, bold active states, REVERSED
