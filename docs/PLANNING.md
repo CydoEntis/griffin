@@ -10,6 +10,7 @@ Verify: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo
 Active phase: **8 — Glyph opens on a splash and can switch projects.** Phases 9 and 10 are
 ticketed ahead, as Cody asked to build them in one run (2026-10-08). The person checks for
 Phases 6 and 7 are still open. Phases 12, 13 and 14 are ticketed ahead as well (Cody, 2026-10-08).
+Phase 15 is ticketed ahead too (Cody, 2026-10-09).
 Next unblocked: #124 — fix(project): open a folder onto the tree and an empty pane, not the
 splash (PR #125).
 
@@ -176,6 +177,28 @@ Exit when:
 1. #173 — feat(editor): Ctrl+/ comments and uncomments lines
 2. #174 — feat(editor): Ctrl+/ wraps lines in HTML and CSS comments · after 1
 
+### 15 — C and C++ are highlighted, served, run and debugged
+
+Exit when:
+- every ticket below is closed and its change is on `main`;
+- `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` passes on `main`;
+- the person check passes (on Windows and Ubuntu: install clangd from the catalog; in a
+  hello.c and a hello.cpp see colours, completion and a compile error; Ctrl+/ a line; F5 runs
+  a program that asks `Name: ` and answers what you type; Alt+F5 stops at an F9 breakpoint
+  and steps).
+
+[C and C++](features/glyph-c-cpp/intent.md)
+
+1. #185 — feat(highlight): C files are highlighted
+2. #186 — feat(highlight): C++ files are highlighted · after 1
+3. #187 — feat(lsp): clangd serves C and C++ · after 2
+4. #188 — feat(catalog): clangd in the language servers catalog · after 3
+5. #189 — feat(run): F5 compiles and runs the open C or C++ file · after 3
+6. #190 — feat(run): Makefile and CMake projects get run commands · after 5
+7. #191 — feat(run): terminal runs show prompts at once · after 5
+8. #192 — feat(run): type a line into a running program · after 7
+9. #193 — feat(debug): debug the open C or C++ file with lldb-dap · after 5
+
 ## In scope
 
 - Glyph v1 — shipped — [intent](features/glyph-v1/intent.md) ·
@@ -193,6 +216,7 @@ Exit when:
 - Brackets close themselves — active — [intent](features/glyph-autopair/intent.md)
 - Settings, keys and server errors — active — [intent](features/glyph-settings/intent.md)
 - Ctrl+/ comments — active — [intent](features/glyph-comments/intent.md)
+- C and C++ — active — [intent](features/glyph-c-cpp/intent.md)
 
 ## Out
 
@@ -204,7 +228,8 @@ Exit when:
 
 - Embedded interactive terminal — deferred 2026-10-06: Hydra is the terminal; the
   run panel streams output. Comes back when the run panel's read-only output gets in
-  the way daily.
+  the way daily. Phase 15 adds line input for runs in a pseudo-terminal; the full
+  terminal stays deferred.
 - Multi-cursor — deferred 2026-10-06. Comes back after v1 is the daily editor.
 - Git integration (gutter diff, staging) — deferred 2026-10-06. Comes back after v1
   is the daily editor.
