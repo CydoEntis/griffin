@@ -47,6 +47,7 @@ use crate::ui::debug::{self as debug_panel, DebugPanel, DebugView, render_debug_
 use crate::ui::dirpicker::{Browsed, DirPicker};
 use crate::ui::find::{FindBar, Step};
 use crate::ui::hover::render_hover;
+use crate::ui::keybindings::{self, Keybindings};
 use crate::ui::nofile;
 use crate::ui::picker::{self, Picked, Picker};
 use crate::ui::prompt::{Outcome, PromptBar};
@@ -887,6 +888,8 @@ pub struct App {
     folders: Option<DirPicker>,
     /// The language server catalog, while it's open; it takes every key.
     catalog: Option<Catalog>,
+    /// The keybindings card, while it's open; it takes every key.
+    keybindings: Option<Keybindings>,
     /// The latest run, whose output the run panel shows.
     run: Option<RunView>,
     /// The latest run's entry, for Ctrl+F5 to start again.
@@ -970,6 +973,9 @@ pub struct App {
     debug_build: Option<PendingDebug>,
     /// `config.toml`'s `[debug.<lang>]` tables.
     debug_adapters: BTreeMap<String, DebugAdapter>,
+    /// Where `config.toml` lives, for `>settings`; `None` when the OS has no
+    /// config folder and `GLYPH_CONFIG` isn't set.
+    config_path: Option<PathBuf>,
     /// How many debug sessions have started, numbering them so an old
     /// adapter's last words are dropped.
     debug_sessions: u64,
@@ -1033,6 +1039,12 @@ impl App {
     /// Debugs with the adapters `[debug.<lang>]` names in place of the defaults.
     pub fn with_debug_adapters(mut self, adapters: BTreeMap<String, DebugAdapter>) -> Self {
         self.debug_adapters = adapters;
+        self
+    }
+
+    /// Where `>settings` finds `config.toml`.
+    pub fn with_config_path(mut self, path: Option<PathBuf>) -> Self {
+        self.config_path = path;
         self
     }
 
@@ -1154,6 +1166,10 @@ impl App {
                 if self.catalog.is_some() {
                     return;
                 }
+                if let Some(card) = &mut self.keybindings {
+                    card.paste(&text);
+                    return;
+                }
                 if let Some(picker) = &mut self.picker {
                     if let Some(picked) = picker.paste(&text) {
                         self.finish_picker(picked);
@@ -1227,6 +1243,18 @@ impl App {
                 });
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left) && outside {
                     self.catalog = None;
+                }
+            }
+            // The keybindings card closes on a click outside it, as the catalog
+            // does.
+            AppEvent::Input(Event::Mouse(mouse)) if self.keybindings.is_some() => {
+                let outside = self.keybindings.as_ref().is_some_and(|card| {
+                    !card
+                        .card(self.screen)
+                        .contains(Position::new(mouse.column, mouse.row))
+                });
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) && outside {
+                    self.keybindings = None;
                 }
             }
             // The cast palette closes on a click outside it, as a dialog does.
@@ -1369,6 +1397,9 @@ impl App {
             Scope::Folders
         } else if self.catalog.is_some() && self.prompt.is_none() {
             Scope::Catalog
+        } else if self.keybindings.is_some() && self.prompt.is_none() {
+            // Its query is typed, so letters are text, whatever has focus.
+            Scope::Global
         } else if self.project_search.is_some() && self.prompt.is_none() {
             Scope::Search
         } else if self.find.is_some() && self.prompt.is_none() {
@@ -1420,6 +1451,13 @@ impl App {
         if let Some(catalog) = &mut self.catalog {
             if let Some(step) = catalog.handle(input) {
                 self.catalog_step(step);
+            }
+            return;
+        }
+        if let Some(card) = &mut self.keybindings {
+            match card.handle(input, self.screen) {
+                Some(keybindings::Step::Close) => self.keybindings = None,
+                None => {}
             }
             return;
         }
@@ -1636,7 +1674,8 @@ impl App {
             | Action::StopRun
             | Action::RestartRun
             | Action::OpenDirectory
-            | Action::LanguageServers => {
+            | Action::LanguageServers
+            | Action::Settings => {
                 self.handle_action(action);
             }
             _ => {}
@@ -1908,7 +1947,8 @@ impl App {
             | Action::DebugStart
             | Action::DebugStop
             | Action::OpenDirectory
-            | Action::LanguageServers => self.handle_action(action),
+            | Action::LanguageServers
+            | Action::Settings => self.handle_action(action),
             _ => {}
         }
     }
@@ -1950,10 +1990,12 @@ impl App {
                 }
                 // What makes sense with nothing open: quitting, the tree, going
                 // to a file or a search hit (which replaces the splash or the
-                // key list), runs, opening another folder.
+                // key list), runs, opening another folder, the cards.
                 Action::Quit
                 | Action::OpenDirectory
                 | Action::LanguageServers
+                | Action::Settings
+                | Action::Keybindings
                 | Action::ToggleTree
                 | Action::FocusTree
                 | Action::CycleFocus
@@ -2093,6 +2135,8 @@ impl App {
             Action::Complete => self.request_completion(),
             Action::OpenDirectory => self.open_folders(),
             Action::LanguageServers => self.open_catalog(),
+            Action::Settings => self.open_settings(),
+            Action::Keybindings => self.keybindings = Some(Keybindings::new(&self.keymap)),
             // Bound only in tree, find bar, folder browser, catalog or splash scope,
             // so they never reach the editor.
             Action::TreeNewFile
@@ -2529,6 +2573,23 @@ impl App {
         let catalog =
             with_lookup(|lookup| Catalog::new(lsp.config(), |lang| lsp.is_running(lang), lookup));
         self.catalog = Some(catalog);
+    }
+
+    /// `>settings`: `config.toml` in a tab, written from the template first when
+    /// there is none, so the user sees every option rather than an empty file.
+    fn open_settings(&mut self) {
+        let Some(path) = self.config_path.clone() else {
+            self.say(Tone::Err, "no config folder");
+            return;
+        };
+        if let Err(err) = config::create_template(&path) {
+            self.say(
+                Tone::Err,
+                format!("cannot create {}: {err}", path.display()),
+            );
+            return;
+        }
+        self.open(&path);
     }
 
     /// Follows what a key did in the catalog. It stays open under a message.
@@ -4180,6 +4241,7 @@ impl App {
             || self.picker.is_some()
             || self.folders.is_some()
             || self.catalog.is_some()
+            || self.keybindings.is_some()
             || self.project_search.is_some()
             || self.find.is_some()
     }
@@ -4501,6 +4563,10 @@ impl App {
         // Nothing is typed into the catalog, so it shows no cursor.
         if let Some(catalog) = &self.catalog {
             catalog.render(theme, frame, frame.area());
+        }
+        if let Some(card) = &self.keybindings {
+            let at = card.render(theme, frame, frame.area());
+            frame.set_cursor_position(at);
         }
         if let Some(panel) = &self.project_search {
             let at = panel.render(theme, frame, frame.area());
@@ -5154,6 +5220,32 @@ mod tests {
         assert!(app.catalog.is_some());
         press(&mut app, &["esc"]);
         assert!(app.catalog.is_none());
+    }
+
+    #[test]
+    fn settings_with_no_config_folder_says_so() {
+        let clipboard = FakeClipboard::default();
+        let mut app = app_with("text", &clipboard).with_config_path(None);
+        app.handle_action(Action::Settings);
+        assert_eq!(app.message.as_deref(), Some("no config folder"));
+        assert_eq!(app.message_tone, Tone::Err);
+        assert_eq!(app.tabs.docs.len(), 1);
+    }
+
+    #[test]
+    fn settings_creates_the_template_and_opens_it_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("glyph").join("config.toml");
+        let clipboard = FakeClipboard::default();
+        let mut app = app_with("text", &clipboard).with_config_path(Some(path.clone()));
+        app.handle_action(Action::Settings);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), config::TEMPLATE);
+        assert_eq!(app.buffer().path.as_deref(), Some(path.as_path()));
+        let tabs = app.tabs.docs.len();
+        app.handle_action(Action::NextTab);
+        app.handle_action(Action::Settings);
+        assert_eq!(app.tabs.docs.len(), tabs);
+        assert_eq!(app.buffer().path.as_deref(), Some(path.as_path()));
     }
 
     #[test]

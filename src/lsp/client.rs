@@ -55,6 +55,9 @@ pub struct Client {
     /// The process was spawned, so a failure later is a crash rather than a
     /// server that was never found.
     pub spawned: bool,
+    /// Why it failed once spawned: its `initialize` error, else its last stderr
+    /// line, else its exit code. `None` until it fails.
+    pub reason: Option<String>,
 }
 
 /// An lsp-types value as JSON. These types serialize infallibly; `Null` stands in
@@ -91,6 +94,7 @@ impl Client {
             triggers: Vec::new(),
             formats: false,
             spawned,
+            reason: None,
         }
     }
 
@@ -225,8 +229,10 @@ impl Client {
     fn initialized(&mut self, response: &Value) -> Option<String> {
         if let Some(error) = response.get("error") {
             self.state = State::Failed;
-            let reason = error["message"].as_str().unwrap_or("error");
-            return Some(format!("{}: server failed to start ({reason})", self.lang));
+            let reason = error["message"].as_str().unwrap_or("error").to_string();
+            let message = format!("{}: server failed to start ({reason})", self.lang);
+            self.reason = Some(reason);
+            return Some(message);
         }
         let sync = serde_json::from_value::<TextDocumentSyncCapability>(
             response["result"]["capabilities"]["textDocumentSync"].clone(),
@@ -257,19 +263,34 @@ impl Client {
         None
     }
 
-    /// The process is gone. Unless Glyph stopped it, that's a crash worth a
-    /// status line.
-    pub fn exited(&mut self, code: Option<i32>) -> Option<String> {
+    /// The process is gone, having written `stderr` (its last lines, oldest
+    /// first). Unless Glyph stopped it, that's a crash worth a status line, named
+    /// by the last thing it said, else its exit code. One that had already failed
+    /// keeps its first reason: an `initialize` error says more than the exit after
+    /// it.
+    pub fn exited(&mut self, code: Option<i32>, stderr: &[String]) -> Option<String> {
         let was_failed = self.state == State::Failed;
         self.state = State::Failed;
         self.outgoing = None;
         if self.shutting_down || was_failed {
             return None;
         }
-        Some(match code {
-            Some(code) => format!("{}: server crashed (exit code {code})", self.lang),
+        let said = stderr
+            .iter()
+            .rev()
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty());
+        let reason = match (said, code) {
+            (Some(line), _) => Some(line.to_string()),
+            (None, Some(code)) => Some(format!("exit code {code}")),
+            (None, None) => None,
+        };
+        let message = match &reason {
+            Some(reason) => format!("{}: server crashed ({reason})", self.lang),
             None => format!("{}: server crashed", self.lang),
-        })
+        };
+        self.reason = Some(reason.unwrap_or_else(|| "crashed".to_string()));
+        Some(message)
     }
 
     /// Asks the server to stop. The replies aren't waited for; the writer task
@@ -520,18 +541,60 @@ mod tests {
     fn an_unexpected_exit_is_a_crash_and_a_requested_one_is_not() {
         let (mut client, _) = ready(json!(1));
         assert_eq!(
-            client.exited(Some(3)).as_deref(),
+            client.exited(Some(3), &[]).as_deref(),
             Some("rust: server crashed (exit code 3)")
         );
         assert_eq!(client.state, State::Failed);
+        assert_eq!(client.reason.as_deref(), Some("exit code 3"));
         // Nothing reaches a dead server, and it isn't reported twice.
-        assert_eq!(client.exited(None), None);
+        assert_eq!(client.exited(None, &[]), None);
 
         let (mut client, mut rx) = ready(json!(1));
         client.shutdown();
         let methods: Vec<Value> = drain(&mut rx).iter().map(|m| m["method"].clone()).collect();
         assert_eq!(methods, [json!("shutdown"), json!("exit")]);
-        assert_eq!(client.exited(Some(0)), None);
+        assert_eq!(client.exited(Some(0), &[]), None);
+        assert_eq!(client.reason, None);
+    }
+
+    #[test]
+    fn a_crash_is_named_by_the_last_line_on_stderr_else_its_exit_code() {
+        let lines = |text: &[&str]| text.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+        let (mut client, _) = ready(json!(1));
+        let stderr = lines(&["starting", "  Cannot find module 'tsserver'  ", "", "   "]);
+        assert_eq!(
+            client.exited(Some(1), &stderr).as_deref(),
+            Some("rust: server crashed (Cannot find module 'tsserver')")
+        );
+        assert_eq!(
+            client.reason.as_deref(),
+            Some("Cannot find module 'tsserver'")
+        );
+
+        let (mut client, _) = ready(json!(1));
+        assert_eq!(
+            client.exited(Some(2), &lines(&["", " "])).as_deref(),
+            Some("rust: server crashed (exit code 2)")
+        );
+        assert_eq!(client.reason.as_deref(), Some("exit code 2"));
+
+        // Killed by a signal: no code and nothing said.
+        let (mut client, _) = ready(json!(1));
+        assert_eq!(
+            client.exited(None, &[]).as_deref(),
+            Some("rust: server crashed")
+        );
+        assert_eq!(client.reason.as_deref(), Some("crashed"));
+    }
+
+    #[test]
+    fn an_exit_after_a_failed_initialize_keeps_the_error_as_the_reason() {
+        let (mut client, mut rx) = started();
+        drain(&mut rx);
+        let reply = json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -1, "message": "nope"}});
+        client.handle(reply);
+        assert_eq!(client.exited(Some(1), &["bye".to_string()]), None);
+        assert_eq!(client.reason.as_deref(), Some("nope"));
     }
 
     #[test]
@@ -629,5 +692,6 @@ mod tests {
             Some("rust: server failed to start (nope)")
         );
         assert_eq!(client.state, State::Failed);
+        assert_eq!(client.reason.as_deref(), Some("nope"));
     }
 }
